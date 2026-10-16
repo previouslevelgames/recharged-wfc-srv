@@ -32,7 +32,7 @@ listening port (default `8080`, all interfaces). Routes live in `src/lib.rs`.
 
 ## Images and automatic updates
 
-Push this project as the root of `yannicksuter/recharged-wfc-srv` on GitHub.
+This project is hosted at [previouslevelgames/recharged-wfc-srv](https://github.com/previouslevelgames/recharged-wfc-srv).
 The **Publish server image** Action checks Rust, builds Linux/AMD64, and tests the
 status endpoint before publishing to GHCR. Pushes to `master`/`main` and manual
 runs publish `sha-<full-commit>`; the default branch also publishes `latest`.
@@ -48,7 +48,7 @@ As in `data-tracker`, install
 [CA Auto Update Applications](https://github.com/Squidly271/ca.update.applications)
 in Unraid, enable updates for the server container, and choose a schedule. It pulls
 new `latest` images and recreates the container with its saved configuration.
-To roll back, set Repository to `ghcr.io/yannicksuter/recharged-wfc-srv:sha-<full-commit>`
+To roll back, set Repository to `ghcr.io/previouslevelgames/recharged-wfc-srv:sha-<full-commit>`
 and apply. Disable automatic updates for the pinned container.
 
 ## Unraid container settings
@@ -60,7 +60,7 @@ Enable Autostart for both.
 | Server setting | Value |
 |---|---|
 | Name | `recharged-wfc-srv` |
-| Repository | `ghcr.io/yannicksuter/recharged-wfc-srv:latest` |
+| Repository | `ghcr.io/previouslevelgames/recharged-wfc-srv:latest` |
 | Network | `recharged-wfc` |
 | TCP port | Host `8080` → container `8080` (choose another host port if occupied) |
 | Variable `PORT` | `8080` (already the image default) |

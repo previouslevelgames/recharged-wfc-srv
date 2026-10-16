@@ -1,6 +1,6 @@
 services:
   server:
-    image: ${SERVER_IMAGE:-ghcr.io/yannicksuter/recharged-wfc-srv:latest}
+    image: ${SERVER_IMAGE:-ghcr.io/previouslevelgames/recharged-wfc-srv:latest}
     build:
       context: .
       args:
