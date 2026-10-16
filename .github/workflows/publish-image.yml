@@ -64,21 +64,11 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Verify the running image reports its build revision
+      - name: Verify API, PostgreSQL persistence, and shutdown
         env:
           EXPECTED_REVISION: ${{ github.sha }}
         run: |
-          container=$(docker run -d -p 127.0.0.1::8080 -e GIT_COMMIT=runtime-override recharged-wfc-srv:test)
-          trap 'docker logs "$container"; docker rm -f "$container"' EXIT
-          port=$(docker port "$container" 8080/tcp | cut -d: -f2)
-          curl --fail --silent --show-error --retry 10 --retry-connrefused --retry-delay 1 \
-            "http://127.0.0.1:$port/status" > /tmp/status.json
-          python3 - <<'PY'
-          import json, os
-          with open('/tmp/status.json') as response:
-              status = json.load(response)
-          assert status == {"status": "ok", "revision": os.environ["EXPECTED_REVISION"]}, status
-          PY
+          python3 scripts/test-container.py recharged-wfc-srv:test "$EXPECTED_REVISION"
 
       - name: Log in to GitHub Container Registry
         if: github.event_name != 'pull_request'

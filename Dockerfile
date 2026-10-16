@@ -7,20 +7,27 @@ COPY src ./src
 ARG GIT_COMMIT=unknown
 RUN GIT_COMMIT="$GIT_COMMIT" cargo build --locked --release
 
-FROM debian:bookworm-slim AS runtime
+FROM postgres:18-bookworm AS runtime
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends curl tini \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /app/target/release/recharged-wfc-srv /usr/local/bin/recharged-wfc-srv
+COPY --chmod=755 docker/entrypoint.sh /usr/local/bin/start-server
 
 ARG GIT_COMMIT=unknown
 LABEL org.opencontainers.image.title="recharged-wfc-srv" \
     org.opencontainers.image.revision="$GIT_COMMIT"
 
-USER 10001:10001
-ENV PORT=8080
+ENV PORT=8080 \
+    POSTGRES_DB=recharged_wfc \
+    POSTGRES_USER=recharged_wfc \
+    POSTGRES_INITDB_ARGS="--auth-host=scram-sha-256"
+# PostgreSQL's base image provides PGDATA and the /var/lib/postgresql volume.
 EXPOSE 8080
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD curl --fail --silent --show-error --max-time 3 "http://127.0.0.1:${PORT}/status" || exit 1
-ENTRYPOINT ["/usr/local/bin/recharged-wfc-srv"]
+STOPSIGNAL SIGTERM
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD pg_isready -q -h 127.0.0.1 -p 5432 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+        && curl --fail --silent --show-error --max-time 3 "http://127.0.0.1:${PORT}/status" || exit 1
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/start-server"]
+CMD []

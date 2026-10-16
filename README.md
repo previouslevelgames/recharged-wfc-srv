@@ -1,118 +1,81 @@
 # recharged-wfc-srv
 
-Minimal Rust/Axum foundation for a reimplementation of
-[WiiLink WFC](https://github.com/WiiLink24/wfc-server/). Currently implements only
-`GET /status`; game handshakes, authentication and matchmaking are future work.
-PostgreSQL is provisioned for future APIs; the application has no database driver,
-schema or queries yet. Status reports application liveness, not database health.
+Rust backend for a reimplementation of [WiiLink WFC](https://github.com/WiiLink24/wfc-server/).
+One container runs the API and PostgreSQL 18. Currently, `GET /status` returns
+`{"status":"ok","revision":"<Git commit SHA>"}`. Game APIs are future work.
 
-## Run locally
+## Unraid setup
 
-Requires Rust 1.95 or newer:
+In **Docker → Add Container**, enable **Advanced View** and use these settings:
 
-```bash
-cargo run --locked
-```
-
-In another terminal:
-
-```bash
-curl http://localhost:8080/status
-cargo fmt --check
-cargo clippy --locked --all-targets -- -D warnings
-cargo test --locked
-```
-
-Response: `{"status":"ok","revision":"<full Git commit SHA>"}`.
-The revision is compiled into the binary. Local builds use Git HEAD; builds before
-the first commit or without Git metadata report `unknown`. Uncommitted edits are
-based on the reported commit. `GIT_COMMIT` can override the revision **at build
-time**; changing container environment variables cannot change it. `PORT` sets the
-listening port (default `8080`, all interfaces). Routes live in `src/lib.rs`.
-
-## Images and automatic updates
-
-This project is hosted at [previouslevelgames/recharged-wfc-srv](https://github.com/previouslevelgames/recharged-wfc-srv).
-The **Publish server image** Action checks Rust, builds Linux/AMD64, and tests the
-status endpoint before publishing to GHCR. Pushes to `master`/`main` and manual
-runs publish `sha-<full-commit>`; the default branch also publishes `latest`.
-Pull requests run the checks without publishing. The image name follows the
-GitHub repository; adjust `SERVER_IMAGE` if using a different owner or repo name.
-
-After the first successful run, make the GHCR package public in its package
-settings for credential-free pulls. For a private package, authenticate on Unraid
-with `docker login ghcr.io` using a GitHub token with `read:packages`.
-[GHCR authentication](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry).
-
-As in `data-tracker`, install
-[CA Auto Update Applications](https://github.com/Squidly271/ca.update.applications)
-in Unraid, enable updates for the server container, and choose a schedule. It pulls
-new `latest` images and recreates the container with its saved configuration.
-To roll back, set Repository to `ghcr.io/previouslevelgames/recharged-wfc-srv:sha-<full-commit>`
-and apply. Disable automatic updates for the pinned container.
-
-## Unraid container settings
-
-Create a Docker network once with `docker network create recharged-wfc`, then add
-both containers through **Docker → Add Container** with network `recharged-wfc`.
-Enable Autostart for both.
-
-| Server setting | Value |
+| Setting | Value |
 |---|---|
 | Name | `recharged-wfc-srv` |
 | Repository | `ghcr.io/previouslevelgames/recharged-wfc-srv:latest` |
-| Network | `recharged-wfc` |
-| TCP port | Host `8080` → container `8080` (choose another host port if occupied) |
-| Variable `PORT` | `8080` (already the image default) |
+| Network | `bridge` |
+| Port | Config Type **Port**: Container Port `8080`, Host Port `8080` (any free port), TCP |
+| Path | Config Type **Path**: Container Path `/var/lib/postgresql`, Host Path `/mnt/user/appdata/recharged-wfc-srv/postgres`, Access Mode **Read/Write** |
 | WebUI | `http://[IP]:[PORT:8080]/status` |
-| Persistent paths | None; the server is stateless |
+| Extra Parameters (Advanced) | `--stop-timeout=30` |
+| Autostart | Enabled |
 
-| PostgreSQL setting | Value |
-|---|---|
-| Name | `recharged-wfc-postgres` |
-| Repository | `postgres:18-bookworm` |
-| Network | `recharged-wfc` |
-| Path, Read/Write | Host `/mnt/user/appdata/recharged-wfc-srv/postgres` → container `/var/lib/postgresql` |
-| Variable `POSTGRES_DB` | `recharged_wfc` |
-| Variable `POSTGRES_USER` | `recharged_wfc` |
-| Variable `POSTGRES_PASSWORD` | Generate with `openssl rand -hex 32` |
-| TCP port | Internal `5432`; no host mapping needed |
+## Environment variables
 
-Future API code can connect to `recharged-wfc-postgres:5432` on this network
-(`postgres:5432` with Compose), using the database credentials above. PostgreSQL
-18 stores its cluster under `/var/lib/postgresql/18/docker`, inside the mapped
-directory. These credentials initialize an empty data directory; changing the
-environment later does not change existing database credentials. Keep the major
-version at 18 until performing a database migration.
-[PostgreSQL image documentation](https://hub.docker.com/_/postgres).
+Configure these directly in the Unraid container editor; no `.env` file is needed.
+Choose **Add another Path, Port, Variable, Label or Device → Config Type: Variable**,
+enter the **Key** and **Value** from the table, and set **Password Mask: Yes** for
+`POSTGRES_PASSWORD`. Optional variables already have defaults in the image.
 
-Check the deployed revision with `curl http://<unraid-ip>:8080/status`.
+| Variable (Key) | Required | Value |
+|---|---|---|
+| `POSTGRES_PASSWORD` | yes | Generate a password in the Unraid terminal with `openssl rand -hex 32` and paste the output. Keep it across container updates. |
+| `POSTGRES_DB` | no | Database name. Default: `recharged_wfc`. |
+| `POSTGRES_USER` | no | Database user. Default: `recharged_wfc`. |
+| `PORT` | no | API port inside the container. Default: `8080`; use the Host Port mapping to choose the external port. |
 
-## Docker Compose alternative
+PostgreSQL starts automatically and keeps its files in the mapped host folder,
+including across image updates. Leave `PGDATA` at its image default,
+`/var/lib/postgresql/18/docker`, beneath the mapped container path.
+`POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD` initialize an empty data
+folder; changing them later does not update an existing database or its credentials.
 
-Copy `docker-compose.yml` and `.env.example` to a directory on Unraid (or clone the
-repository). Docker Compose must be installed.
+If replacing the earlier two-container setup, stop its PostgreSQL container before
+reusing the same host folder.
+
+Click **Apply**. The container starts PostgreSQL on internal `127.0.0.1:5432`, then
+the API. Open `http://<unraid-ip>:8080/status` (using your Host Port) to check the
+running revision. The container health check checks both services.
+
+## Updates
+
+Enable **CA Auto Update Applications** for this container to deploy new `latest`
+images automatically. GitHub Actions builds and tests each push to `master`/`main`;
+the default branch publishes `latest`. For rollback, use `sha-<full-commit>`.
+Make the [GHCR package public](https://github.com/orgs/previouslevelgames/packages/container/recharged-wfc-srv/settings)
+for pulls without credentials, or run `docker login ghcr.io` on Unraid.
+
+## Docker Compose
 
 ```bash
 cp .env.example .env
-# Edit .env: set POSTGRES_PASSWORD and, on Unraid,
-# POSTGRES_DATA_DIR=/mnt/user/appdata/recharged-wfc-srv/postgres
+# Set POSTGRES_PASSWORD and POSTGRES_DATA_DIR in .env.
 docker compose pull
 docker compose up -d --no-build --wait
 ```
 
-`HTTP_PORT` controls the host port; `POSTGRES_DATA_DIR` controls the persistent
-database folder. Compose keeps PostgreSQL on its internal network. To update a
-Compose-managed deployment, run these commands manually or from an Unraid User
-Scripts schedule in the directory containing the Compose file:
+For Compose, `POSTGRES_DATA_DIR` sets the **host** folder and `HTTP_PORT` sets the
+host HTTP port. In Unraid, use the **Path** and **Port** mappings above.
+Repeat the last two commands to update. To build locally instead, run
+`./scripts/build.sh` before `docker compose up -d --no-build --wait`.
 
-```bash
-docker compose pull server
-docker compose up -d --no-build --no-deps --wait server
-```
+## Development
 
-For a local image build, run `./scripts/build.sh`, then
-`docker compose up -d --no-build --wait`. If you changed `SERVER_IMAGE` in `.env`,
-also export it when running the build helper. The helper embeds the current Git commit;
-a direct Docker build should pass `--build-arg GIT_COMMIT="$(git rev-parse HEAD)"`.
-Database files survive container replacement in the configured host folder.
+Rust 1.95+: `cargo run --locked`. Check with `cargo fmt --check`,
+`cargo clippy --locked --all-targets -- -D warnings`, and `cargo test --locked`.
+The standalone Rust process serves status without starting PostgreSQL; the image
+entrypoint manages the database. Database APIs and a Rust driver are still to be added.
+The container supplies `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, and `PGDATABASE`
+to the Rust process for future connections. Routes live in `src/lib.rs`.
+
+The Git revision is embedded at build time, automatically by the image workflow
+and build helper. Native builds use Git HEAD, or `unknown` without Git metadata.
