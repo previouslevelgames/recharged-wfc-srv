@@ -14,7 +14,7 @@ In **Docker → Add Container**, enable **Advanced View** and use these settings
 | Repository | `ghcr.io/previouslevelgames/recharged-wfc-srv:latest` |
 | Network | `bridge` |
 | Port | Config Type **Port**: Container Port `8080`, Host Port `8080` (any free port), TCP |
-| Path | Config Type **Path**: Container Path `/var/lib/postgresql`, Host Path `/mnt/user/appdata/recharged-wfc-srv/postgres`, Access Mode **Read/Write** |
+| Path (SQL data) | Config Type **Path**: Container Path `/var/lib/postgresql`, Host Path `/mnt/user/appdata/recharged-wfc-srv/postgres`, Access Mode **Read/Write** |
 | WebUI | `http://[IP]:[PORT:8080]/status` |
 | Extra Parameters (Advanced) | `--stop-timeout=30` |
 | Autostart | Enabled |
@@ -31,11 +31,16 @@ enter the **Key** and **Value** from the table, and set **Password Mask: Yes** f
 | `POSTGRES_PASSWORD` | yes | Generate a password in the Unraid terminal with `openssl rand -hex 32` and paste the output. Keep it across container updates. |
 | `POSTGRES_DB` | no | Database name. Default: `recharged_wfc`. |
 | `POSTGRES_USER` | no | Database user. Default: `recharged_wfc`. |
+| `PGDATA` | no | SQL data directory inside the container. Default: `/var/lib/postgresql/18/docker`, beneath the mapped `/var/lib/postgresql` path. Leave unset to use this default. |
 | `PORT` | no | API port inside the container. Default: `8080`; use the Host Port mapping to choose the external port. |
 
-PostgreSQL starts automatically and keeps its files in the mapped host folder,
-including across image updates. Leave `PGDATA` at its image default,
-`/var/lib/postgresql/18/docker`, beneath the mapped container path.
+With the mapping above, the **SQL data lives on your Unraid server at**
+`/mnt/user/appdata/recharged-wfc-srv/postgres/18/docker`.
+To store it elsewhere on the server, choose another **Host Path** for
+**Path (SQL data)**. Keep this mapping when updating or replacing the container
+so the database persists. `PGDATA` refers to a path inside the container;
+keep it at its default for this setup.
+
 `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD` initialize an empty data
 folder; changing them later does not update an existing database or its credentials.
 
