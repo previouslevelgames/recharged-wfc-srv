@@ -1,12 +1,30 @@
-use std::{env, error::Error};
+use std::{
+    env,
+    error::Error,
+    io::{self, IsTerminal},
+};
+
+use tracing::info;
+use tracing_subscriber::EnvFilter;
+
+fn init_tracing() {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_writer(io::stderr)
+        .with_ansi(io::stderr().is_terminal())
+        .init();
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    init_tracing();
+
     let port: u16 = env::var("PORT")
         .unwrap_or_else(|_| "8080".to_owned())
         .parse()?;
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
-    eprintln!(
+    info!(
         "recharged-wfc-srv listening on {} (revision {})",
         listener.local_addr()?,
         recharged_wfc_srv::REVISION
@@ -39,5 +57,5 @@ async fn shutdown() {
         () = interrupt => {},
         () = terminate => {},
     }
-    eprintln!("Shutting down");
+    info!("Shutting down");
 }
