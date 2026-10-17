@@ -11,7 +11,7 @@ In **Docker → Add Container**, enable **Advanced View** and use these settings
 | Setting | Value |
 |---|---|
 | Name | `recharged-wfc-srv` |
-| Repository | `ghcr.io/previouslevelgames/recharged-wfc-srv:latest` |
+| Repository | `ghcr.io/previouslevelgames/recharged-wfc-srv:stable` |
 | Network | `bridge` |
 | Port | Config Type **Port**: Container Port `8080`, Host Port `8080` (any free port), TCP |
 | Path (SQL data) | Config Type **Path**: Container Path `/var/lib/postgresql`, Host Path `/mnt/user/appdata/recharged-wfc-srv/postgres`, Access Mode **Read/Write** |
@@ -53,9 +53,13 @@ running revision. The container health check checks both services.
 
 ## Updates
 
-Enable **CA Auto Update Applications** for this container to deploy new `latest`
-images automatically. GitHub Actions builds and tests each push to `master`/`main`;
-the default branch publishes `latest`. For rollback, use `sha-<full-commit>`.
+Enable **CA Auto Update Applications** for this container to deploy new `stable`
+images automatically. Develop on `master` and open a pull request into `stable`,
+the default branch. GitHub Actions checks Rust and verifies the container before
+merging; only the repository owner's merge team may merge into `stable`.
+Successful builds on `stable` publish both `stable` and `latest`; development
+pushes and pull requests never publish images. For rollback, use
+`sha-<full-commit>` from a stable build.
 Make the [GHCR package public](https://github.com/orgs/previouslevelgames/packages/container/recharged-wfc-srv/settings)
 for pulls without credentials, or run `docker login ghcr.io` on Unraid.
 

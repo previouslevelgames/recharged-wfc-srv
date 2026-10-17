@@ -2,7 +2,7 @@ name: Publish server image
 
 on:
   push:
-    branches: [master, main]
+    branches: [master, stable]
   pull_request:
   workflow_dispatch:
 
@@ -49,7 +49,8 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=stable,enable=${{ github.ref == 'refs/heads/stable' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/stable' }}
             type=sha,prefix=sha-,format=long
 
       - name: Build image for verification
@@ -71,7 +72,7 @@ jobs:
           python3 scripts/test-container.py recharged-wfc-srv:test "$EXPECTED_REVISION"
 
       - name: Log in to GitHub Container Registry
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/stable'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -79,7 +80,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish verified image
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/stable'
         uses: docker/build-push-action@v7
         with:
           context: .
