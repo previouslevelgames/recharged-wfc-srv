@@ -26,6 +26,10 @@
               rustfmt
               rust-analyzer
               bacon
+              
+              just
+
+              sqlx-cli
             ];
 
             # C libraries used by crates (ex. openssl-sys): pkg-config + buildInputs.
