@@ -61,8 +61,10 @@ images automatically. Releases follow the same process as Recharged:
 2. A release is a pull request from `main` into `stable`, the default branch. It
    also publishes the test image `test-pr<N>` (and `test-pr<N>-<commit>` for
    each commit) to try on a server before merging; the images are removed when
-   the pull request closes. Only the repository owner's merge team may merge
-   into `stable`.
+   the pull request closes. `test` always points to the newest test image, so a
+   test container with the repository
+   `ghcr.io/previouslevelgames/recharged-wfc-srv:test` follows every release
+   pull request. Only the repository owner's merge team may merge into `stable`.
 3. Merging publishes the image `sha-<full-commit>` and drafts the GitHub release
    `v<version>` with the version in `Cargo.toml`. Raise it before the release
    pull request: edit `version`, then run `cargo update --workspace` for
@@ -71,6 +73,10 @@ images automatically. Releases follow the same process as Recharged:
 4. Publishing the draft tags its image `v<version>`, `stable` and `latest`, and
    the auto-update deploys it. For rollback, use an earlier `v<version>` or
    `sha-<full-commit>`.
+
+Give a test container its own **Path (SQL data)** and **Host Port**: the server
+applies its database migrations on start, so a test build would upgrade the
+release container's database.
 
 Make the [GHCR package public](https://github.com/orgs/previouslevelgames/packages/container/recharged-wfc-srv/settings)
 for pulls without credentials, or run `docker login ghcr.io` on Unraid. Removing

@@ -2,7 +2,8 @@ name: Build server image
 
 # Every push and pull request into main runs the checks and verifies the image.
 # A pull request into stable (a release) also publishes its test image
-# test-pr<N>, which test-builds.yml removes when the pull request closes. A push
+# test-pr<N>, which test-builds.yml removes when the pull request closes, and
+# moves the tag test to it for test servers that follow every release. A push
 # to stable (the merged release) publishes the image sha-<commit> once and
 # drafts the release of its version; release.yml tags that image v<version>,
 # stable and latest when the draft is published.
@@ -85,8 +86,9 @@ jobs:
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
           tags=""
           if [ "$EVENT" = pull_request ] && [ "$BASE" = stable ] && [ "$SAME_REPOSITORY" = true ]; then
-            # A release pull request: its newest test image and one per commit.
-            tags="$image:test-pr$PR_NUMBER $image:test-pr$PR_NUMBER-${REVISION:0:12}"
+            # A release pull request: its newest test image, one per commit, and
+            # test, the newest of all release pull requests.
+            tags="$image:test $image:test-pr$PR_NUMBER $image:test-pr$PR_NUMBER-${REVISION:0:12}"
           elif [ "$EVENT" = push ] && [ "$GITHUB_REF" = refs/heads/stable ]; then
             # The merged release; release.yml tags it when the release is published.
             tags="$image:sha-$REVISION"
