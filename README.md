@@ -54,14 +54,28 @@ running revision. The container health check checks both services.
 ## Updates
 
 Enable **CA Auto Update Applications** for this container to deploy new `stable`
-images automatically. Develop on `master` and open a pull request into `stable`,
-the default branch. GitHub Actions checks Rust and verifies the container before
-merging; only the repository owner's merge team may merge into `stable`.
-Successful builds on `stable` publish both `stable` and `latest`; development
-pushes and pull requests never publish images. For rollback, use
-`sha-<full-commit>` from a stable build.
+images automatically. Releases follow the same process as Recharged:
+
+1. Develop on `main`. Every push and pull request into `main` checks Rust and
+   verifies the container; nothing is published.
+2. A release is a pull request from `main` into `stable`, the default branch. It
+   also publishes the test image `test-pr<N>` (and `test-pr<N>-<commit>` for
+   each commit) to try on a server before merging; the images are removed when
+   the pull request closes. Only the repository owner's merge team may merge
+   into `stable`.
+3. Merging publishes the image `sha-<full-commit>` and drafts the GitHub release
+   `v<version>` with the version in `Cargo.toml`. Raise it before the release
+   pull request: edit `version`, then run `cargo update --workspace` for
+   `Cargo.lock`. A version that is already released or drafted is not drafted
+   again.
+4. Publishing the draft tags its image `v<version>`, `stable` and `latest`, and
+   the auto-update deploys it. For rollback, use an earlier `v<version>` or
+   `sha-<full-commit>`.
+
 Make the [GHCR package public](https://github.com/orgs/previouslevelgames/packages/container/recharged-wfc-srv/settings)
-for pulls without credentials, or run `docker login ghcr.io` on Unraid.
+for pulls without credentials, or run `docker login ghcr.io` on Unraid. Removing
+test images needs this repository's **Admin** role under the package's
+**Manage Actions access**.
 
 ## Docker Compose
 
