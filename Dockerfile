@@ -3,6 +3,11 @@ WORKDIR /app
 
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY src ./src
+COPY migrations ./migrations
+# Query descriptions from `just prepare`: the macros check against them, as
+# there is no database during the build.
+COPY .sqlx ./.sqlx
+ENV SQLX_OFFLINE=true
 
 ARG GIT_COMMIT=unknown
 RUN GIT_COMMIT="$GIT_COMMIT" cargo build --locked --release

@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO scores (profile_id, category, region, score, userdata)\n             VALUES ($1, $2, $3, $4, $5)\n             ON CONFLICT (profile_id, category) DO UPDATE\n             SET region = EXCLUDED.region,\n                 score = EXCLUDED.score,\n                 userdata = EXCLUDED.userdata,\n                 updated_at = now()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int4",
+        "Int4",
+        "Int4",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "544e8bbe54c84ca591d8282c7eae3ea047cf2e708a828c6dbc800843792d0839"
+}

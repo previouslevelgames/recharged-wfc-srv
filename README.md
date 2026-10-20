@@ -79,7 +79,9 @@ Repeat the last two commands to update. To build locally instead, run
 
 ## Development
 
-Rust 1.95+: `cargo run --locked`. Check with `cargo fmt --check`,
+Rust 1.95+: `cargo run --locked`. Logs go to stderr, filtered by `RUST_LOG`
+(default `info`): `RUST_LOG=info,tower_http=debug` adds one line per HTTP request,
+`RUST_LOG=info,raw=trace` adds raw protocol dumps. Check with `cargo fmt --check`,
 `cargo clippy --locked --all-targets -- -D warnings`, and `cargo test --locked`.
 The standalone Rust process serves status without starting PostgreSQL; the image
 entrypoint manages the database. Database APIs and a Rust driver are still to be added.

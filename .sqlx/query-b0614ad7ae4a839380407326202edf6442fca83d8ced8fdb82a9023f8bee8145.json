@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO scores (profile_id, category, region, score, userdata, updated_at)\n             VALUES ($1, 0, 2, $2, $3, now() - make_interval(mins => $4))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int4",
+        "Bytea",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b0614ad7ae4a839380407326202edf6442fca83d8ced8fdb82a9023f8bee8145"
+}
