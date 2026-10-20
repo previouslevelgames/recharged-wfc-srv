@@ -21,11 +21,15 @@ fn init_tracing() {
 async fn main() -> Result<(), Box<dyn Error>> {
     init_tracing();
 
+    let admin = recharged_wfc_srv::admin::Config::from_env()?;
+
     // DATABASE_URL in local development; the container provides PG* instead.
     let database = match env::var("DATABASE_URL") {
         Ok(url) => url.parse()?,
         Err(_) => PgConnectOptions::new(),
-    };
+    }
+    // Names the server's connections in pg_stat_activity and on /admin.
+    .application_name("recharged-wfc-srv");
     let pool = PgPoolOptions::new()
         .max_connections(5)
         .connect_with(database)
@@ -42,7 +46,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
         recharged_wfc_srv::REVISION
     );
 
-    axum::serve(listener, recharged_wfc_srv::router(pool))
+    match &admin {
+        Some(config) => info!("Admin dashboard at {}/admin", config.public_url),
+        None => info!(
+            "Admin dashboard disabled: set {} to enable it",
+            recharged_wfc_srv::admin::VARIABLES.join(", ")
+        ),
+    }
+
+    axum::serve(listener, recharged_wfc_srv::router(pool, admin))
         .with_graceful_shutdown(shutdown())
         .await?;
     Ok(())

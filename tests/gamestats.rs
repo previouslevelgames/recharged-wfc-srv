@@ -5,7 +5,7 @@ const GET2: &str = "/mschargedwii/web/client/get2.asp";
 const PUT2: &str = "/mschargedwii/web/client/put2.asp";
 
 async fn get(uri: &str) -> (u16, Vec<u8>) {
-    let response = recharged_wfc_srv::router(lazy_pool())
+    let response = recharged_wfc_srv::router(lazy_pool(), None)
         .oneshot(Request::get(uri).body(Body::empty()).unwrap())
         .await
         .unwrap();
