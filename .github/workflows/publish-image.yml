@@ -17,6 +17,17 @@ jobs:
   check:
     runs-on: ubuntu-latest
     container: rust:1.95-bookworm
+    # For #[sqlx::test]: each test gets a fresh database on this server.
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_PASSWORD: postgres
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 2s
+          --health-timeout 3s
+          --health-retries 30
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -24,6 +35,9 @@ jobs:
       - name: Check Rust
         env:
           GIT_COMMIT: ${{ github.sha }}
+          DATABASE_URL: postgres://postgres:postgres@postgres:5432/postgres
+          # Query macros check against .sqlx/ (`just prepare`), like the image build.
+          SQLX_OFFLINE: "true"
         run: |
           rustup component add rustfmt clippy
           cargo fmt --check
