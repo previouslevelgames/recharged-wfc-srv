@@ -945,7 +945,7 @@ checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 
 [[package]]
 name = "recharged-wfc-srv"
-version = "0.1.0"
+version = "1.0.1"
 dependencies = [
  "axum",
  "base64 0.23.1",
