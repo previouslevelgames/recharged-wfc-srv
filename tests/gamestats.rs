@@ -5,7 +5,7 @@ const GET2: &str = "/mschargedwii/web/client/get2.asp";
 const PUT2: &str = "/mschargedwii/web/client/put2.asp";
 
 async fn get(uri: &str) -> (u16, Vec<u8>) {
-    let response = recharged_wfc_srv::router()
+    let response = recharged_wfc_srv::router(lazy_pool())
         .oneshot(Request::get(uri).body(Body::empty()).unwrap())
         .await
         .unwrap();
@@ -48,4 +48,11 @@ async fn refusals_are_200_with_an_error_body() {
         assert_eq!(status, 200, "{query}");
         assert!(body.starts_with(b"error:"), "{query}");
     }
+}
+
+/// A pool that connects on its first query: these requests never make one.
+fn lazy_pool() -> sqlx::PgPool {
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+
+    PgPoolOptions::new().connect_lazy_with(PgConnectOptions::new())
 }

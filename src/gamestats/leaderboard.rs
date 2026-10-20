@@ -4,13 +4,14 @@
 //! `body` is the ranking body decoded from `data`: a 16-byte header of
 //! little-endian words, then the userdata (put) or the parameters (get).
 //!
-//! Scores live in memory for now, one leaderboard for every region.
+//! Scores live in the `scores` table (`migrations/`), one leaderboard for
+//! every region. A get is two steps: [`Leaderboard::ranked`] has the database
+//! sort and rank a whole category; [`answer`] picks the rows the
+//! request wants and encodes them, without I/O.
 
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Mutex,
-    time::{Duration, SystemTime},
-};
+use std::collections::HashSet;
+
+use sqlx::PgPool;
 
 use super::{GamestatsError, GamestatsState};
 
@@ -37,6 +38,10 @@ pub async fn put(state: &GamestatsState, pid: i32, body: &[u8]) -> Result<Vec<u8
             .try_into()
             .map_err(|_| GamestatsError::BadData)?,
     );
+    // DWCRnkRegion of the player's game: JP, US, EU or KR.
+    if !matches!(region, 1 | 2 | 4 | 8) {
+        return Err(GamestatsError::BadData);
+    }
     let category = u32::from_le_bytes(
         body.get(4..=7)
             .ok_or(GamestatsError::BadData)?
@@ -66,16 +71,10 @@ pub async fn put(state: &GamestatsState, pid: i32, body: &[u8]) -> Result<Vec<u8
     }
     let userdata = &body[16..(16 + size)];
 
-    state.leaderboard.store(
-        category,
-        pid,
-        Entry {
-            region,
-            score,
-            userdata: userdata.to_vec(),
-            updated: SystemTime::now(),
-        },
-    );
+    state
+        .leaderboard
+        .store(category, pid, region, score, userdata)
+        .await?;
     Ok(PUT_REPLY.to_vec())
 }
 
@@ -83,123 +82,164 @@ pub async fn put(state: &GamestatsState, pid: i32, body: &[u8]) -> Result<Vec<u8
 /// `count`, `total` and the rows (or `order`, `total` for ORDER).
 pub async fn get(state: &GamestatsState, pid: i32, body: &[u8]) -> Result<Vec<u8>, GamestatsError> {
     let query = Query::parse(body)?;
-    Ok(state.leaderboard.answer(pid, &query, SystemTime::now()))
+    let board = state
+        .leaderboard
+        .ranked(query.category, query.sort, query.since)
+        .await?;
+    Ok(answer(pid, &query, &board))
 }
 
-/// Scores by category, then by pid: one row per player and category.
-#[derive(Default)]
+/// The `scores` table. Cloned with the state: the pool inside is shared.
+#[derive(Clone)]
 pub struct Leaderboard {
-    boards: Mutex<HashMap<u32, HashMap<i32, Entry>>>,
+    pool: PgPool,
 }
 
-#[derive(Clone, Debug)]
-struct Entry {
-    region: u32,
+/// One row of a ranked board, as `ranked` reads it from `scores`. It keeps
+/// the database's types; `answer` turns them into the protocol's words.
+#[derive(Debug, PartialEq)]
+struct Standing {
+    /// `RANK()`: equal scores share a rank ("1, 2, 2, 4").
+    rank: i64,
+    profile_id: i32,
+    region: i32,
     score: i32,
     userdata: Vec<u8>,
-    updated: SystemTime,
-}
-
-/// A row of a sorted board, with its rank.
-struct Ranked {
-    order: u32,
-    pid: i32,
-    entry: Entry,
+    /// Since `updated_at`, by the database's clock.
+    minutes: i64,
 }
 
 impl Leaderboard {
-    fn store(&self, category: u32, pid: i32, entry: Entry) {
-        self.boards
-            .lock()
-            .unwrap()
-            .entry(category)
-            .or_default()
-            .insert(pid, entry);
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
     }
 
-    fn answer(&self, pid: i32, query: &Query, now: SystemTime) -> Vec<u8> {
-        let board = self.ranked(query.category, query.sort, query.since, now);
-        let total = board.len() as u32;
-
-        let rows: Vec<&Ranked> = match &query.mode {
-            Mode::Order => {
-                // The caller's rank, 0 when not on the board. The game never asks.
-                let order = board
-                    .iter()
-                    .find(|row| row.pid == pid)
-                    .map_or(0, |row| row.order);
-                return words(&[MODE_ORDER, order, total]);
-            }
-            Mode::TopList { limit } => board.iter().take(*limit).collect(),
-            Mode::Near { limit } => {
-                let limit = (*limit).min(board.len());
-                // Centred on the caller; the top of the board when not on it.
-                let start = board.iter().position(|row| row.pid == pid).map_or(0, |at| {
-                    at.saturating_sub(limit / 2).min(board.len() - limit)
-                });
-                board[start..start + limit].iter().collect()
-            }
-            Mode::Friends { limit, friends } => board
-                .iter()
-                .filter(|row| row.pid == pid || friends.contains(&row.pid))
-                .take(*limit)
-                .collect(),
-        };
-
-        let mut reply = words(&[query.mode.code(), rows.len() as u32, total]);
-        for row in rows {
-            let minutes = age(row.entry.updated, now).as_secs() / 60;
-            reply.extend(words(&[
-                row.order,
-                row.pid as u32,
-                row.entry.score as u32,
-                row.entry.region,
-                u32::try_from(minutes).unwrap_or(u32::MAX),
-                row.entry.userdata.len() as u32,
-            ]));
-            reply.extend(&row.entry.userdata);
-        }
-        reply
+    /// Replaces the row of `(pid, category)`, stamped with the database's
+    /// clock.
+    async fn store(
+        &self,
+        category: u32,
+        pid: i32,
+        region: u32,
+        score: i32,
+        userdata: &[u8],
+    ) -> Result<(), GamestatsError> {
+        // `put` has checked category and region: both fit an INTEGER.
+        sqlx::query!(
+            "INSERT INTO scores (profile_id, category, region, score, userdata)
+             VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (profile_id, category) DO UPDATE
+             SET region = EXCLUDED.region,
+                 score = EXCLUDED.score,
+                 userdata = EXCLUDED.userdata,
+                 updated_at = now()",
+            pid,
+            category as i32,
+            region as i32,
+            score,
+            userdata,
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
     }
 
     /// The rows of `category` updated in the last `since` minutes (all of
-    /// them for 0), in `sort` order and ranked: equal scores share a rank
-    /// ("1, 2, 2, 4"), and the earlier update comes first.
-    fn ranked(&self, category: u32, sort: Sort, since: u32, now: SystemTime) -> Vec<Ranked> {
-        let window = Duration::from_secs(u64::from(since) * 60);
-        let mut board: Vec<Ranked> = self
-            .boards
-            .lock()
-            .unwrap()
-            .get(&category)
-            .into_iter()
-            .flatten()
-            .filter(|(_, entry)| since == 0 || age(entry.updated, now) <= window)
-            .map(|(&pid, entry)| Ranked {
-                order: 0,
-                pid,
-                entry: entry.clone(),
-            })
-            .collect();
-
-        board.sort_by(|a, b| {
-            let by_score = a.entry.score.cmp(&b.entry.score);
-            match sort {
-                Sort::Ascending => by_score,
-                Sort::Descending => by_score.reverse(),
+    /// them for 0), ranked by score in `sort` order. Rows that share a rank
+    /// come earlier update first.
+    async fn ranked(
+        &self,
+        category: u32,
+        sort: Sort,
+        since: u32,
+    ) -> Result<Vec<Standing>, GamestatsError> {
+        let category = category as i32;
+        let since = i32::try_from(since).unwrap_or(i32::MAX);
+        // ORDER BY takes no parameter for its direction: one query each.
+        let board = match sort {
+            Sort::Descending => {
+                sqlx::query_as!(
+                    Standing,
+                    r#"SELECT RANK() OVER (ORDER BY score DESC) AS "rank!",
+                              profile_id, region, score, userdata,
+                              floor(extract(epoch FROM now() - updated_at) / 60)::bigint AS "minutes!"
+                       FROM scores
+                       WHERE category = $1
+                         AND ($2 = 0 OR updated_at >= now() - make_interval(mins => $2))
+                       ORDER BY score DESC, updated_at, profile_id"#,
+                    category,
+                    since,
+                )
+                .fetch_all(&self.pool)
+                .await?
             }
-            .then(a.entry.updated.cmp(&b.entry.updated))
-            .then(a.pid.cmp(&b.pid))
-        });
-        for at in 0..board.len() {
-            board[at].order = if at > 0 && board[at].entry.score == board[at - 1].entry.score {
-                board[at - 1].order
-            } else {
-                at as u32 + 1
-            };
-        }
-        board
+            Sort::Ascending => {
+                sqlx::query_as!(
+                    Standing,
+                    r#"SELECT RANK() OVER (ORDER BY score ASC) AS "rank!",
+                              profile_id, region, score, userdata,
+                              floor(extract(epoch FROM now() - updated_at) / 60)::bigint AS "minutes!"
+                       FROM scores
+                       WHERE category = $1
+                         AND ($2 = 0 OR updated_at >= now() - make_interval(mins => $2))
+                       ORDER BY score ASC, updated_at, profile_id"#,
+                    category,
+                    since,
+                )
+                .fetch_all(&self.pool)
+                .await?
+            }
+        };
+        Ok(board)
     }
+}
+
+/// Picks the rows of a ranked `board` that `query` asks for, as seen by
+/// `pid`, and encodes the reply.
+fn answer(pid: i32, query: &Query, board: &[Standing]) -> Vec<u8> {
+    let total = board.len() as u32;
+
+    let rows: Vec<&Standing> = match &query.mode {
+        Mode::Order => {
+            // The caller's rank, 0 when not on the board. The game never asks.
+            let rank = board
+                .iter()
+                .find(|row| row.profile_id == pid)
+                .map_or(0, |row| row.rank as u32);
+            return words(&[MODE_ORDER, rank, total]);
+        }
+        Mode::TopList { limit } => board.iter().take(*limit).collect(),
+        Mode::Near { limit } => {
+            let limit = (*limit).min(board.len());
+            // Centred on the caller; the top of the board when not on it.
+            let start = board
+                .iter()
+                .position(|row| row.profile_id == pid)
+                .map_or(0, |at| {
+                    at.saturating_sub(limit / 2).min(board.len() - limit)
+                });
+            board[start..start + limit].iter().collect()
+        }
+        Mode::Friends { limit, friends } => board
+            .iter()
+            .filter(|row| row.profile_id == pid || friends.contains(&row.profile_id))
+            .take(*limit)
+            .collect(),
+    };
+
+    let mut reply = words(&[query.mode.code(), rows.len() as u32, total]);
+    for row in rows {
+        reply.extend(words(&[
+            row.rank as u32,
+            row.profile_id as u32,
+            row.score as u32,
+            row.region as u32,
+            u32::try_from(row.minutes.max(0)).unwrap_or(u32::MAX),
+            row.userdata.len() as u32,
+        ]));
+        reply.extend(&row.userdata);
+    }
+    reply
 }
 
 const MODE_ORDER: u32 = 0;
@@ -319,11 +359,6 @@ fn words(values: &[u32]) -> Vec<u8> {
         .collect()
 }
 
-/// How long ago `updated` was; zero if the clock went back since.
-fn age(updated: SystemTime, now: SystemTime) -> Duration {
-    now.duration_since(updated).unwrap_or_default()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,29 +371,34 @@ mod tests {
         body
     }
 
+    fn put_body(category: u32, score: u32, fill: u8) -> Vec<u8> {
+        let mut body = words(&[2, category, score, 128]);
+        body.extend([fill; 128]);
+        body
+    }
+
     fn friends_params(limit: u32, friends: &[i32]) -> Vec<u32> {
         let mut params = vec![DESCENDING, limit, 0];
         params.extend((0..FRIEND_SLOTS).map(|slot| friends.get(slot).map_or(0, |&pid| pid as u32)));
         params
     }
 
-    /// A board of category 0 where pid `n` (1-based) has score `scores[n - 1]`,
-    /// updated `minutes_ago[n - 1]` minutes before `now`.
-    fn board(scores: &[i32], minutes_ago: &[u64], now: SystemTime) -> Leaderboard {
-        let leaderboard = Leaderboard::default();
-        for (at, (&score, &minutes)) in scores.iter().zip(minutes_ago).enumerate() {
-            leaderboard.store(
-                0,
-                at as i32 + 1,
-                Entry {
-                    region: 2,
-                    score,
-                    userdata: vec![at as u8; 128],
-                    updated: now - Duration::from_secs(minutes * 60),
-                },
-            );
-        }
-        leaderboard
+    /// A board as `ranked` returns it for descending `scores`, where pid `n`
+    /// (1-based) has score `scores[n - 1]`.
+    fn board(scores: &[i32]) -> Vec<Standing> {
+        scores
+            .iter()
+            .enumerate()
+            .map(|(at, &score)| Standing {
+                // RANK(): one more than the rows with a better score.
+                rank: scores.iter().filter(|&&other| other > score).count() as i64 + 1,
+                profile_id: at as i32 + 1,
+                region: 2,
+                score,
+                userdata: vec![at as u8; 128],
+                minutes: 0,
+            })
+            .collect()
     }
 
     /// `(mode, total, rows as (order, pid, score))` of a list reply; checks the
@@ -380,6 +420,29 @@ mod tests {
         }
         assert_eq!(at, reply.len());
         (word(reply, 0).unwrap(), word(reply, 2).unwrap(), rows)
+    }
+
+    /// `(rank, pid, score)` of a board.
+    fn ranks(board: &[Standing]) -> Vec<(i64, i32, i32)> {
+        board
+            .iter()
+            .map(|row| (row.rank, row.profile_id, row.score))
+            .collect()
+    }
+
+    /// A season row stored `minutes_ago` minutes before the database's now.
+    async fn insert(pool: &PgPool, pid: i32, score: i32, minutes_ago: i32) {
+        sqlx::query!(
+            "INSERT INTO scores (profile_id, category, region, score, userdata, updated_at)
+             VALUES ($1, 0, 2, $2, $3, now() - make_interval(mins => $4))",
+            pid,
+            score,
+            &[0u8; 128][..],
+            minutes_ago,
+        )
+        .execute(pool)
+        .await
+        .unwrap();
     }
 
     #[test]
@@ -418,40 +481,25 @@ mod tests {
     fn an_empty_board_answers_an_empty_list() {
         // The payload of codec's `signs_an_empty_near_list`.
         let query = Query::parse(&get_body(1, MODE_NEAR, &[DESCENDING, 10, 382])).unwrap();
-        let reply = Leaderboard::default().answer(1, &query, SystemTime::now());
-        assert_eq!(reply, [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(answer(1, &query, &[]), [2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
     }
 
     #[test]
-    fn toplist_ranks_best_first_and_ties_share_a_rank() {
-        let now = SystemTime::now();
-        // Pids 2 and 3 tie; 3 was updated first.
-        let leaderboard = board(&[10, 40, 40, 20], &[1, 2, 3, 4], now);
+    fn toplist_takes_the_first_rows() {
         let query = Query::parse(&get_body(0, MODE_TOPLIST, &[DESCENDING, 3, 0])).unwrap();
-        let (mode, total, rows) = read_list(&leaderboard.answer(1, &query, now));
+        let (mode, total, rows) = read_list(&answer(9, &query, &board(&[40, 40, 20, 10])));
         assert_eq!((mode, total), (MODE_TOPLIST, 4));
-        assert_eq!(rows, [(1, 3, 40), (1, 2, 40), (3, 4, 20)]);
-    }
-
-    #[test]
-    fn since_keeps_recent_rows_only() {
-        let now = SystemTime::now();
-        let leaderboard = board(&[10, 20, 30], &[30, 382, 383], now);
-        let query = Query::parse(&get_body(0, MODE_TOPLIST, &[DESCENDING, 10, 382])).unwrap();
-        let (_, total, rows) = read_list(&leaderboard.answer(1, &query, now));
-        assert_eq!(total, 2);
-        assert_eq!(rows, [(1, 2, 20), (2, 1, 10)]);
+        assert_eq!(rows, [(1, 1, 40), (1, 2, 40), (3, 3, 20)]);
     }
 
     #[test]
     fn near_is_a_window_around_the_caller() {
-        let now = SystemTime::now();
         // Pid n scores 100 - n: pid 1 is first, pid 10 last.
         let scores: Vec<i32> = (1..=10).map(|pid| 100 - pid).collect();
-        let leaderboard = board(&scores, &[0; 10], now);
+        let board = board(&scores);
         let query = Query::parse(&get_body(0, MODE_NEAR, &[DESCENDING, 4, 0])).unwrap();
         let ranks = |pid| -> Vec<u32> {
-            read_list(&leaderboard.answer(pid, &query, now))
+            read_list(&answer(pid, &query, &board))
                 .2
                 .iter()
                 .map(|row| row.0)
@@ -466,28 +514,79 @@ mod tests {
 
     #[test]
     fn friends_lists_the_caller_and_their_friends_with_global_ranks() {
-        let now = SystemTime::now();
-        let leaderboard = board(&[50, 40, 30, 20], &[0; 4], now);
         let query = Query::parse(&get_body(0, MODE_FRIENDS, &friends_params(10, &[4, 2]))).unwrap();
-        let (mode, total, rows) = read_list(&leaderboard.answer(3, &query, now));
+        let (mode, total, rows) = read_list(&answer(3, &query, &board(&[50, 40, 30, 20])));
         assert_eq!((mode, total), (MODE_FRIENDS, 4));
         assert_eq!(rows, [(2, 2, 40), (3, 3, 30), (4, 4, 20)]);
     }
 
     #[tokio::test]
-    async fn a_put_replaces_the_row_and_a_get_returns_it() {
-        let state = GamestatsState::default();
-        let put_body = |score: u32, fill: u8| {
-            let mut body = words(&[2, 1, score, 128]);
-            body.extend([fill; 128]);
-            body
-        };
+    async fn refuses_puts_the_game_would_not_send() {
+        // All refused before the database: it is never reached.
+        let state = GamestatsState::without_database();
+        for body in [
+            words(&[2, 1, 100]),
+            words(&[3, 1, 100, 0]),
+            words(&[2, 5, 100, 0]),
+            words(&[2, 1, 1_000_000, 0]),
+            words(&[2, 1, 100, 8, 0]),
+            [words(&[2, 1, 100, 2]), vec![0, 0]].concat(),
+        ] {
+            assert!(put(&state, 7, &body).await.is_err(), "{body:?}");
+        }
+    }
+
+    #[sqlx::test]
+    async fn ranked_sorts_by_score_then_by_update(pool: PgPool) {
+        // Pids 2 and 3 tie; 3 was stored first.
+        for (pid, score, minutes_ago) in [(1, 10, 1), (2, 40, 2), (3, 40, 3), (4, 20, 4)] {
+            insert(&pool, pid, score, minutes_ago).await;
+        }
+        let leaderboard = Leaderboard::new(pool);
+
+        let board = leaderboard.ranked(0, Sort::Descending, 0).await.unwrap();
         assert_eq!(
-            put(&state, 7, &put_body(100, 0xaa)).await.unwrap(),
+            ranks(&board),
+            [(1, 3, 40), (1, 2, 40), (3, 4, 20), (4, 1, 10)]
+        );
+        assert_eq!(board[0].minutes, 3);
+
+        let board = leaderboard.ranked(0, Sort::Ascending, 0).await.unwrap();
+        assert_eq!(
+            ranks(&board),
+            [(1, 1, 10), (2, 4, 20), (3, 3, 40), (3, 2, 40)]
+        );
+
+        assert!(
+            leaderboard
+                .ranked(1, Sort::Descending, 0)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[sqlx::test]
+    async fn since_keeps_recent_rows_only(pool: PgPool) {
+        for (pid, score, minutes_ago) in [(1, 10, 30), (2, 20, 381), (3, 30, 383)] {
+            insert(&pool, pid, score, minutes_ago).await;
+        }
+        let board = Leaderboard::new(pool)
+            .ranked(0, Sort::Descending, 382)
+            .await
+            .unwrap();
+        assert_eq!(ranks(&board), [(1, 2, 20), (2, 1, 10)]);
+    }
+
+    #[sqlx::test]
+    async fn a_put_replaces_the_row_and_a_get_returns_it(pool: PgPool) {
+        let state = GamestatsState::new(pool);
+        assert_eq!(
+            put(&state, 7, &put_body(1, 100, 0xaa)).await.unwrap(),
             PUT_REPLY
         );
         assert_eq!(
-            put(&state, 7, &put_body(130, 0xbb)).await.unwrap(),
+            put(&state, 7, &put_body(1, 130, 0xbb)).await.unwrap(),
             PUT_REPLY
         );
 
@@ -497,19 +596,5 @@ mod tests {
         let (_, total, rows) = read_list(&reply);
         assert_eq!((total, rows), (1, vec![(1, 7, 130)]));
         assert_eq!(reply[12 + 24..], [0xbb; 128]);
-    }
-
-    #[tokio::test]
-    async fn refuses_puts_the_game_would_not_send() {
-        let state = GamestatsState::default();
-        for body in [
-            words(&[2, 1, 100]),
-            words(&[2, 5, 100, 0]),
-            words(&[2, 1, 1_000_000, 0]),
-            words(&[2, 1, 100, 8, 0]),
-            [words(&[2, 1, 100, 2]), vec![0, 0]].concat(),
-        ] {
-            assert!(put(&state, 7, &body).await.is_err(), "{body:?}");
-        }
     }
 }

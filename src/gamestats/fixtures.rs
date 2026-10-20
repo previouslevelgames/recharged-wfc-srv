@@ -88,9 +88,9 @@ fn decodes_the_captured_puts() {
     }
 }
 
-#[tokio::test]
-async fn replays_the_match() {
-    let state = GamestatsState::default();
+#[sqlx::test]
+async fn replays_the_match(pool: sqlx::PgPool) {
+    let state = GamestatsState::new(pool);
     let mut userdata = Vec::new();
     for data in [PUT_P4_SEASON, PUT_P3_SEASON] {
         let (pid, body) = decode_data(data).unwrap();

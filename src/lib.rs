@@ -6,10 +6,10 @@ mod gamestats;
 
 pub const REVISION: &str = env!("BUILD_REVISION");
 
-pub fn router() -> Router {
+pub fn router(pool: sqlx::Pool<sqlx::Postgres>) -> Router {
     Router::new()
         .route("/status", get(status))
-        .merge(gamestats::router())
+        .merge(gamestats::router(pool))
         // One span per request; its events are at `debug` (`RUST_LOG=tower_http=debug`).
         .layer(TraceLayer::new_for_http())
 }

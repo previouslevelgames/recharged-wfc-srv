@@ -38,17 +38,37 @@ const GAME_NAME: &str = "mschargedwii";
 const GAMESTATS_KEY: &str = "DbfBialvJznkQWYuOrRa";
 
 /// State shared by every gamestats2 request. Cloned per request, so it holds
-/// `Arc`s.
-#[derive(Clone, Default)]
+/// `Arc`s (the database pool has its own inside).
+#[derive(Clone)]
 pub struct GamestatsState {
     tokens: Arc<TokenStore>,
-    leaderboard: Arc<Leaderboard>,
+    leaderboard: Leaderboard,
 }
 
-pub fn router() -> Router {
+impl GamestatsState {
+    fn new(pool: sqlx::PgPool) -> Self {
+        Self {
+            tokens: Arc::new(TokenStore::default()),
+            leaderboard: Leaderboard::new(pool),
+        }
+    }
+}
+
+#[cfg(test)]
+impl GamestatsState {
+    /// For tests that never touch the database: the pool connects on the first
+    /// query, so none is needed until then.
+    fn without_database() -> Self {
+        use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+
+        Self::new(PgPoolOptions::new().connect_lazy_with(PgConnectOptions::new()))
+    }
+}
+
+pub fn router(pool: sqlx::Pool<sqlx::Postgres>) -> Router {
     Router::new()
         .route("/{game}/web/client/{endpoint}", get(handle))
-        .with_state(GamestatsState::default())
+        .with_state(GamestatsState::new(pool))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -147,6 +167,8 @@ pub enum GamestatsError {
     PidMismatch,
     /// `data` Base64 is malformed or invalid,
     BadData,
+    /// The database failed. The details go to the log, not to the client.
+    Storage,
 }
 
 impl fmt::Display for GamestatsError {
@@ -157,11 +179,19 @@ impl fmt::Display for GamestatsError {
             Self::BadHash => f.write_str("bad hash"),
             Self::PidMismatch => f.write_str("pid in data differs from the query"),
             Self::BadData => f.write_str("bad data"),
+            Self::Storage => f.write_str("storage"),
         }
     }
 }
 
 impl std::error::Error for GamestatsError {}
+
+impl From<sqlx::Error> for GamestatsError {
+    fn from(error: sqlx::Error) -> Self {
+        warn!(target: "gamestats", %error, "database error");
+        Self::Storage
+    }
+}
 
 impl IntoResponse for GamestatsError {
     fn into_response(self) -> Response {

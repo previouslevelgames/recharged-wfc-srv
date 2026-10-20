@@ -4,6 +4,7 @@ use std::{
     io::{self, IsTerminal},
 };
 
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -20,6 +21,17 @@ fn init_tracing() {
 async fn main() -> Result<(), Box<dyn Error>> {
     init_tracing();
 
+    // DATABASE_URL in local development; the container provides PG* instead.
+    let database = match env::var("DATABASE_URL") {
+        Ok(url) => url.parse()?,
+        Err(_) => PgConnectOptions::new(),
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(5)
+        .connect_with(database)
+        .await?;
+    sqlx::migrate!().run(&pool).await?;
+
     let port: u16 = env::var("PORT")
         .unwrap_or_else(|_| "8080".to_owned())
         .parse()?;
@@ -30,7 +42,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         recharged_wfc_srv::REVISION
     );
 
-    axum::serve(listener, recharged_wfc_srv::router())
+    axum::serve(listener, recharged_wfc_srv::router(pool))
         .with_graceful_shutdown(shutdown())
         .await?;
     Ok(())
