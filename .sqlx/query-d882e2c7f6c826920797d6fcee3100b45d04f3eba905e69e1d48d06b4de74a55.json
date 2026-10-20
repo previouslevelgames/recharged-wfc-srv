@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO scores (profile_id, category, region, score, userdata)\n             VALUES (1, 0, 4, 10, ''), (2, 0, 2, 30, ''), (2, 1, 2, 5, '')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "d882e2c7f6c826920797d6fcee3100b45d04f3eba905e69e1d48d06b4de74a55"
+}

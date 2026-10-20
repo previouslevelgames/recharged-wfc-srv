@@ -2,7 +2,9 @@
 
 Rust backend for a reimplementation of [WiiLink WFC](https://github.com/WiiLink24/wfc-server/).
 One container runs the API and PostgreSQL 18. Currently, `GET /status` returns
-`{"status":"ok","revision":"<Git commit SHA>"}`. Game APIs are future work.
+`{"status":"ok","revision":"<Git commit SHA>"}`, the gamestats2 leaderboards are
+served, and [`/admin`](#admin-dashboard) shows the server and its database to
+admins who sign in with Google.
 
 ## Unraid setup
 
@@ -33,6 +35,10 @@ enter the **Key** and **Value** from the table, and set **Password Mask: Yes** f
 | `POSTGRES_USER` | no | Database user. Default: `recharged_wfc`. |
 | `PGDATA` | no | SQL data directory inside the container. Default: `/var/lib/postgresql/18/docker`, beneath the mapped `/var/lib/postgresql` path. Leave unset to use this default. |
 | `PORT` | no | API port inside the container. Default: `8080`; use the Host Port mapping to choose the external port. |
+| `PUBLIC_URL` | for `/admin` | The HTTPS address browsers use for this server, without a path, e.g. `https://wfc.example.com`. See [Admin dashboard](#admin-dashboard). |
+| `GOOGLE_CLIENT_ID` | for `/admin` | Client ID of the Google OAuth client. |
+| `GOOGLE_CLIENT_SECRET` | for `/admin` | Client secret of the Google OAuth client. Set **Password Mask: Yes**. |
+| `ADMIN_GOOGLE_EMAILS` | for `/admin` | Google addresses allowed in, comma-separated, e.g. `you@gmail.com, teammate@gmail.com`. |
 
 With the mapping above, the **SQL data lives on your Unraid server at**
 `/mnt/user/appdata/recharged-wfc-srv/postgres/18/docker`.
@@ -50,6 +56,39 @@ reusing the same host folder.
 Click **Apply**. The container starts PostgreSQL on internal `127.0.0.1:5432`, then
 the API. Open `http://<unraid-ip>:8080/status` (using your Host Port) to check the
 running revision. The container health check checks both services.
+
+## Admin dashboard
+
+`/admin` shows whether PostgreSQL is healthy, its uptime, size, connections,
+cache hit ratio and transactions per second, the leaderboards by category and
+region, the open connections and their queries, the tables, and the applied
+migrations. It refreshes every 5 seconds. Only the Google accounts in
+`ADMIN_GOOGLE_EMAILS` get in. Without the four `/admin` variables, the server
+runs as before and `/admin` answers 404. With only some of them, the container
+stops at start and its log names the missing ones.
+
+Google signs in only on an HTTPS address (plain HTTP works only for
+`localhost`), so `/admin` needs a public hostname, like offbyone.me. In Cloudflare
+Zero Trust, open your tunnel → **Public Hostname** → **Add**: for example subdomain
+`wfc`, Service Type `HTTP`, URL `<unraid-ip>:8080` (the Host Port). Then sign in at
+`https://wfc.example.com/admin`, never at `http://<unraid-ip>:8080/admin`.
+
+1. In [Google Cloud Console → Credentials](https://console.cloud.google.com/apis/credentials),
+   **Create credentials → OAuth client ID**, type **Web application**. Under
+   **Authorized redirect URIs** add exactly `<PUBLIC_URL>/admin/callback`, e.g.
+   `https://wfc.example.com/admin/callback`. Adding the URI to offbyone.me's
+   client works too, but Google then shows that client's app name when you sign in.
+2. On the **OAuth consent screen**, user type **External** in **Testing** is
+   enough: add every admin as a **test user**. The scopes are only `openid`,
+   `email` and `profile`.
+3. Add the four variables `PUBLIC_URL`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`
+   and `ADMIN_GOOGLE_EMAILS` (see [Environment variables](#environment-variables))
+   and click **Apply**. The log shows `Admin dashboard at https://wfc.example.com/admin`.
+
+Sessions last 12 hours and live in the server's memory: restarting or updating
+the container signs everyone out. To remove an admin, edit `ADMIN_GOOGLE_EMAILS`
+and **Apply**. Turn on 2-step verification for the admin Google accounts, because
+they are the only key to `/admin`.
 
 ## Updates
 
@@ -87,7 +126,8 @@ test images needs this repository's **Admin** role under the package's
 
 ```bash
 cp .env.example .env
-# Set POSTGRES_PASSWORD and POSTGRES_DATA_DIR in .env.
+# Set POSTGRES_PASSWORD and POSTGRES_DATA_DIR in .env, and the /admin variables
+# to enable the admin dashboard.
 docker compose pull
 docker compose up -d --no-build --wait
 ```
@@ -110,3 +150,11 @@ to the Rust process for future connections. Routes live in `src/lib.rs`.
 
 The Git revision is embedded at build time, automatically by the image workflow
 and build helper. Native builds use Git HEAD, or `unknown` without Git metadata.
+
+For `/admin` locally, register `http://127.0.0.1:8080/admin/callback` as another
+redirect URI of the OAuth client, then run with `PUBLIC_URL=http://127.0.0.1:8080`
+and the other three variables, and open `http://127.0.0.1:8080/admin` (not
+`localhost`, so the address matches). The routes, sign-in and queries live in
+`src/admin/`; the page, its script and its styles in `src/admin/assets/`, built
+into the binary. The tests sign in through a fake Google, so they need no
+credentials.

@@ -1,0 +1,109 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT pid AS \"pid!\",\n                  usename::text AS \"user\",\n                  datname::text AS \"database\",\n                  application_name AS \"application!\",\n                  host(client_addr) AS client,\n                  state,\n                  wait_event_type || ': ' || wait_event AS wait,\n                  backend_start AS connected_at,\n                  state_change AS state_since,\n                  left(query, 500) AS query\n           FROM pg_stat_activity\n           WHERE backend_type = 'client backend' AND pid <> pg_backend_pid()\n           ORDER BY state = 'active' DESC NULLS LAST, backend_start",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "pid!",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "pg_stat_activity",
+            "name": "pid"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "user",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "database",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "application!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "pg_stat_activity",
+            "name": "application_name"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "client",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "state",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "pg_stat_activity",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "wait",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "connected_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "pg_stat_activity",
+            "name": "backend_start"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "state_since",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "pg_stat_activity",
+            "name": "state_change"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "query",
+        "type_info": "Text",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      true,
+      null,
+      null,
+      true,
+      null,
+      true,
+      null,
+      true,
+      true,
+      null
+    ]
+  },
+  "hash": "6d94e339ae34a038cf1035ac97cd44df830d089e0dc2aebc0a58a08fe92b7f3c"
+}

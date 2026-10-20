@@ -13,8 +13,9 @@ ARG GIT_COMMIT=unknown
 RUN GIT_COMMIT="$GIT_COMMIT" cargo build --locked --release
 
 FROM postgres:18-bookworm AS runtime
+# ca-certificates: /admin's Google sign-in checks Google's TLS against them.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl tini \
+    && apt-get install -y --no-install-recommends ca-certificates curl tini \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /app/target/release/recharged-wfc-srv /usr/local/bin/recharged-wfc-srv

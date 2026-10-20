@@ -1,0 +1,69 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT version,\n                  description,\n                  installed_on,\n                  success,\n                  execution_time / 1000000 AS \"execution_ms!\"\n           FROM _sqlx_migrations\n           ORDER BY version",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "version",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "_sqlx_migrations",
+            "name": "version"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "description",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "_sqlx_migrations",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "installed_on",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "_sqlx_migrations",
+            "name": "installed_on"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "success",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "_sqlx_migrations",
+            "name": "success"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "execution_ms!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "cee652a386c22a13aada47a92e9c42a9d5aeb67d218fbc2b2b185a899f9c529c"
+}

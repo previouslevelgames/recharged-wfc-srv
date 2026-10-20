@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="robots" content="noindex">
+  <title>Admin · Recharged WFC</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%232a78d6'/%3E%3Cpath d='M13.5 3 6 13.5h5L10 21l8-11h-5.2z' fill='white'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/admin/admin.css">
+  <script src="/admin/admin.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="/admin">
+        <span class="brand-mark small" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M13.5 3 6 13.5h5L10 21l8-11h-5.2z"/></svg>
+        </span>
+        <span class="brand-text"><strong>Recharged WFC</strong><span>Server admin</span></span>
+      </a>
+      <div class="topbar-end">
+        <span class="live" id="live" data-state="connecting" role="status">
+          <span class="live-dot" aria-hidden="true"></span><span id="live-text">Connecting…</span>
+        </span>
+        <span class="viewer" id="viewer"></span>
+        <form method="post" action="/admin/logout">
+          <button class="button" type="submit">Sign out</button>
+        </form>
+      </div>
+    </div>
+  </header>
+
+  <main class="page">
+    <noscript><p class="notice">The dashboard needs JavaScript.</p></noscript>
+
+    <section id="status" class="status" data-level="pending" aria-live="polite">
+      <span class="status-icon" aria-hidden="true"></span>
+      <div class="status-text"><strong>Loading…</strong><span>Asking the server for its state.</span></div>
+    </section>
+
+    <section id="tiles" class="tiles" aria-label="Key figures"></section>
+
+    <section class="card">
+      <header class="card-head">
+        <h2>Leaderboards</h2>
+        <p>Rows in <code>scores</code>, by category and region</p>
+      </header>
+      <div id="leaderboards" class="table-wrap"></div>
+    </section>
+
+    <section class="card">
+      <header class="card-head">
+        <h2>Connections</h2>
+        <p>Clients of PostgreSQL, besides this dashboard</p>
+      </header>
+      <div id="connections" class="table-wrap"></div>
+    </section>
+
+    <section class="card">
+      <header class="card-head">
+        <h2>Tables</h2>
+        <p>Row counts are PostgreSQL's estimates</p>
+      </header>
+      <div id="tables" class="table-wrap"></div>
+    </section>
+
+    <section class="card">
+      <header class="card-head">
+        <h2>Migrations</h2>
+        <p>Applied by the server when it starts</p>
+      </header>
+      <div id="migrations" class="table-wrap"></div>
+    </section>
+  </main>
+
+  <footer class="page-footer" id="footer"></footer>
+</body>
+</html>
