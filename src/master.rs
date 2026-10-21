@@ -4,22 +4,29 @@
 //! heartbeats a logged-in game sends: without a challenge DWC gives up after
 //! four heartbeats, 10 seconds apart, with error 94020. Each game's last
 //! heartbeat is its session, which a game looking for a match asks the server
-//! browser for (docs/login.md).
+//! browser for (docs/login.md); the server browser's messages to a session
+//! go to its game from here.
 
 use std::{
     collections::HashMap,
     net::SocketAddr,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicU32, Ordering},
+    },
     time::{Duration, Instant},
 };
 
-use tokio::net::UdpSocket;
+use tokio::{net::UdpSocket, sync::oneshot};
 use tracing::{debug, trace};
 
 /// Packet types: the first byte of the game's packets, the third of the
 /// server's (after `FE FD`). The game answers a challenge with one of its own.
 const CHALLENGE: u8 = 0x01;
 const HEARTBEAT: u8 = 0x03;
+/// A message for the game from the server browser, and the game's ack.
+const CLIENT_MESSAGE: u8 = 0x06;
+const CLIENT_MESSAGE_ACK: u8 = 0x07;
 const KEEPALIVE: u8 = 0x08;
 /// The availability check: `09 00 00 00 00`, then the game name and a NUL.
 const AVAILABLE: u8 = 0x09;
@@ -32,13 +39,23 @@ const SESSION_TTL: Duration = Duration::from_secs(90);
 /// Sessions kept at most. A heartbeat from yet another address is still
 /// challenged, but not kept.
 const MAX_SESSIONS: usize = 4096;
+/// A client message is sent again each second until its ack, this often.
+const MESSAGE_TRIES: u32 = 10;
 
 /// The master server's state: the games' sessions, by the address their
 /// heartbeats come from.
 #[derive(Default)]
 pub struct Master {
     sessions: Mutex<HashMap<SocketAddr, Session>>,
+    /// Where client messages go out, once [`Master::serve`] runs.
+    socket: OnceLock<Arc<UdpSocket>>,
+    /// Client messages waiting for their ack.
+    acks: Mutex<HashMap<MessageId, oneshot::Sender<()>>>,
+    next_message: AtomicU32,
 }
+
+/// A client message: the address it went to and its message key.
+type MessageId = (SocketAddr, [u8; 4]);
 
 /// A game's session: its instance key and its last heartbeat's server fields.
 #[derive(Clone, Debug)]
@@ -66,6 +83,7 @@ impl Session {
 
 impl Master {
     pub async fn serve(self: Arc<Self>, socket: UdpSocket) -> std::io::Result<()> {
+        let socket = self.socket.get_or_init(|| Arc::new(socket)).clone();
         let mut packet = [0; 1500];
         loop {
             let (len, peer) = socket.recv_from(&mut packet).await?;
@@ -77,6 +95,46 @@ impl Master {
                 }
             }
         }
+    }
+
+    /// Sends `message` to the game of the session at `to`: `FE FD 06`, its
+    /// instance key, a message key and the message, again each second until
+    /// the game acks it. Whether it did.
+    pub async fn send_client_message(&self, to: SocketAddr, message: &[u8]) -> bool {
+        let (Some(socket), Some(key)) = (
+            self.socket.get(),
+            self.sessions
+                .lock()
+                .unwrap()
+                .get(&to)
+                .map(|session| session.key),
+        ) else {
+            debug!(target: "master", %to, "client message to no session");
+            return false;
+        };
+        let message_key = self
+            .next_message
+            .fetch_add(1, Ordering::Relaxed)
+            .to_be_bytes();
+        let mut packet = reply(CLIENT_MESSAGE, &key);
+        packet.extend_from_slice(&message_key);
+        packet.extend_from_slice(message);
+
+        let (acked, mut ack) = oneshot::channel();
+        self.acks.lock().unwrap().insert((to, message_key), acked);
+        for _ in 0..MESSAGE_TRIES {
+            trace!(target: "raw::master", %to, ?packet, "client message");
+            if let Err(error) = socket.send_to(&packet, to).await {
+                debug!(target: "master", %to, %error, "client message failed");
+                break;
+            }
+            if let Ok(Ok(())) = tokio::time::timeout(Duration::from_secs(1), &mut ack).await {
+                return true;
+            }
+        }
+        self.acks.lock().unwrap().remove(&(to, message_key));
+        debug!(target: "master", %to, "client message not acked");
+        false
     }
 
     /// The sessions of the games heard from lately.
@@ -112,6 +170,13 @@ impl Master {
             KEEPALIVE => {
                 self.seen(key, peer, false);
                 Some(reply(KEEPALIVE, key))
+            }
+            CLIENT_MESSAGE_ACK => {
+                let message_key = body.first_chunk::<4>()?;
+                if let Some(acked) = self.acks.lock().unwrap().remove(&(peer, *message_key)) {
+                    let _ = acked.send(());
+                }
+                None
             }
             _ => {
                 debug!(target: "master", %peer, kind, "not implemented yet");

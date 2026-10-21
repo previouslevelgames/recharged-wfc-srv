@@ -261,6 +261,7 @@ which the server echoes. `statechanged` 2 means the game stops: no answer.
 | `03` heartbeat | `FE FD 01` challenge |
 | `01` challenge response | none (not checked) |
 | `08` keepalive | `FE FD 08 <key>` |
+| `07` client message ack | none; the [message](#messages-to-a-host) is delivered |
 
 ### Sessions
 
@@ -312,10 +313,27 @@ It is encrypted as the client decrypts it (`sb_crypt.c`, `InitCryptKey`): a
 6 `0D ^ EA`, the rest random), then the reply under GOACrypt, keyed with the
 client's challenge mixed with the secret key `B4LdGW` and header bytes 7 to 19.
 Only a lookup by `dwc_pid` finds sessions yet; other filters (matchmaking
-with anybody) get an empty list, and other requests no answer.
+with anybody) get an empty list.
+
+### Messages to a host
+
+With the host's address the friend sends it messages through the server
+browser (type `02`: the session's public IP and port, then the message):
+
+```
+00 25 02 ac110001 d79b SBCM 03000000 06 08 5ba3 ac110001 01ca9a3b c0a80183 2adf 0000
+```
+
+`SBCM` and version 3 are DWC's, then the match command (`06`: the sender's
+addresses and profile, `DWC_MATCH_COMMAND_TELL_ADDR`) and its data; NAT
+negotiation sends its cookie the same way (`FD FC 1E 66 6A B2` first). The
+client gets no answer. The master server sends the message to the session's
+game as a client message, `FE FD 06 <key> <message key, 4 bytes> <message>`,
+again each second until the game acks it (`07 <key> <message key>`), for at
+most 10 seconds; the game drops one it has already had.
 
 ## Not served yet
 
-Matchmaking with anybody (the server browser's other filters), the server
-browser's other requests (messages to a host), NAT negotiation and GPSP. NAS
+Matchmaking with anybody (the server browser's other filters), NAT
+negotiation and GPSP. NAS
 `svcloc` and `/pr` are not used by the game.

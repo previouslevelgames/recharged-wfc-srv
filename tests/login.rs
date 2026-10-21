@@ -1,7 +1,7 @@
 //! Registration and login as the port does them (docs/login.md): NAS
 //! `acctcreate` and `login` over HTTP, GPCM over TCP with friend requests,
 //! the master server's availability check and heartbeats over UDP, and the
-//! server browser's lookup of a host over TCP.
+//! server browser's lookup of a host and its messages to one over TCP.
 
 use std::{collections::HashMap, net::SocketAddr};
 
@@ -322,6 +322,45 @@ async fn the_server_browser_finds_a_hosts_session() {
         found.len(),
         nobody.len()
     );
+}
+
+#[tokio::test]
+async fn the_server_browser_passes_messages_on_until_acked() {
+    let master = Master::start().await;
+    master
+        .send(b"\x03\x01\x02\x03\x04localip0\x00192.168.1.131\x00localport\x0051021\x00statechanged\x001\x00gamename\x00mschargedwii\x00dwc_pid\x001000000000\x00\x00\x00")
+        .await;
+
+    // The port's message to its host: a match command (SBCM), command 6.
+    let message: &[u8] = b"SBCM\x03\x00\x00\x00\x06\x08\x5b\xa3\xac\x11\x00\x01\x01\xca\x9a\x3b\xc0\xa8\x01\x83\x2a\xdf\x00\x00";
+    let host = master.client.local_addr().unwrap();
+    let mut request = vec![0, 0, 2, 127, 0, 0, 1];
+    request.extend_from_slice(&host.port().to_be_bytes());
+    request.extend_from_slice(message);
+    request[1] = request.len() as u8;
+    let mut stream = TcpStream::connect(master.browser).await.unwrap();
+    stream.write_all(&request).await.unwrap();
+
+    // FE FD 06, the instance key, a message key and the message; again
+    // until the game acks it.
+    let mut packet = [0; 1500];
+    let mut keys = Vec::new();
+    for _ in 0..2 {
+        let len = master.client.recv(&mut packet).await.unwrap();
+        assert_eq!(packet[..7], *b"\xFE\xFD\x06\x01\x02\x03\x04");
+        assert_eq!(&packet[11..len], message);
+        keys.push(packet[7..11].to_vec());
+    }
+    assert_eq!(keys[0], keys[1]);
+    let mut ack = b"\x07\x01\x02\x03\x04".to_vec();
+    ack.extend_from_slice(&keys[0]);
+    master.client.send_to(&ack, master.address).await.unwrap();
+    let again = tokio::time::timeout(
+        std::time::Duration::from_millis(1500),
+        master.client.recv(&mut packet),
+    )
+    .await;
+    assert!(again.is_err(), "sent again after the ack");
 }
 
 /// The master server on a local UDP port with its server browser on a TCP

@@ -1,13 +1,14 @@
 //! The server browser (`<game>.ms11.gs.nintendowifi.net`, TCP 28910): lists
 //! the master server's sessions to a game looking for a match. A friend who
 //! got a place in a host's group asks for the host's session by profile
-//! (`dwc_pid = <pid>`) to learn its addresses (docs/login.md). Other
+//! (`dwc_pid = <pid>`) to learn its addresses, then sends the host messages
+//! through it, which the master server passes on (docs/login.md). Other
 //! requests come later: they are read and not answered.
 
 mod crypt;
 
 use std::{
-    net::{Ipv4Addr, SocketAddr},
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
     sync::Arc,
 };
 
@@ -26,6 +27,10 @@ const SECRET_KEY: &[u8] = b"B4LdGW";
 const MAX_REQUEST: usize = 0x1000;
 /// Request types: the third byte, after the request's length.
 const LIST_REQUEST: u8 = 0x00;
+/// A message for a session's game: its public IP and port, then the message.
+const SEND_MESSAGE_REQUEST: u8 = 0x02;
+/// Messages DWC sends are short; WiiLink allows 148 bytes.
+const MAX_MESSAGE: usize = 0x200;
 /// List request options.
 const NO_SERVER_LIST: u32 = 0x02;
 
@@ -46,7 +51,7 @@ pub async fn serve(master: Arc<Master>, listener: TcpListener) -> std::io::Resul
         let (stream, peer) = listener.accept().await?;
         let master = master.clone();
         tokio::spawn(async move {
-            if let Err(error) = connection(&master, stream, peer).await {
+            if let Err(error) = connection(master, stream, peer).await {
                 debug!(target: "serverbrowser", %peer, %error, "connection failed");
             }
         });
@@ -54,7 +59,7 @@ pub async fn serve(master: Arc<Master>, listener: TcpListener) -> std::io::Resul
 }
 
 async fn connection(
-    master: &Master,
+    master: Arc<Master>,
     mut stream: TcpStream,
     peer: SocketAddr,
 ) -> std::io::Result<()> {
@@ -78,7 +83,7 @@ async fn connection(
             }
             let request: Vec<u8> = buffer.drain(..len).collect();
             trace!(target: "raw::serverbrowser", %peer, ?request, "request");
-            if let Some(reply) = answer(master, &request, peer) {
+            if let Some(reply) = answer(&master, &request, peer) {
                 stream.write_all(&reply).await?;
             }
         }
@@ -88,7 +93,7 @@ async fn connection(
     }
 }
 
-fn answer(master: &Master, request: &[u8], peer: SocketAddr) -> Option<Vec<u8>> {
+fn answer(master: &Arc<Master>, request: &[u8], peer: SocketAddr) -> Option<Vec<u8>> {
     match request[2] {
         LIST_REQUEST => {
             let list = ListRequest::parse(request)?;
@@ -100,11 +105,44 @@ fn answer(master: &Master, request: &[u8], peer: SocketAddr) -> Option<Vec<u8>> 
                 &reply,
             ))
         }
+        SEND_MESSAGE_REQUEST => {
+            send_message(master, request, peer);
+            None
+        }
         kind => {
             debug!(target: "serverbrowser", %peer, kind, "not implemented yet");
             None
         }
     }
+}
+
+/// `SEND_MESSAGE_REQUEST`: a message, such as DWC's `SBCM` match commands
+/// and NAT negotiation's cookie, for the game of the session at the public
+/// address given. The master server delivers it; the client hears nothing.
+fn send_message(master: &Arc<Master>, request: &[u8], peer: SocketAddr) {
+    let (Some(ip), Some(port), Some(message)) = (
+        request.get(3..7),
+        request.get(7..9),
+        request
+            .get(9..)
+            .filter(|message| (1..=MAX_MESSAGE).contains(&message.len())),
+    ) else {
+        debug!(target: "serverbrowser", %peer, "bad message");
+        return;
+    };
+    let to = SocketAddr::V4(SocketAddrV4::new(
+        Ipv4Addr::new(ip[0], ip[1], ip[2], ip[3]),
+        u16::from_be_bytes([port[0], port[1]]),
+    ));
+    let kind = match message {
+        [0xFD, 0xFC, ..] => "NAT negotiation cookie",
+        [b'S', b'B', b'C', b'M', ..] => "match command",
+        _ => "other",
+    };
+    info!(target: "serverbrowser", %peer, %to, kind, "message");
+    let master = master.clone();
+    let message = message.to_vec();
+    tokio::spawn(async move { master.send_client_message(to, &message).await });
 }
 
 /// `SERVER_LIST_REQUEST`: after the length and type, the protocol and
