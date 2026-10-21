@@ -1,34 +1,51 @@
-//! `/admin`: a dashboard of the server and its database, behind Google
-//! sign-in.
+//! `/admin`: the dashboard of the WFC server, behind Google sign-in.
 //!
 //! Only the Google accounts in `ADMIN_GOOGLE_EMAILS` get in ([`google`]).
-//! Sessions live in memory ([`session`]). The dashboard is a static page
-//! that polls `/admin/api/overview` ([`overview`]) as JSON.
+//! Sessions live in memory ([`session`]). Every page in [`PAGES`] is the same
+//! static page; its script shows the section for its path and polls that
+//! section's JSON under `/admin/api/` ([`page`]): [`overview`], [`database`]
+//! and [`leaderboards`]. The other sections are planned with the services
+//! they need.
 
 mod config;
+mod database;
 mod google;
+mod leaderboards;
 mod overview;
+mod page;
 mod session;
 
-use std::{sync::Arc, time::Duration};
+use std::{future::Future, sync::Arc, time::Duration};
 
 use axum::{
     Json, Router,
     extract::{Query, State},
-    http::{HeaderMap, HeaderValue, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, Uri, header},
     middleware,
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use time::OffsetDateTime;
 use tracing::{info, warn};
 
 pub use config::{Config, GoogleEndpoints, VARIABLES};
 use google::{Account, Login, SignInError};
+use page::PageData;
 use session::{SESSION_TTL, Sessions};
+
+/// The dashboard's pages, Overview first. The script in `assets/admin.js`
+/// knows the same list.
+const PAGES: [&str; 6] = [
+    "/admin",
+    "/admin/players",
+    "/admin/matchmaking",
+    "/admin/leaderboards",
+    "/admin/moderation",
+    "/admin/database",
+];
 
 const SESSION_COOKIE: &str = "wfc_admin";
 const LOGIN_COOKIE: &str = "wfc_admin_login";
@@ -66,13 +83,18 @@ pub fn router(pool: PgPool, config: Config) -> Router {
         sessions: Sessions::default(),
         started_at: OffsetDateTime::now_utc(),
     });
-    Router::new()
-        .route("/admin", get(home))
+    let mut router = Router::new();
+    for path in PAGES {
+        router = router.route(path, get(home));
+    }
+    router
         .route("/admin/", get(|| async { Redirect::permanent("/admin") }))
         .route("/admin/login", get(login))
         .route("/admin/callback", get(callback))
         .route("/admin/logout", post(logout))
         .route("/admin/api/overview", get(api_overview))
+        .route("/admin/api/database", get(api_database))
+        .route("/admin/api/leaderboards", get(api_leaderboards))
         .route("/admin/admin.css", get(stylesheet))
         .route("/admin/admin.js", get(script))
         .layer(middleware::map_response(security_headers))
@@ -96,13 +118,17 @@ impl AdminState {
             .build()
     }
 
-    fn login_page(&self, status: StatusCode, message: Option<&str>) -> Response {
+    /// The sign-in page, for coming back to `return_to`, one of [`PAGES`].
+    fn login_page(&self, status: StatusCode, message: Option<&str>, return_to: &str) -> Response {
         let message = message
             .map(|message| format!(r#"<p class="notice" role="alert">{}</p>"#, escape(message)))
             .unwrap_or_default();
         // On PUBLIC_URL, where Google returns to, so the sign-in cookie is
         // there too, whichever address shows this page.
-        let login_url = format!("{}/admin/login", self.config.public_url);
+        let mut login_url = format!("{}/admin/login", self.config.public_url);
+        if return_to != PAGES[0] {
+            login_url = format!("{login_url}?next={return_to}");
+        }
         let page = LOGIN_PAGE
             .replace("{{message}}", &message)
             .replace("{{login_url}}", &escape(&login_url));
@@ -128,19 +154,54 @@ impl AdminState {
         }
         Ok(account)
     }
-}
 
-/// The dashboard, or the sign-in page.
-async fn home(State(state): State<Arc<AdminState>>, jar: CookieJar) -> Response {
-    match state.signed_in(&jar) {
-        Some(_) => Html(DASHBOARD_PAGE).into_response(),
-        None => state.login_page(StatusCode::OK, None),
+    /// A page's JSON, with its content from `read`, or 401 when signed out.
+    async fn page_data<T: Serialize>(
+        &self,
+        jar: &CookieJar,
+        read: impl Future<Output = Result<T, sqlx::Error>>,
+    ) -> Response {
+        let Some(viewer) = self.signed_in(jar) else {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "signed out"})),
+            )
+                .into_response();
+        };
+        Json(PageData::read(&self.pool, viewer, self.started_at, read).await).into_response()
     }
 }
 
+/// `path` if it is one of [`PAGES`], else the Overview. Redirects only ever
+/// go to these.
+fn page(path: &str) -> &'static str {
+    PAGES
+        .into_iter()
+        .find(|page| *page == path)
+        .unwrap_or(PAGES[0])
+}
+
+/// The dashboard, or the sign-in page.
+async fn home(State(state): State<Arc<AdminState>>, jar: CookieJar, uri: Uri) -> Response {
+    match state.signed_in(&jar) {
+        Some(_) => Html(DASHBOARD_PAGE).into_response(),
+        None => state.login_page(StatusCode::OK, None, page(uri.path())),
+    }
+}
+
+/// Where to go once signed in.
+#[derive(Deserialize)]
+struct LoginParams {
+    next: Option<String>,
+}
+
 /// Sends the browser to Google, with the sign-in's secrets in a cookie.
-async fn login(State(state): State<Arc<AdminState>>, jar: CookieJar) -> (CookieJar, Redirect) {
-    let login = Login::new();
+async fn login(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    Query(params): Query<LoginParams>,
+) -> (CookieJar, Redirect) {
+    let login = Login::new(page(params.next.as_deref().unwrap_or_default()));
     let cookie = state.cookie(LOGIN_COOKIE, login.to_cookie(), LOGIN_TTL);
     (
         jar.add(cookie),
@@ -164,17 +225,18 @@ async fn callback(
     let login = jar
         .get(LOGIN_COOKIE)
         .and_then(|cookie| Login::from_cookie(cookie.value()));
+    let return_to = page(login.as_ref().map_or("", |login| login.return_to.as_str()));
     let jar = jar.remove(Cookie::build(LOGIN_COOKIE).path("/admin"));
     match state.sign_in(login, params).await {
         Ok(account) => {
             info!(target: "admin", email = %account.email, "signed in");
             let session = state.sessions.open(account);
             let jar = jar.add(state.cookie(SESSION_COOKIE, session, SESSION_TTL));
-            (jar, Redirect::to("/admin")).into_response()
+            (jar, Redirect::to(return_to)).into_response()
         }
         Err(error) => {
             warn!(target: "admin", %error, "sign-in refused");
-            let page = state.login_page(error.status(), Some(&error.message()));
+            let page = state.login_page(error.status(), Some(&error.message()), return_to);
             (jar, page).into_response()
         }
     }
@@ -201,14 +263,15 @@ async fn logout(
 }
 
 async fn api_overview(State(state): State<Arc<AdminState>>, jar: CookieJar) -> Response {
-    let Some(viewer) = state.signed_in(&jar) else {
-        return (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "signed out"})),
-        )
-            .into_response();
-    };
-    Json(overview::collect(&state.pool, viewer, state.started_at).await).into_response()
+    state.page_data(&jar, overview::read(&state.pool)).await
+}
+
+async fn api_database(State(state): State<Arc<AdminState>>, jar: CookieJar) -> Response {
+    state.page_data(&jar, database::read(&state.pool)).await
+}
+
+async fn api_leaderboards(State(state): State<Arc<AdminState>>, jar: CookieJar) -> Response {
+    state.page_data(&jar, leaderboards::read(&state.pool)).await
 }
 
 async fn stylesheet() -> impl IntoResponse {

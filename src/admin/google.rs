@@ -24,7 +24,8 @@ const ISSUERS: [&str; 2] = ["https://accounts.google.com", "accounts.google.com"
 /// Clock skew allowed on `exp`, in seconds.
 const LEEWAY: i64 = 60;
 
-/// The secrets of one sign-in, from `/admin/login` to the callback.
+/// One sign-in, from `/admin/login` to the callback: its secrets, and the
+/// page to show after it.
 pub struct Login {
     /// Goes to Google and comes back: ties the callback to this browser.
     pub state: String,
@@ -32,34 +33,45 @@ pub struct Login {
     verifier: String,
     /// Google copies it into the ID token: ties the token to this sign-in.
     nonce: String,
+    /// A dashboard path. Check it again when it comes back from the cookie.
+    pub return_to: String,
 }
 
 impl Login {
-    pub fn new() -> Self {
+    pub fn new(return_to: &str) -> Self {
         let secret = || Alphanumeric.sample_string(&mut rand::rng(), SECRET_LEN);
         Self {
             state: secret(),
             verifier: secret(),
             nonce: secret(),
+            return_to: return_to.to_owned(),
         }
     }
 
-    /// The cookie value: the three secrets, dot-separated.
+    /// The cookie value: the secrets and the path, dot-separated.
     pub fn to_cookie(&self) -> String {
-        format!("{}.{}.{}", self.state, self.verifier, self.nonce)
+        format!(
+            "{}.{}.{}.{}",
+            self.state, self.verifier, self.nonce, self.return_to
+        )
     }
 
     pub fn from_cookie(value: &str) -> Option<Self> {
         let mut parts = value.split('.');
-        let (Some(state), Some(verifier), Some(nonce), None) =
-            (parts.next(), parts.next(), parts.next(), parts.next())
-        else {
+        let (Some(state), Some(verifier), Some(nonce), Some(return_to), None) = (
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+            parts.next(),
+        ) else {
             return None;
         };
         Some(Self {
             state: state.to_owned(),
             verifier: verifier.to_owned(),
             nonce: nonce.to_owned(),
+            return_to: return_to.to_owned(),
         })
     }
 
@@ -333,14 +345,14 @@ mod tests {
 
     #[test]
     fn a_login_survives_its_cookie() {
-        let login = Login::new();
+        let login = Login::new("/admin/database");
         let back = Login::from_cookie(&login.to_cookie()).unwrap();
         assert_eq!(
-            (back.state, back.verifier, back.nonce),
-            (login.state, login.verifier, login.nonce)
+            (back.state, back.verifier, back.nonce, back.return_to),
+            (login.state, login.verifier, login.nonce, login.return_to)
         );
-        assert!(Login::from_cookie("a.b").is_none());
-        assert!(Login::from_cookie("a.b.c.d").is_none());
+        assert!(Login::from_cookie("a.b.c").is_none());
+        assert!(Login::from_cookie("a.b.c.d.e").is_none());
     }
 
     #[test]
@@ -350,6 +362,7 @@ mod tests {
             state: "state".into(),
             verifier: "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk".into(),
             nonce: "nonce".into(),
+            return_to: "/admin".into(),
         };
         let config = Config::new(
             "https://wfc.example.com",

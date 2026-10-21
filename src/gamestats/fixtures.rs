@@ -2,7 +2,7 @@
 //! dev stack (2026-10-17, game 2 of the series), replayed through decoding and
 //! the leaderboard.
 
-use super::{GamestatsState, codec::decode_data, leaderboard};
+use super::{GamestatsState, codec::decode_data, leaderboard, submission::Submission};
 
 /// put2 from pid 1000000004 ("Gold€nP2☆☆"): season (category 0), score 28,
 /// 2 wins, 0 losses.
@@ -21,17 +21,6 @@ const P4: i32 = 1_000_000_004;
 
 fn word(bytes: &[u8], index: usize) -> u32 {
     u32::from_le_bytes(bytes[index * 4..index * 4 + 4].try_into().unwrap())
-}
-
-/// The player name in a `NetworkRankingSubmission`: UTF-16LE at 0x0E, 11 units,
-/// NUL-terminated.
-fn name(userdata: &[u8]) -> String {
-    let units: Vec<u16> = userdata[0x0E..0x24]
-        .chunks(2)
-        .map(|unit| u16::from_le_bytes([unit[0], unit[1]]))
-        .take_while(|&unit| unit != 0)
-        .collect();
-    String::from_utf16(&units).unwrap()
 }
 
 /// `(order, pid, score, userdata)` of each row of a list reply.
@@ -82,9 +71,15 @@ fn decodes_the_captured_puts() {
             ),
             (17, 10, 2026)
         );
-        assert_eq!((word(userdata, 1), word(userdata, 2)), (wins, losses));
         assert_eq!(u16::from_le_bytes([userdata[0x0C], userdata[0x0D]]), 1);
-        assert_eq!(name(userdata), player);
+        assert_eq!(
+            Submission::parse(userdata),
+            Submission {
+                name: Some(player.to_owned()),
+                wins: Some(wins),
+                losses: Some(losses),
+            }
+        );
     }
 }
 

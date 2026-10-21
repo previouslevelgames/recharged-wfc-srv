@@ -1,0 +1,446 @@
+//! GPCM (`gpcm.gs.nintendowifi.net`, TCP 29900): GameSpy's presence server.
+//! A console logs in with its NAS token and gets the profile of its game
+//! (docs/login.md). On a profile's first login DWC also stores its login id
+//! in the profile's `lastname`, then logs in again.
+//!
+//! Friends and presence come later: their commands are accepted and ignored.
+
+mod message;
+
+use std::{
+    collections::HashMap,
+    net::{IpAddr, SocketAddr},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+};
+
+use md5::{Digest, Md5};
+use rand::distr::{Alphanumeric, SampleString};
+use sqlx::PgPool;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream, tcp::OwnedWriteHalf},
+    sync::Notify,
+};
+use tracing::{debug, info, trace, warn};
+
+use crate::{
+    accounts::{self, Profile},
+    nas::{TicketError, Tickets},
+};
+use message::{Message, split};
+
+/// A client sends short messages: more than this unread means it is not one.
+const MAX_BUFFER: usize = 0x4000;
+/// DWC's partner id: Nintendo.
+const PARTNER_ID: u32 = 11;
+
+/// GPCM's state: who is logged in where.
+pub struct Gpcm {
+    pool: PgPool,
+    tickets: Arc<Tickets>,
+    /// The connection logged in to each profile, to log out by a new login.
+    sessions: Mutex<HashMap<i32, Session>>,
+    next_connection: AtomicU64,
+}
+
+struct Session {
+    connection: u64,
+    kick: Arc<Notify>,
+}
+
+impl Gpcm {
+    pub fn new(pool: PgPool, tickets: Arc<Tickets>) -> Self {
+        Self {
+            pool,
+            tickets,
+            sessions: Mutex::default(),
+            next_connection: AtomicU64::new(1),
+        }
+    }
+
+    pub async fn serve(self: Arc<Self>, listener: TcpListener) -> std::io::Result<()> {
+        loop {
+            let (stream, peer) = listener.accept().await?;
+            let gpcm = self.clone();
+            tokio::spawn(async move {
+                if let Err(error) = gpcm.connection(stream, peer).await {
+                    debug!(target: "gpcm", %peer, %error, "connection failed");
+                }
+            });
+        }
+    }
+
+    async fn connection(
+        self: Arc<Self>,
+        stream: TcpStream,
+        peer: SocketAddr,
+    ) -> std::io::Result<()> {
+        let (mut reader, writer) = stream.into_split();
+        let mut connection = Connection {
+            id: self.next_connection.fetch_add(1, Ordering::Relaxed),
+            peer: peer.ip(),
+            challenge: uppercase(10),
+            writer,
+            login: None,
+        };
+        debug!(target: "gpcm", %peer, "connected");
+        connection
+            .send(
+                &Message::new("lc", 1)
+                    .with("challenge", &connection.challenge)
+                    .with("id", 1),
+            )
+            .await?;
+
+        let mut buffer = Vec::new();
+        let mut chunk = [0; 2048];
+        let result = loop {
+            let kick = connection.login.as_ref().map(|login| login.kick.clone());
+            let read = tokio::select! {
+                read = reader.read(&mut chunk) => read,
+                () = async { kick.unwrap().notified().await }, if kick.is_some() => {
+                    break connection.fail(Error::FORCED_DISCONNECT, None).await;
+                }
+            };
+            let read = match read {
+                Ok(0) => break Ok(()),
+                Ok(read) => read,
+                Err(error) => break Err(error),
+            };
+            buffer.extend_from_slice(&chunk[..read]);
+            if buffer.len() > MAX_BUFFER {
+                break connection.fail(Error::PARSE, None).await;
+            }
+            match self.handle_all(&mut connection, split(&mut buffer)).await {
+                Ok(true) => continue,
+                Ok(false) => break Ok(()),
+                Err(error) => break Err(error),
+            }
+        };
+
+        if let Some(login) = &connection.login {
+            let mut sessions = self.sessions.lock().unwrap();
+            if sessions
+                .get(&login.profile.profile_id)
+                .map(|session| session.connection)
+                == Some(connection.id)
+            {
+                sessions.remove(&login.profile.profile_id);
+            }
+            info!(target: "gpcm", profile_id = login.profile.profile_id, "logged out");
+        }
+        debug!(target: "gpcm", %peer, "disconnected");
+        result
+    }
+
+    /// Handles a read's messages. `Ok(false)` once the connection is done.
+    async fn handle_all(
+        &self,
+        connection: &mut Connection,
+        messages: Vec<Result<Message, ()>>,
+    ) -> std::io::Result<bool> {
+        for message in messages {
+            let Ok(message) = message else {
+                connection.fail(Error::PARSE, None).await?;
+                return Ok(false);
+            };
+            trace!(target: "raw::gpcm", peer = %connection.peer, %message, "message");
+            if !self.handle(connection, message).await? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
+    /// Handles a message. `Ok(false)` once the connection is done.
+    async fn handle(&self, connection: &mut Connection, message: Message) -> std::io::Result<bool> {
+        let id = message.get("id").unwrap_or("1").to_owned();
+        match message.command() {
+            "ka" => connection
+                .send(&Message::new("ka", ""))
+                .await
+                .map(|()| true),
+            "logout" => Ok(false),
+            "login" => match self.log_in(connection, &message).await {
+                Ok(()) => Ok(true),
+                Err(error) => connection.fail(error, Some(&id)).await.map(|()| false),
+            },
+            _ if connection.login.is_none() => connection
+                .fail(Error::NOT_LOGGED_IN, Some(&id))
+                .await
+                .map(|()| false),
+            "getprofile" => {
+                let reply = self.profile_info(connection, &message, &id).await;
+                match reply {
+                    Ok(reply) => connection.send(&reply).await,
+                    Err(error) => connection.fail(error, Some(&id)).await,
+                }
+                .map(|()| true)
+            }
+            "updatepro" => {
+                let login = connection.login.as_mut().unwrap();
+                let (firstname, lastname) = (message.get("firstname"), message.get("lastname"));
+                if let Err(error) =
+                    accounts::set_names(&self.pool, login.profile.profile_id, firstname, lastname)
+                        .await
+                {
+                    warn!(target: "gpcm", %error, "database error");
+                    return connection
+                        .fail(Error::DATABASE, Some(&id))
+                        .await
+                        .map(|()| false);
+                }
+                if let Some(firstname) = firstname {
+                    login.profile.firstname = firstname.to_owned();
+                }
+                if let Some(lastname) = lastname {
+                    login.profile.lastname = lastname.to_owned();
+                }
+                Ok(true)
+            }
+            "status" => {
+                // Kept for `getprofile`; friends will see it once there are
+                // friends.
+                let login = connection.login.as_mut().unwrap();
+                login.locstring = message.get("locstring").unwrap_or_default().to_owned();
+                Ok(true)
+            }
+            command => {
+                debug!(target: "gpcm", command, "not implemented yet");
+                Ok(true)
+            }
+        }
+    }
+
+    /// `\login\`: checks the NAS token and the client's proof, then answers
+    /// with the profile and the server's proof.
+    async fn log_in(&self, connection: &mut Connection, message: &Message) -> Result<(), Error> {
+        let token = message.get("authtoken").filter(|token| !token.is_empty());
+        let (Some(token), Some(client_challenge), Some(response)) =
+            (token, message.get("challenge"), message.get("response"))
+        else {
+            return Err(Error::LOGIN);
+        };
+        let ticket = self.tickets.redeem(token).map_err(|error| match error {
+            TicketError::Invalid => Error::BAD_PREAUTH,
+            TicketError::Expired => Error::EXPIRED_TICKET,
+        })?;
+        let proof = |first: &str, second: &str| proof(&ticket.challenge, token, first, second);
+        if response != proof(client_challenge, &connection.challenge) {
+            return Err(Error::LOGIN);
+        }
+
+        let profile = accounts::profile_login(
+            &self.pool,
+            ticket.user_id,
+            &ticket.gsbrcd,
+            ticket.ingamesn.as_deref(),
+            &connection.peer.to_string(),
+        )
+        .await
+        .map_err(|error| {
+            warn!(target: "gpcm", %error, "database error");
+            Error::DATABASE
+        })?;
+        let sesskey = rand::random_range(10_000_000..300_000_000);
+        let reply = Message::new("lc", 2)
+            .with("sesskey", sesskey)
+            .with("proof", proof(&connection.challenge, client_challenge))
+            .with("userid", profile.user_id)
+            .with("profileid", profile.profile_id)
+            .with("uniquenick", &profile.unique_nick)
+            // The login ticket of SAKE, which this game does not use.
+            .with("lt", Alphanumeric.sample_string(&mut rand::rng(), 24))
+            .with("id", message.get("id").unwrap_or("1"));
+
+        // Take over the profile before answering: once the client has the
+        // answer, a login elsewhere must find this one.
+        info!(target: "gpcm", profile_id = profile.profile_id, user_id = profile.user_id, peer = %connection.peer, "logged in");
+        let kick = Arc::new(Notify::new());
+        let previous = self.sessions.lock().unwrap().insert(
+            profile.profile_id,
+            Session {
+                connection: connection.id,
+                kick: kick.clone(),
+            },
+        );
+        if let Some(previous) = previous.filter(|previous| previous.connection != connection.id) {
+            previous.kick.notify_one();
+        }
+        connection.login = Some(Login {
+            profile,
+            kick,
+            locstring: String::new(),
+        });
+        connection.send(&reply).await.map_err(|_| Error::NETWORK)
+    }
+
+    /// `\getprofile\`: the profile asked for, all of it only for its owner.
+    async fn profile_info(
+        &self,
+        connection: &Connection,
+        message: &Message,
+        id: &str,
+    ) -> Result<Message, Error> {
+        let login = connection.login.as_ref().unwrap();
+        let profile_id: i32 = message
+            .get("profileid")
+            .and_then(|profile_id| profile_id.parse().ok())
+            .ok_or(Error::BAD_PROFILE)?;
+        let (profile, own) = if profile_id == login.profile.profile_id {
+            (login.profile.clone(), true)
+        } else {
+            let profile = accounts::profile(&self.pool, profile_id)
+                .await
+                .map_err(|error| {
+                    warn!(target: "gpcm", %error, "database error");
+                    Error::DATABASE
+                })?
+                .ok_or(Error::BAD_PROFILE)?;
+            (profile, false)
+        };
+        // Others see the game code, not the account.
+        let masked = format!("000000000{}0000000", &profile.gsbrcd[..4]);
+        let (nick, user_id, lastname) = if own {
+            (
+                profile.unique_nick.clone(),
+                profile.user_id,
+                profile.lastname.clone(),
+            )
+        } else {
+            (masked.clone(), 0, masked)
+        };
+        Ok(Message::new("pi", "")
+            .with("profileid", profile.profile_id)
+            .with("nick", &nick)
+            .with("userid", user_id)
+            .with("email", format!("{nick}@nds"))
+            .with("sig", uppercase(32).to_lowercase())
+            .with("uniquenick", &nick)
+            .with("firstname", &profile.firstname)
+            .with("lastname", lastname)
+            .with("pid", PARTNER_ID)
+            .with("lon", "0.000000")
+            .with("lat", "0.000000")
+            .with("loc", if own { login.locstring.as_str() } else { "" })
+            .with("id", id))
+    }
+}
+
+/// A client's connection.
+struct Connection {
+    id: u64,
+    peer: IpAddr,
+    /// Sent on connect; both login proofs include it.
+    challenge: String,
+    writer: OwnedWriteHalf,
+    login: Option<Login>,
+}
+
+struct Login {
+    profile: Profile,
+    /// Notified when another connection logs in to the profile.
+    kick: Arc<Notify>,
+    /// From the last `\status\`.
+    locstring: String,
+}
+
+impl Connection {
+    async fn send(&mut self, message: &Message) -> std::io::Result<()> {
+        trace!(target: "raw::gpcm", peer = %self.peer, %message, "reply");
+        self.writer.write_all(message.to_string().as_bytes()).await
+    }
+
+    /// Sends `error`; the client then gives up the connection.
+    async fn fail(&mut self, error: Error, id: Option<&str>) -> std::io::Result<()> {
+        warn!(target: "gpcm", peer = %self.peer, code = error.code, error = error.message, "refused");
+        let mut message = Message::new("error", "")
+            .with("err", error.code)
+            .with("errmsg", error.message)
+            .with("fatal", "");
+        if let Some(id) = id {
+            message = message.with("id", id);
+        }
+        self.send(&message).await
+    }
+}
+
+/// A GameSpy error. All of these end the connection.
+#[derive(Clone, Copy, Debug)]
+struct Error {
+    code: u16,
+    message: &'static str,
+}
+
+impl Error {
+    const PARSE: Self = Self::new(0x0001, "There was an error parsing an incoming request.");
+    const NOT_LOGGED_IN: Self = Self::new(
+        0x0002,
+        "This request cannot be processed because you are not logged in.",
+    );
+    const DATABASE: Self = Self::new(
+        0x0004,
+        "This request cannot be processed because of a database error.",
+    );
+    const NETWORK: Self = Self::new(0x0005, "There was an error connecting a network socket.");
+    const FORCED_DISCONNECT: Self = Self::new(
+        0x0006,
+        "This profile has been disconnected by another login.",
+    );
+    const LOGIN: Self = Self::new(0x0100, "There was an error logging in to the GP backend.");
+    const BAD_PREAUTH: Self = Self::new(
+        0x010A,
+        "There was an error validating the pre-authentication.",
+    );
+    const EXPIRED_TICKET: Self = Self::new(
+        0x010C,
+        "The login ticket had expired and could not be used.",
+    );
+    const BAD_PROFILE: Self = Self::new(0x0A01, "The profile info was requested on is invalid.");
+
+    const fn new(code: u16, message: &'static str) -> Self {
+        Self { code, message }
+    }
+}
+
+/// A login proof: from the client (`response`) with its challenge first,
+/// from the server (`proof`) with the server's first.
+fn proof(nas_challenge: &str, token: &str, first: &str, second: &str) -> String {
+    let password = md5_hex(nas_challenge);
+    md5_hex(format!(
+        "{password}{}{token}{first}{second}{password}",
+        " ".repeat(48)
+    ))
+}
+
+fn md5_hex(data: impl AsRef<[u8]>) -> String {
+    Md5::digest(data)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn uppercase(len: usize) -> String {
+    (0..len)
+        .map(|_| char::from(rand::random_range(b'A'..=b'Z')))
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn proofs_follow_gamespy() {
+        // printf '%s' ABCDEFGH | md5sum
+        assert_eq!(md5_hex("ABCDEFGH"), "4783e784b4fa2fba9e4d6502dbc64f8f");
+        // p=4783e784b4fa2fba9e4d6502dbc64f8f; printf '%s' "$p$(printf '%48s')NDStokenclientserver$p" | md5sum
+        assert_eq!(
+            proof("ABCDEFGH", "NDStoken", "client", "server"),
+            "6f6368922e17ce1b214fe6f2063f7958"
+        );
+    }
+}

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE profiles\n         SET firstname = coalesce($2, firstname), lastname = coalesce($3, lastname)\n         WHERE profile_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "97dc24586aae3468f2c1009d8e04059f6c4c030ccca13a9448615a1380cfd803"
+}

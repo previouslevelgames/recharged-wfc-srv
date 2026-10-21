@@ -1,5 +1,6 @@
-// The admin dashboard: polls /admin/api/overview and renders it. Everything
-// is built with DOM calls, so values from the database are never parsed as
+// The admin dashboard. Every page under /admin is this script: it shows the
+// section for its path, polls that section's JSON and renders it. Everything
+// is built with DOM calls, so values from the server are never parsed as
 // HTML.
 'use strict';
 
@@ -14,7 +15,100 @@ const CATEGORIES = [
   'Alternate season (EU)',
   'Alternate striker of the day (EU)',
 ];
+// DWCRnkRegion.
+const REGIONS = { 1: 'JP', 2: 'US', 4: 'EU', 8: 'KR' };
 const SEVERITY = ['good', 'warning', 'serious', 'critical'];
+
+const ICONS = {
+  overview: 'M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z',
+  players: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75',
+  matchmaking: 'M5 12.55a11 11 0 0 1 14.08 0M1.42 9a16 16 0 0 1 21.16 0M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01',
+  leaderboards: 'M6 9H4.5a2.5 2.5 0 0 1 0-5H6M18 9h1.5a2.5 2.5 0 0 0 0-5H18M4 22h16M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22M18 2H6v7a6 6 0 0 0 12 0V2z',
+  moderation: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z',
+  database: 'M12 8c4.97 0 9-1.34 9-3s-4.03-3-9-3-9 1.34-9 3 4.03 3 9 3zM21 12c0 1.66-4 3-9 3s-9-1.34-9-3M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5',
+  good: 'M20 6 9 17l-5-5',
+  warning: 'M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z',
+  serious: 'M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z',
+  critical: 'M18 6 6 18M6 6l12 12',
+  pending: 'M12 6v6l4 2',
+};
+
+// The sections, in the order of the server's PAGES (src/admin/mod.rs). A
+// planned section has no data of its own yet: it polls the overview, for
+// the header and footer.
+const SECTIONS = [
+  {
+    path: '/admin',
+    name: 'Overview',
+    icon: 'overview',
+    intro: 'Every part of the WFC server at a glance.',
+    api: 'overview',
+    render: renderOverview,
+  },
+  {
+    path: '/admin/players',
+    group: 'Game',
+    name: 'Players',
+    icon: 'players',
+    intro: 'Accounts and consoles that sign in, their profiles and their friends.',
+    planned: {
+      items: [
+        'Find a player by profile ID, friend code or Mii name',
+        'See their consoles, last sign-in and address',
+        'Browse their friend lists',
+      ],
+      needs: 'NAS sign-in, GPCM profiles and GPSP search',
+    },
+  },
+  {
+    path: '/admin/matchmaking',
+    group: 'Game',
+    name: 'Matchmaking',
+    icon: 'matchmaking',
+    intro: 'Who is online right now, and the matches they play.',
+    planned: {
+      items: [
+        'See the players online and their status',
+        'See the open matches and who is in them',
+        'Spot players whose NAT negotiation fails',
+      ],
+      needs: 'GPCM presence, the QR2 master server and NAT negotiation',
+    },
+  },
+  {
+    path: '/admin/leaderboards',
+    group: 'Game',
+    name: 'Leaderboards',
+    icon: 'leaderboards',
+    intro: 'gamestats2: the scores players put, and who leads each board.',
+    api: 'leaderboards',
+    render: renderLeaderboards,
+  },
+  {
+    path: '/admin/moderation',
+    group: 'Game',
+    name: 'Moderation',
+    icon: 'moderation',
+    intro: 'Keep online play fair.',
+    planned: {
+      items: [
+        'Ban a profile or a console, with a reason and an end date',
+        'Kick a player out of a match',
+        'Remove a leaderboard score',
+      ],
+      needs: 'the Players and Matchmaking sections',
+    },
+  },
+  {
+    path: '/admin/database',
+    group: 'System',
+    name: 'Database',
+    icon: 'database',
+    intro: 'PostgreSQL, where the server keeps its data: health, load and schema.',
+    api: 'database',
+    render: renderDatabase,
+  },
+];
 
 const integer = new Intl.NumberFormat();
 const compact = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 });
@@ -24,18 +118,14 @@ const percent = new Intl.NumberFormat(undefined, { style: 'percent', maximumFrac
 const clock = new Intl.DateTimeFormat(undefined, { timeStyle: 'medium' });
 const dateTime = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 
-const ICONS = {
-  good: 'M20 6 9 17l-5-5',
-  warning: 'M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z',
-  serious: 'M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z',
-  critical: 'M18 6 6 18M6 6l12 12',
-  pending: 'M12 6v6l4 2',
-};
+const section = SECTIONS.find((candidate) => candidate.path === window.location.pathname) || SECTIONS[0];
 
 let timer = null;
-let previous = null; // The last counters, for transactions per second.
+let lastData = null; // For re-rendering on a click, between polls.
+let previous = null; // The last transaction counters.
 let samples = []; // { at, rate } for the sparkline.
 let hover = null; // The pointer's position across the sparkline, 0 to 1.
+let category = 0; // The board whose leaders are shown.
 
 // --- DOM helpers ---------------------------------------------------------
 
@@ -58,11 +148,11 @@ function svg(tag, attributes, ...children) {
   return node;
 }
 
-function icon(level) {
+function icon(name) {
   return svg(
     'svg',
-    { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2.25', 'stroke-linecap': 'round', 'stroke-linejoin': 'round' },
-    svg('path', { d: ICONS[level] || ICONS.pending }),
+    { viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', 'stroke-width': '2', 'stroke-linecap': 'round', 'stroke-linejoin': 'round', 'aria-hidden': 'true' },
+    svg('path', { d: ICONS[name] || ICONS.pending }),
   );
 }
 
@@ -105,7 +195,7 @@ function shortVersion(version) {
   return version.split(' ')[0];
 }
 
-// --- Rendering -----------------------------------------------------------
+// --- Building blocks -----------------------------------------------------
 
 function table(columns, rows, empty) {
   if (!rows.length) return h('p', { class: 'empty' }, empty);
@@ -123,44 +213,203 @@ function table(columns, rows, empty) {
   );
 }
 
-function health(data, now) {
-  const db = data.database;
-  if (!db) {
-    return { level: 'critical', title: 'Database unreachable', detail: data.database_error || 'No answer.' };
-  }
-  const issues = [];
-  const usage = db.open_connections / db.max_connections;
-  if (usage >= 0.9) issues.push(['serious', `Connections at ${percent.format(usage)} of max_connections`]);
-  else if (usage >= 0.75) issues.push(['warning', `Connections at ${percent.format(usage)} of max_connections`]);
-  if (db.migrations.some((migration) => !migration.success)) issues.push(['critical', 'A migration failed']);
-  if (!issues.length) {
-    return {
-      level: 'good',
-      title: 'Database healthy',
-      detail: `PostgreSQL ${shortVersion(db.version)} · ${db.name} · up ${duration(since(db.started_at, now))}`,
-    };
-  }
-  issues.sort((a, b) => SEVERITY.indexOf(b[0]) - SEVERITY.indexOf(a[0]));
-  return {
-    level: issues[0][0],
-    title: issues[0][1],
-    detail: issues.slice(1).map((issue) => issue[1]).join(' · ') || `PostgreSQL ${shortVersion(db.version)} · ${db.name}`,
-  };
+/** A card holding a table, with an optional row of controls above it. */
+function card(title, note, body, tools) {
+  return h(
+    'section',
+    { class: 'card' },
+    h('header', { class: 'card-head' }, h('h2', null, title), note && h('p', null, note)),
+    tools && h('div', { class: 'card-tools' }, tools),
+    h('div', { class: 'table-wrap' }, body),
+  );
 }
 
-function renderStatus(data, now) {
-  const { level, title, detail } = health(data, now);
-  const status = document.getElementById('status');
-  status.dataset.level = level;
-  status.replaceChildren(
-    h('span', { class: 'status-icon', 'aria-hidden': 'true' }, icon(level)),
+function banner({ level, title, detail }) {
+  return h(
+    'section',
+    { class: 'status', 'data-level': level, 'aria-live': 'polite' },
+    h('span', { class: 'status-icon' }, icon(level)),
     h('div', { class: 'status-text' }, h('strong', null, title), h('span', null, detail)),
   );
 }
 
-function tile(label, value, sub, ...extra) {
-  return h('article', { class: 'tile' }, h('span', { class: 'tile-label' }, label), h('span', { class: 'tile-value' }, value), ...extra, h('span', { class: 'tile-sub' }, sub));
+function unreachable(error) {
+  return banner({ level: 'critical', title: 'Database unreachable', detail: error || 'No answer.' });
 }
+
+function tile(label, value, sub, ...extra) {
+  return h(
+    'article',
+    { class: 'tile' },
+    h('span', { class: 'tile-label' }, label),
+    h('span', { class: 'tile-value' }, value),
+    ...extra,
+    h('span', { class: 'tile-sub' }, sub),
+  );
+}
+
+function badge(tone, text) {
+  return h('span', { class: 'badge', 'data-tone': tone }, text);
+}
+
+/** How the database is doing, from its summary. */
+function databaseHealth(db, now) {
+  const issues = [];
+  const usage = db.open_connections / db.max_connections;
+  if (usage >= 0.9) issues.push(['serious', `Connections at ${percent.format(usage)} of max_connections`]);
+  else if (usage >= 0.75) issues.push(['warning', `Connections at ${percent.format(usage)} of max_connections`]);
+  const about = `PostgreSQL ${shortVersion(db.version)} · ${db.name} · up ${duration(since(db.started_at, now))}`;
+  if (!issues.length) return { level: 'good', title: 'Database healthy', detail: about };
+  issues.sort((a, b) => SEVERITY.indexOf(b[0]) - SEVERITY.indexOf(a[0]));
+  return { level: issues[0][0], title: issues[0][1], detail: issues.slice(1).map((issue) => issue[1]).join(' · ') || about };
+}
+
+// --- Overview ------------------------------------------------------------
+
+function serviceCard(target, { tone, status, facts, text, foot }) {
+  return h(
+    'a',
+    { class: 'service', href: target.path, 'data-planned': target.planned ? 'true' : null },
+    h(
+      'div',
+      { class: 'service-head' },
+      h('span', { class: 'service-icon' }, icon(target.icon)),
+      h('strong', null, target.name),
+      badge(tone, status),
+    ),
+    text && h('p', { class: 'service-text' }, text),
+    facts && h('dl', { class: 'service-facts' }, facts.map(([label, value]) => h('div', null, h('dt', null, label), h('dd', null, value)))),
+    foot && h('p', { class: 'service-foot' }, foot),
+  );
+}
+
+function renderOverview(data, now) {
+  const content = data.content;
+  const planned = SECTIONS.filter((target) => target.planned).length;
+  const live = SECTIONS.length - 1 - planned;
+  let status;
+  if (!content) {
+    status = { level: 'critical', title: 'Database unreachable', detail: `The leaderboards are down with it. ${data.error || ''}` };
+  } else {
+    const health = databaseHealth(content.database, now);
+    status = health.level === 'good'
+      ? { level: 'good', title: 'Everything live is running', detail: `${live} sections live · ${planned} planned` }
+      : health;
+  }
+
+  // Live sections first, then the planned ones.
+  const targets = SECTIONS.filter((target) => target.path !== '/admin');
+  const ordered = [...targets.filter((target) => !target.planned), ...targets.filter((target) => target.planned)];
+  const cards = ordered.map((target) => {
+    if (target.planned) {
+      return serviceCard(target, { tone: null, status: 'Planned', text: target.intro, foot: `Needs ${target.planned.needs}` });
+    }
+    if (!content) return serviceCard(target, { tone: 'critical', status: 'Down', text: 'The database does not answer.' });
+    if (target.path === '/admin/database') {
+      const db = content.database;
+      return serviceCard(target, {
+        tone: 'good',
+        status: 'Running',
+        facts: [
+          ['Version', shortVersion(db.version)],
+          ['Size', bytes(db.size_bytes)],
+          ['Connections', `${db.open_connections} / ${db.max_connections}`],
+        ],
+        foot: `PostgreSQL · up ${duration(since(db.started_at, now))}`,
+      });
+    }
+    const boards = content.leaderboards;
+    return serviceCard(target, {
+      tone: 'good',
+      status: 'Live',
+      facts: [
+        ['Entries', count(boards.entries)],
+        ['Players', count(boards.players)],
+        ['Last score', boards.last_put ? ago(boards.last_put, now) : 'none yet'],
+      ],
+      foot: 'gamestats2 · get2.asp and put2.asp',
+    });
+  });
+
+  return [banner(status), h('section', { class: 'services', 'aria-label': 'Sections' }, cards)];
+}
+
+// --- Leaderboards --------------------------------------------------------
+
+function renderLeaderboards(data, now) {
+  const content = data.content;
+  if (!content) return [unreachable(data.error)];
+  const { totals, categories, top } = content;
+
+  const choices = h(
+    'div',
+    { class: 'segmented', role: 'group', 'aria-label': 'Board' },
+    CATEGORIES.map((name, index) =>
+      h(
+        'button',
+        {
+          type: 'button',
+          'aria-pressed': String(index === category),
+          onclick: () => {
+            category = index;
+            render(lastData);
+          },
+        },
+        name,
+      ),
+    ),
+  );
+  const leaders = top.filter((entry) => entry.category === category);
+
+  return [
+    h(
+      'section',
+      { class: 'tiles', 'aria-label': 'Key figures' },
+      tile('Entries', count(totals.entries), 'Rows in scores'),
+      tile('Players', count(totals.players), 'Distinct profile IDs'),
+      tile('Last score', totals.last_put ? ago(totals.last_put, now) : '—', totals.last_put ? dateTime.format(new Date(totals.last_put)) : 'No scores yet'),
+      tile('Boards in use', [`${categories.length}`, h('small', null, `/ ${CATEGORIES.length}`)], 'Categories with scores'),
+    ),
+    card(
+      'Leaders',
+      'The first 10 of a board, ranked as the game ranks them',
+      table(
+        [
+          { label: 'Rank', num: true, cell: (e) => `${e.rank}` },
+          { label: 'Player', cell: (e) => [e.name || 'Unknown', h('span', { class: 'sub' }, `Profile ${e.profile_id}`)] },
+          { label: 'Region', cell: (e) => REGIONS[e.region] || `${e.region}` },
+          { label: 'Score', num: true, cell: (e) => integer.format(e.score) },
+          { label: 'Wins', num: true, cell: (e) => (e.wins == null ? '—' : integer.format(e.wins)) },
+          { label: 'Losses', num: true, cell: (e) => (e.losses == null ? '—' : integer.format(e.losses)) },
+          { label: 'Updated', cell: (e) => ago(e.updated_at, now) },
+        ],
+        leaders,
+        `No scores on ${CATEGORIES[category]} yet.`,
+      ),
+      choices,
+    ),
+    card(
+      'Boards',
+      ['Entries by category and region, from ', h('code', null, 'scores')],
+      table(
+        [
+          { label: 'Category', cell: (c) => [CATEGORIES[c.category] || `Category ${c.category}`, h('span', { class: 'sub' }, `#${c.category}`)] },
+          { label: 'Entries', num: true, cell: (c) => integer.format(c.players) },
+          { label: 'JP', num: true, cell: (c) => integer.format(c.jp) },
+          { label: 'US', num: true, cell: (c) => integer.format(c.us) },
+          { label: 'EU', num: true, cell: (c) => integer.format(c.eu) },
+          { label: 'KR', num: true, cell: (c) => integer.format(c.kr) },
+          { label: 'Top score', num: true, cell: (c) => integer.format(c.top_score) },
+          { label: 'Last score', cell: (c) => ago(c.last_put, now) },
+        ],
+        categories,
+        'No scores yet. They appear after the first match played online.',
+      ),
+    ),
+  ];
+}
+
+// --- Database ------------------------------------------------------------
 
 function sparkline() {
   const rates = samples.map((sample) => sample.rate);
@@ -209,114 +458,157 @@ function sparkline() {
   return box;
 }
 
-function renderTiles(data, now) {
-  const tiles = document.getElementById('tiles');
-  const db = data.database;
+/** Turns the transaction counters into a rate since the last poll. */
+function sample(data) {
+  const db = data.content;
+  if (!db) return;
+  const at = new Date(data.now);
+  const total = db.commits + db.rollbacks;
+  if (previous && total >= previous.total && at > previous.at) {
+    samples.push({ at, rate: (total - previous.total) / ((at - previous.at) / 1000) });
+    samples = samples.slice(-HISTORY);
+  }
+  previous = { at, total };
+}
+
+function renderDatabase(data, now) {
+  const db = data.content;
   const pool = data.server.pool;
   if (!db) {
-    tiles.replaceChildren(
-      tile('Server uptime', duration(since(data.server.started_at, now)), `Revision ${data.server.revision.slice(0, 7)}`),
-      tile('Connection pool', `${pool.size}`, `${pool.idle} idle of ${pool.max} max`),
-    );
-    return;
+    return [
+      unreachable(data.error),
+      h(
+        'section',
+        { class: 'tiles' },
+        tile('Server uptime', duration(since(data.server.started_at, now)), `Revision ${data.server.revision.slice(0, 7)}`),
+        tile('Connection pool', `${pool.size}`, `${pool.idle} idle of ${pool.max} max`),
+      ),
+    ];
   }
 
   const usage = db.open_connections / db.max_connections;
-  const meter = h('div', { class: 'meter', 'data-level': usage >= 0.9 ? 'serious' : usage >= 0.75 ? 'warning' : null, role: 'meter', 'aria-valuemin': 0, 'aria-valuemax': db.max_connections, 'aria-valuenow': db.open_connections, 'aria-label': 'Connections used' }, h('div', { class: 'meter-fill' }));
+  const meter = h(
+    'div',
+    {
+      class: 'meter',
+      'data-level': usage >= 0.9 ? 'serious' : usage >= 0.75 ? 'warning' : null,
+      role: 'meter',
+      'aria-valuemin': 0,
+      'aria-valuemax': db.max_connections,
+      'aria-valuenow': db.open_connections,
+      'aria-label': 'Connections used',
+    },
+    h('div', { class: 'meter-fill' }),
+  );
   meter.firstChild.style.width = `${Math.min(100, usage * 100)}%`;
-
   const blocks = db.blocks_hit + db.blocks_read;
   const rows = db.tables.reduce((sum, table) => sum + table.rows, 0);
-  const entries = db.leaderboards.reduce((sum, board) => sum + board.players, 0);
-  const lastPut = db.leaderboards.map((board) => board.last_put).sort().at(-1);
   const rate = samples.at(-1);
+  const tone = { active: 'accent', 'idle in transaction': 'warning', 'idle in transaction (aborted)': 'critical' };
 
-  tiles.replaceChildren(
-    tile('PostgreSQL uptime', duration(since(db.started_at, now)), `Since ${dateTime.format(new Date(db.started_at))}`),
-    tile('Database size', bytes(db.size_bytes), `${db.tables.length} tables · ≈${count(rows)} rows`),
-    tile('Connections', [`${db.open_connections}`, h('small', null, `/ ${db.max_connections}`)], `${db.active_connections} active · pool ${pool.size}/${pool.max}`, meter),
-    tile('Cache hit ratio', blocks ? percent.format(db.blocks_hit / blocks) : '—', `${count(db.blocks_read)} blocks read from disk`),
-    tile('Transactions', rate ? [rate.rate.toFixed(1), h('small', null, '/s')] : '—', `${count(db.commits)} commits · ${count(db.rollbacks)} rollbacks`, sparkline()),
-    tile('Leaderboard entries', count(entries), lastPut ? ['Last score ', ago(lastPut, now)] : 'No scores yet'),
-  );
+  return [
+    banner(databaseHealth(db, now)),
+    h(
+      'section',
+      { class: 'tiles', 'aria-label': 'Key figures' },
+      tile('Uptime', duration(since(db.started_at, now)), `Since ${dateTime.format(new Date(db.started_at))}`),
+      tile('Size', bytes(db.size_bytes), `${db.tables.length} tables · ≈${count(rows)} rows`),
+      tile('Connections', [`${db.open_connections}`, h('small', null, `/ ${db.max_connections}`)], `${db.active_connections} active · pool ${pool.size}/${pool.max}`, meter),
+      tile('Cache hit ratio', blocks ? percent.format(db.blocks_hit / blocks) : '—', `${count(db.blocks_read)} blocks read from disk`),
+      tile('Transactions', rate ? [rate.rate.toFixed(1), h('small', null, '/s')] : '—', `${count(db.commits)} commits · ${count(db.rollbacks)} rollbacks`, sparkline()),
+    ),
+    card(
+      'Connections',
+      'Clients of PostgreSQL, besides this dashboard',
+      table(
+        [
+          { label: 'PID', num: true, cell: (c) => `${c.pid}` },
+          { label: 'State', cell: (c) => badge(tone[c.state], c.state || 'unknown') },
+          { label: 'For', cell: (c) => (c.state_since ? duration(since(c.state_since, now)) : '—') },
+          { label: 'Application', cell: (c) => [c.application || '—', h('span', { class: 'sub' }, [c.user, c.database].filter(Boolean).join(' @ '))] },
+          { label: 'Client', cell: (c) => c.client || 'local socket' },
+          { label: 'Connected', cell: (c) => (c.connected_at ? ago(c.connected_at, now) : '—') },
+          { label: 'Waiting for', cell: (c) => c.wait || '—' },
+          { label: 'Query', class: 'query', cell: (c) => (c.query ? h('code', { title: c.query }, c.query) : '—') },
+        ],
+        db.connections,
+        'No other connections.',
+      ),
+    ),
+    card(
+      'Tables',
+      "Row counts are PostgreSQL's estimates",
+      table(
+        [
+          { label: 'Table', cell: (t) => h('code', null, t.name) },
+          { label: 'Rows', num: true, cell: (t) => integer.format(t.rows) },
+          { label: 'Size', num: true, cell: (t) => bytes(t.total_bytes) },
+          { label: 'Indexes', num: true, cell: (t) => bytes(t.index_bytes) },
+          { label: 'Dead rows', num: true, cell: (t) => integer.format(t.dead_rows) },
+          { label: 'Seq. scans', num: true, cell: (t) => count(t.seq_scans) },
+          { label: 'Index scans', num: true, cell: (t) => (t.index_scans == null ? '—' : count(t.index_scans)) },
+          { label: 'Vacuumed', cell: (t) => ago(t.last_vacuum, now) },
+          { label: 'Analyzed', cell: (t) => ago(t.last_analyze, now) },
+        ],
+        db.tables,
+        'No tables.',
+      ),
+    ),
+    card(
+      'Migrations',
+      'Applied by the server when it starts',
+      table(
+        [
+          { label: 'Version', cell: (m) => h('code', null, `${m.version}`) },
+          { label: 'Description', cell: (m) => m.description },
+          { label: 'Applied', cell: (m) => ago(m.installed_on, now) },
+          { label: 'Took', num: true, cell: (m) => (m.execution_ms < 1 ? '<1 ms' : `${integer.format(m.execution_ms)} ms`) },
+          { label: 'Status', cell: (m) => badge(m.success ? 'good' : 'critical', m.success ? 'Applied' : 'Failed') },
+        ],
+        db.migrations,
+        'No migrations applied.',
+      ),
+    ),
+  ];
 }
 
-function renderTables(data, now) {
-  const db = data.database;
-  const missing = (text) => h('p', { class: 'empty' }, text);
-  if (!db) {
-    for (const id of ['leaderboards', 'connections', 'tables', 'migrations']) {
-      document.getElementById(id).replaceChildren(missing('Unavailable while the database is unreachable.'));
+// --- Planned sections ----------------------------------------------------
+
+function renderPlanned() {
+  const plan = section.planned;
+  return [
+    h(
+      'section',
+      { class: 'card planned' },
+      h('span', { class: 'planned-icon' }, icon(section.icon)),
+      badge(null, 'Planned'),
+      h('h2', null, 'What you will be able to do here'),
+      h('ul', null, plan.items.map((item) => h('li', null, item))),
+      h('p', { class: 'planned-needs' }, `This needs ${plan.needs}, which the server does not run yet.`),
+    ),
+  ];
+}
+
+// --- Page ----------------------------------------------------------------
+
+function renderNav() {
+  const nav = document.getElementById('nav');
+  let group;
+  for (const target of SECTIONS) {
+    if (target.group !== group) {
+      group = target.group;
+      if (group) nav.append(h('p', { class: 'nav-group' }, group));
     }
-    return;
+    nav.append(
+      h(
+        'a',
+        { class: 'nav-item', href: target.path, 'aria-current': target === section ? 'page' : null },
+        icon(target.icon),
+        h('span', null, target.name),
+        target.planned && h('span', { class: 'nav-soon' }, 'Soon'),
+      ),
+    );
   }
-
-  document.getElementById('leaderboards').replaceChildren(
-    table(
-      [
-        { label: 'Category', cell: (board) => [CATEGORIES[board.category] || `Category ${board.category}`, h('span', { class: 'sub' }, `#${board.category}`)] },
-        { label: 'Entries', num: true, cell: (board) => integer.format(board.players) },
-        { label: 'JP', num: true, cell: (board) => integer.format(board.jp) },
-        { label: 'US', num: true, cell: (board) => integer.format(board.us) },
-        { label: 'EU', num: true, cell: (board) => integer.format(board.eu) },
-        { label: 'KR', num: true, cell: (board) => integer.format(board.kr) },
-        { label: 'Top score', num: true, cell: (board) => integer.format(board.top_score) },
-        { label: 'Last score', cell: (board) => ago(board.last_put, now) },
-      ],
-      db.leaderboards,
-      'No scores yet. They appear after the first match played online.',
-    ),
-  );
-
-  const tone = { active: 'accent', idle: null, 'idle in transaction': 'warning', 'idle in transaction (aborted)': 'critical' };
-  document.getElementById('connections').replaceChildren(
-    table(
-      [
-        { label: 'PID', num: true, cell: (c) => `${c.pid}` },
-        { label: 'State', cell: (c) => h('span', { class: 'badge', 'data-tone': tone[c.state] }, c.state || 'unknown') },
-        { label: 'For', cell: (c) => (c.state_since ? duration(since(c.state_since, now)) : '—') },
-        { label: 'Application', cell: (c) => [c.application || '—', h('span', { class: 'sub' }, [c.user, c.database].filter(Boolean).join(' @ '))] },
-        { label: 'Client', cell: (c) => c.client || 'local socket' },
-        { label: 'Connected', cell: (c) => (c.connected_at ? ago(c.connected_at, now) : '—') },
-        { label: 'Waiting for', cell: (c) => c.wait || '—' },
-        { label: 'Query', class: 'query', cell: (c) => (c.query ? h('code', { title: c.query }, c.query) : '—') },
-      ],
-      db.connections,
-      'No other connections.',
-    ),
-  );
-
-  document.getElementById('tables').replaceChildren(
-    table(
-      [
-        { label: 'Table', cell: (t) => h('code', null, t.name) },
-        { label: 'Rows', num: true, cell: (t) => integer.format(t.rows) },
-        { label: 'Size', num: true, cell: (t) => bytes(t.total_bytes) },
-        { label: 'Indexes', num: true, cell: (t) => bytes(t.index_bytes) },
-        { label: 'Dead rows', num: true, cell: (t) => integer.format(t.dead_rows) },
-        { label: 'Seq. scans', num: true, cell: (t) => count(t.seq_scans) },
-        { label: 'Index scans', num: true, cell: (t) => (t.index_scans == null ? '—' : count(t.index_scans)) },
-        { label: 'Vacuumed', cell: (t) => ago(t.last_vacuum, now) },
-        { label: 'Analyzed', cell: (t) => ago(t.last_analyze, now) },
-      ],
-      db.tables,
-      'No tables.',
-    ),
-  );
-
-  document.getElementById('migrations').replaceChildren(
-    table(
-      [
-        { label: 'Version', cell: (m) => h('code', null, `${m.version}`) },
-        { label: 'Description', cell: (m) => m.description },
-        { label: 'Applied', cell: (m) => ago(m.installed_on, now) },
-        { label: 'Took', num: true, cell: (m) => (m.execution_ms < 1 ? '<1 ms' : `${integer.format(m.execution_ms)} ms`) },
-        { label: 'Status', cell: (m) => h('span', { class: 'badge', 'data-tone': m.success ? 'good' : 'critical' }, m.success ? 'Applied' : 'Failed') },
-      ],
-      db.migrations,
-      'No migrations applied.',
-    ),
-  );
 }
 
 function renderViewer(viewer) {
@@ -337,48 +629,33 @@ function renderViewer(viewer) {
 }
 
 function renderFooter(data, now) {
-  const parts = [
-    ['Revision ', h('code', { title: data.server.revision }, data.server.revision.slice(0, 12))],
-    `Server up ${duration(since(data.server.started_at, now))}`,
-  ];
-  if (data.database) parts.push(`PostgreSQL ${data.database.version}`);
-  document.getElementById('footer').replaceChildren(...parts.flatMap((part, index) => (index ? [' · ', part] : [part])).flat());
+  document.getElementById('footer').replaceChildren(
+    'Revision ',
+    h('code', { title: data.server.revision }, data.server.revision.slice(0, 12)),
+    ` · Server up ${duration(since(data.server.started_at, now))}`,
+  );
 }
 
 function render(data) {
   const now = Date.parse(data.now);
   renderViewer(data.viewer);
-  renderStatus(data, now);
-  renderTiles(data, now);
-  renderTables(data, now);
   renderFooter(data, now);
-}
-
-// --- Polling -------------------------------------------------------------
-
-/** Turns the transaction counters into a rate since the last poll. */
-function sample(data) {
-  const db = data.database;
-  if (!db) return;
-  const at = new Date(data.now);
-  const count = db.commits + db.rollbacks;
-  if (previous && count >= previous.count && at > previous.at) {
-    samples.push({ at, rate: (count - previous.count) / ((at - previous.at) / 1000) });
-    samples = samples.slice(-HISTORY);
-  }
-  previous = { at, count };
+  const body = section.planned ? renderPlanned() : section.render(data, now);
+  document.getElementById('body').replaceChildren(...body);
 }
 
 function setLive(state, text) {
-  const live = document.getElementById('live');
-  live.dataset.state = state;
+  document.getElementById('live').dataset.state = state;
   document.getElementById('live-text').textContent = text;
 }
 
 async function poll() {
   clearTimeout(timer);
   try {
-    const response = await fetch('/admin/api/overview', { cache: 'no-store', headers: { Accept: 'application/json' } });
+    const response = await fetch(`/admin/api/${section.api || 'overview'}`, {
+      cache: 'no-store',
+      headers: { Accept: 'application/json' },
+    });
     if (response.status === 401) {
       // The session ended: the page itself now shows the sign-in.
       window.location.reload();
@@ -386,7 +663,8 @@ async function poll() {
     }
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
-    sample(data);
+    if (section.api === 'database') sample(data);
+    lastData = data;
     render(data);
     setLive('live', `Live · ${clock.format(new Date(data.now))}`);
   } catch (error) {
@@ -394,6 +672,13 @@ async function poll() {
   }
   if (!document.hidden) timer = setTimeout(poll, POLL_MS);
 }
+
+document.title = `${section.name} · Recharged WFC`;
+renderNav();
+document.getElementById('content').replaceChildren(
+  h('header', { class: 'page-head' }, h('span', { class: 'page-icon' }, icon(section.icon)), h('div', null, h('h1', null, section.name), h('p', null, section.intro))),
+  h('div', { class: 'page-body', id: 'body' }, banner({ level: 'pending', title: 'Loading…', detail: 'Asking the server.' })),
+);
 
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {

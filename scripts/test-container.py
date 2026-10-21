@@ -2,6 +2,7 @@
 """Exercise the built image using a temporary Docker volume and containers."""
 
 import json
+import socket
 import subprocess
 import sys
 import time
@@ -60,6 +61,12 @@ def sql(container, query):
     )
 
 
+def gpcm_greeting(address):
+    host, port = address.rsplit(":", 1)
+    with socket.create_connection((host, int(port)), timeout=5) as connection:
+        return connection.recv(256).decode()
+
+
 def http_status(url):
     try:
         with urllib.request.urlopen(url, timeout=5) as response:
@@ -76,7 +83,7 @@ def main():
 
     def start(*extra):
         container = docker(
-            "run", "-d", "-p", "127.0.0.1::8080",
+            "run", "-d", "-p", "127.0.0.1::8080", "-p", "127.0.0.1::29900",
             "--health-interval=1s", "--health-start-period=0s",
             "--mount", f"type=volume,source={volume},target=/var/lib/postgresql",
             "-e", "POSTGRES_DB=integration_db", "-e", "POSTGRES_USER=integration_user",
@@ -93,6 +100,8 @@ def main():
         with urllib.request.urlopen(f"http://{address}/status", timeout=5) as response:
             assert json.load(response) == {"status": "ok", "revision": revision}
         assert http_status(f"http://{address}/admin")[0] == 404
+        greeting = gpcm_greeting(docker("port", container, "29900/tcp"))
+        assert greeting.startswith("\\lc\\1\\challenge\\"), greeting
         assert sql(container, "SHOW listen_addresses") == "127.0.0.1"
         sql(container, "CREATE TABLE persistence_probe (value text)")
         sql(container, "INSERT INTO persistence_probe VALUES ('persisted')")

@@ -1,0 +1,92 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO profiles (user_id, gsbrcd, unique_nick, ingamesn, last_ip)\n             VALUES ($1, $2, $3, $4, $5)\n             ON CONFLICT (user_id, gsbrcd) DO NOTHING\n             RETURNING profile_id, user_id, gsbrcd, unique_nick, firstname, lastname",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "profile_id",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "profiles",
+            "name": "profile_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "profiles",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "gsbrcd",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "profiles",
+            "name": "gsbrcd"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "unique_nick",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "profiles",
+            "name": "unique_nick"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "firstname",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "profiles",
+            "name": "firstname"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "lastname",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "profiles",
+            "name": "lastname"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "c2ea32a8e2ac412b5d85983c1033d0face5528db84b1d14629386d9dd6badf66"
+}

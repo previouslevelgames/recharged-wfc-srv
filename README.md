@@ -1,10 +1,12 @@
 # recharged-wfc-srv
 
 Rust backend for a reimplementation of [WiiLink WFC](https://github.com/WiiLink24/wfc-server/).
-One container runs the API and PostgreSQL 18. Currently, `GET /status` returns
-`{"status":"ok","revision":"<Git commit SHA>"}`, the gamestats2 leaderboards are
-served, and [`/admin`](#admin-dashboard) shows the server and its database to
-admins who sign in with Google.
+One container runs the server and PostgreSQL 18. It serves the game's
+registration and login (NAS and GPCM, [docs/login.md](docs/login.md)) and the
+gamestats2 leaderboards ([docs/gamestats2.md](docs/gamestats2.md)). `GET /status`
+returns `{"status":"ok","revision":"<Git commit SHA>"}`, and
+[`/admin`](#admin-dashboard) shows the server and its database to admins who
+sign in with Google.
 
 ## Unraid setup
 
@@ -15,11 +17,18 @@ In **Docker → Add Container**, enable **Advanced View** and use these settings
 | Name | `recharged-wfc-srv` |
 | Repository | `ghcr.io/previouslevelgames/recharged-wfc-srv:stable` |
 | Network | `bridge` |
-| Port | Config Type **Port**: Container Port `8080`, Host Port `8080` (any free port), TCP |
+| Port (HTTP) | Config Type **Port**: Container Port `8080`, Host Port `80`, TCP. The game sends NAS and gamestats2 requests to port 80. |
+| Port (GPCM) | Config Type **Port**: Container Port `29900`, Host Port `29900`, TCP |
+| Port (master) | Config Type **Port**: Container Port `27900`, Host Port `27900`, UDP |
 | Path (SQL data) | Config Type **Path**: Container Path `/var/lib/postgresql`, Host Path `/mnt/user/appdata/recharged-wfc-srv/postgres`, Access Mode **Read/Write** |
 | WebUI | `http://[IP]:[PORT:8080]/status` |
 | Extra Parameters (Advanced) | `--stop-timeout=30` |
 | Autostart | Enabled |
+
+Unraid's own web UI uses port 80 by default. Move it (**Settings → Management
+Access → HTTP port**, e.g. `8088`), or give the container its own address
+(**Network** `Custom: br0`, a fixed IP, no port mappings) and set `PORT` to `80`
+with the extra parameter `--sysctl net.ipv4.ip_unprivileged_port_start=80`.
 
 ## Environment variables
 
@@ -34,7 +43,9 @@ enter the **Key** and **Value** from the table, and set **Password Mask: Yes** f
 | `POSTGRES_DB` | no | Database name. Default: `recharged_wfc`. |
 | `POSTGRES_USER` | no | Database user. Default: `recharged_wfc`. |
 | `PGDATA` | no | SQL data directory inside the container. Default: `/var/lib/postgresql/18/docker`, beneath the mapped `/var/lib/postgresql` path. Leave unset to use this default. |
-| `PORT` | no | API port inside the container. Default: `8080`; use the Host Port mapping to choose the external port. |
+| `PORT` | no | HTTP port inside the container (NAS, gamestats2, `/status`, `/admin`). Default: `8080`; the Host Port mapping makes it 80. |
+| `GPCM_PORT` | no | GPCM port inside the container. Default: `29900`. |
+| `MASTER_PORT` | no | UDP port of the master server inside the container. Default: `27900`. |
 | `PUBLIC_URL` | for `/admin` | The HTTPS address browsers use for this server, without a path, e.g. `https://wfc.example.com`. See [Admin dashboard](#admin-dashboard). |
 | `GOOGLE_CLIENT_ID` | for `/admin` | Client ID of the Google OAuth client. |
 | `GOOGLE_CLIENT_SECRET` | for `/admin` | Client secret of the Google OAuth client. Set **Password Mask: Yes**. |
@@ -54,15 +65,43 @@ If replacing the earlier two-container setup, stop its PostgreSQL container befo
 reusing the same host folder.
 
 Click **Apply**. The container starts PostgreSQL on internal `127.0.0.1:5432`, then
-the API. Open `http://<unraid-ip>:8080/status` (using your Host Port) to check the
-running revision. The container health check checks both services.
+the server. Open `http://<unraid-ip>/status` to check the running revision. The
+container health check checks both.
+
+## Connecting the game
+
+The port (Recharged's `online` branch) sends every Nintendo WFC name to one
+IPv4 address. Set it in the game's `recharged.ini`:
+
+```ini
+[online]
+server = 192.168.1.42
+```
+
+That address must reach the container on TCP 80, TCP 29900 and UDP 27900;
+for players outside your network, forward those three ports on the router. The
+traffic is plain HTTP and GameSpy's own protocols, so it cannot go through a
+Cloudflare Tunnel. On its first login the game registers the console and keeps
+the userid in `data/shared2/DWC_AUTHDATA`.
+
+Matchmaking is not served yet: DWC expects a QR2 heartbeat challenge on UDP
+27900 and drops the session about 40 seconds after logging in.
 
 ## Admin dashboard
 
-`/admin` shows whether PostgreSQL is healthy, its uptime, size, connections,
-cache hit ratio and transactions per second, the leaderboards by category and
-region, the open connections and their queries, the tables, and the applied
-migrations. It refreshes every 5 seconds. Only the Google accounts in
+`/admin` is organised by what a WFC server manages, and refreshes every 5
+seconds:
+
+- **Overview**: every section in a few figures, with its status.
+- **Game**: **Leaderboards** (the gamestats2 boards by category and region, and
+  the top 10 of each with Mii names, wins and losses). **Players**,
+  **Matchmaking** and **Moderation** are planned: their pages say which
+  services they need.
+- **System**: **Database**, the health of PostgreSQL, its uptime, size,
+  connections, cache hit ratio and transactions per second, the open
+  connections and their queries, the tables, and the applied migrations.
+
+Each section has its own address, e.g. `/admin/database`. Only the Google accounts in
 `ADMIN_GOOGLE_EMAILS` get in. Without the four `/admin` variables, the server
 runs as before and `/admin` answers 404. With only some of them, the container
 stops at start and its log names the missing ones.
@@ -70,8 +109,8 @@ stops at start and its log names the missing ones.
 Google signs in only on an HTTPS address (plain HTTP works only for
 `localhost`), so `/admin` needs a public hostname, like offbyone.me. In Cloudflare
 Zero Trust, open your tunnel → **Public Hostname** → **Add**: for example subdomain
-`wfc`, Service Type `HTTP`, URL `<unraid-ip>:8080` (the Host Port). Then sign in at
-`https://wfc.example.com/admin`, never at `http://<unraid-ip>:8080/admin`.
+`wfc`, Service Type `HTTP`, URL `<unraid-ip>:80` (the HTTP Host Port). Then sign
+in at `https://wfc.example.com/admin`, never at `http://<unraid-ip>/admin`.
 
 1. In [Google Cloud Console → Credentials](https://console.cloud.google.com/apis/credentials),
    **Create credentials → OAuth client ID**, type **Web application**. Under
@@ -133,7 +172,8 @@ docker compose up -d --no-build --wait
 ```
 
 For Compose, `POSTGRES_DATA_DIR` sets the **host** folder and `HTTP_PORT` sets the
-host HTTP port. In Unraid, use the **Path** and **Port** mappings above.
+host HTTP port (default 80, which the game needs); GPCM and the master server
+use 29900 and 27900/udp. In Unraid, use the **Path** and **Port** mappings above.
 Repeat the last two commands to update. To build locally instead, run
 `./scripts/build.sh` before `docker compose up -d --no-build --wait`.
 
