@@ -23,6 +23,7 @@ use std::{
 use md5::{Digest, Md5};
 use rand::distr::{Alphanumeric, SampleString};
 use sqlx::PgPool;
+use time::OffsetDateTime;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream, tcp::OwnedWriteHalf},
@@ -64,6 +65,7 @@ pub struct Gpcm {
 struct Session {
     connection: u64,
     kick: Arc<Notify>,
+    logged_in_at: OffsetDateTime,
     /// Messages to the connection from other logins: friends' answers and
     /// statuses.
     outbox: mpsc::UnboundedSender<Message>,
@@ -74,6 +76,19 @@ struct Session {
     mutual: HashSet<i32>,
     /// What mutual friends get from the last `\status\`.
     status: Option<String>,
+    /// That `\status\`'s DWC status, for `/admin`.
+    dwc_status: Option<u8>,
+}
+
+/// What `/admin` shows of a profile's login.
+pub struct Presence {
+    pub logged_in_at: OffsetDateTime,
+    /// DWC's status from the last `\status\`: 1 online, 2 playing, 3 to 6
+    /// matchmaking.
+    pub status: Option<u8>,
+    /// Friend codes asked for in this login, and how many of them are mutual.
+    pub friend_requests: usize,
+    pub mutual_friends: usize,
 }
 
 impl Session {
@@ -81,10 +96,12 @@ impl Session {
         Self {
             connection,
             kick,
+            logged_in_at: OffsetDateTime::now_utc(),
             outbox,
             friends: HashSet::new(),
             mutual: HashSet::new(),
             status: None,
+            dwc_status: None,
         }
     }
 
@@ -105,6 +122,23 @@ impl Gpcm {
             sessions: Mutex::default(),
             next_connection: AtomicU64::new(1),
         }
+    }
+
+    /// Who is logged in, by profile.
+    pub fn presence(&self) -> HashMap<i32, Presence> {
+        let sessions = self.sessions.lock().unwrap();
+        sessions
+            .iter()
+            .map(|(&profile_id, session)| {
+                let presence = Presence {
+                    logged_in_at: session.logged_in_at,
+                    status: session.dwc_status,
+                    friend_requests: session.friends.len(),
+                    mutual_friends: session.mutual.len(),
+                };
+                (profile_id, presence)
+            })
+            .collect()
     }
 
     pub async fn serve(self: Arc<Self>, listener: TcpListener) -> std::io::Result<()> {
@@ -449,6 +483,7 @@ impl Gpcm {
             return;
         };
         session.status = Some(status.clone());
+        session.dwc_status = message.get("status").and_then(|status| status.parse().ok());
         for friend in session.mutual.clone() {
             if let Some(friend) = sessions
                 .get(&friend)
@@ -636,6 +671,24 @@ fn uppercase(len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn presence_tells_who_is_logged_in() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy_with(sqlx::postgres::PgConnectOptions::new());
+        let gpcm = Gpcm::new(pool, Arc::default());
+        let mut session = Session::new(1, Arc::new(Notify::new()), mpsc::unbounded_channel().0);
+        session.add_friend(1_000_000_001);
+        session.mutual.insert(1_000_000_001);
+        session.dwc_status = Some(2);
+        gpcm.sessions.lock().unwrap().insert(1_000_000_000, session);
+
+        let presence = gpcm.presence();
+        let online = &presence[&1_000_000_000];
+        assert_eq!(online.status, Some(2));
+        assert_eq!((online.friend_requests, online.mutual_friends), (1, 1));
+        assert!(!presence.contains_key(&1_000_000_001));
+    }
 
     #[test]
     fn friend_requests_are_kept_once_up_to_the_roster_size() {

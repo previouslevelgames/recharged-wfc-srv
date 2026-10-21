@@ -67,7 +67,8 @@ async fn an_admin_signs_in_sees_every_section_and_signs_out(pool: PgPool) {
     assert_eq!(browser.get("/admin/elsewhere").await.0, 404);
 
     for (api, check) in [
-        ("overview", "/database/version"),
+        ("overview", "/players/accounts"),
+        ("players", "/profiles/0/friend_code"),
         ("database", "/tables/0/name"),
         ("leaderboards", "/totals/entries"),
     ] {
