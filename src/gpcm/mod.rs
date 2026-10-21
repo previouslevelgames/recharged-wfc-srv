@@ -5,9 +5,9 @@
 //!
 //! Friends (docs/login.md): a request (`addbuddy`) is kept for the login. Two
 //! logins that asked for each other become mutual friends, get each other's
-//! status, and the offline one when either leaves. The CPU buddy accepts every
-//! request at once. `delbuddy` and the rest come later: those commands are
-//! accepted and ignored.
+//! status, and the offline one when either leaves or deletes the other
+//! (`delbuddy`). The CPU buddy accepts every request at once. The rest comes
+//! later: those commands are accepted and ignored.
 
 mod message;
 
@@ -273,6 +273,10 @@ impl Gpcm {
                 }
                 Ok(true)
             }
+            "delbuddy" => {
+                self.delete_friend(connection, &message);
+                Ok(true)
+            }
             command => {
                 debug!(target: "gpcm", command, "not implemented yet");
                 Ok(true)
@@ -395,6 +399,35 @@ impl Gpcm {
         }
         info!(target: "gpcm", profile_id, friend, "mutual friends");
         Some(friend)
+    }
+
+    /// `\delbuddy\`: a friend deleted from the roster, as `delprofileid`;
+    /// DWC sends it only for a buddy of GP. The request ends, and a mutual
+    /// friend sees the player offline. Never answered, like `addbuddy`.
+    fn delete_friend(&self, connection: &Connection, message: &Message) {
+        let profile_id = connection.login.as_ref().unwrap().profile.profile_id;
+        let delprofileid = message.get("delprofileid");
+        let Some(friend) = delprofileid.and_then(|friend| friend.parse::<i32>().ok()) else {
+            debug!(target: "gpcm", profile_id, delprofileid, "bad friend deletion");
+            return;
+        };
+        let mut sessions = self.sessions.lock().unwrap();
+        let Some(session) = sessions
+            .get_mut(&profile_id)
+            .filter(|session| session.connection == connection.id)
+        else {
+            return;
+        };
+        session.friends.remove(&friend);
+        session.mutual.remove(&friend);
+        info!(target: "gpcm", profile_id, friend, "friend deleted");
+        if let Some(other) = sessions.get_mut(&friend)
+            && other.mutual.remove(&profile_id)
+        {
+            let _ = other
+                .outbox
+                .send(buddy_message(BM_STATUS, profile_id, OFFLINE_STATUS));
+        }
     }
 
     /// `\status\`: what the game is doing, for mutual friends. The values go

@@ -174,6 +174,41 @@ async fn friends_who_add_each_other_see_each_other(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn a_deleted_friend_sees_the_player_offline(pool: PgPool) {
+    let server = Server::start(pool).await;
+    let mut alice = Player::log_in(&server, 42).await;
+    let mut bob = Player::log_in(&server, 43).await;
+    alice.add(&bob.profile_id).await;
+    bob.add(&alice.profile_id).await;
+    // Each gets the other's acceptance; neither has sent a status.
+    assert_eq!(bob.client.receive().await["bm"], "4");
+    assert_eq!(alice.client.receive().await["bm"], "4");
+
+    let (alice_id, bob_id) = (alice.profile_id.clone(), bob.profile_id.clone());
+    for friend in ["x", &bob_id] {
+        let message = format!(
+            r"\delbuddy\\sesskey\{}\delprofileid\{friend}\final\",
+            alice.sesskey
+        );
+        alice.client.send(&message).await;
+    }
+    let offline = bob.client.receive().await;
+    assert_eq!(offline["f"], alice_id);
+    assert!(
+        offline["msg"].starts_with("|s|0|ss|Offline|"),
+        "{offline:?}"
+    );
+
+    // Neither answer nor status comes after that.
+    alice.status(1, "U0MyAQ**").await;
+    for player in [&mut alice, &mut bob] {
+        player.client.send(r"\ka\\final\").await;
+        let reply = player.client.receive().await;
+        assert!(reply.contains_key("ka"), "{reply:?}");
+    }
+}
+
+#[sqlx::test]
 async fn a_login_needs_the_token_and_its_proof(pool: PgPool) {
     let server = Server::start(pool).await;
     let (token, challenge) = server.nas_login(42).await;

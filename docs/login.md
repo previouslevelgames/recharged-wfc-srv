@@ -117,7 +117,8 @@ A login to a profile logged in elsewhere disconnects the other connection
 | `ka` | `\ka\\final\` |
 | `logout` | the server closes the connection |
 | `addbuddy` | none; `newprofileid` is kept for the login ([below](#friend-requests)). Both players of a [mutual](#mutual-friends) request, and the [CPU buddy](#the-cpu-buddy), get `\bm\4\` and a status |
-| `authadd`, `delbuddy`, `bm`, … | none: not served yet |
+| `delbuddy` | none; the request ends, and a mutual friend gets the player's offline status ([below](#mutual-friends)) |
+| `authadd`, `bm`, … | none: not served yet |
 
 Errors are `\error\\err\<n>\errmsg\<text>\fatal\\final\` (with the request's `\id\`
 when there is one), then the
@@ -171,10 +172,13 @@ once the other has sent one, its status:
 
 A later `\status\` goes to the player's mutual friends the same way (values
 without `|`), and when a login ends they get it as offline:
-`|s|0|ss|Offline|ls||ip|0|p|0|qm|0`. The friendship lasts as long as both
-logins; it starts again at the next login, where DWC asks again for every
-friend that is not a buddy of GP. WiiLink keeps friends in memory the same
-way.
+`|s|0|ss|Offline|ls||ip|0|p|0|qm|0`. Deleting a friend from the roster ends it
+too: DWC sends `\delbuddy\\sesskey\<n>\delprofileid\<pid>\final\` for a buddy
+of GP (`DWC_DeleteBuddyFriendData` in `dwc_friend.c`; one still waiting is
+only cleared from the save), and the friend gets the offline status. The
+friendship lasts as long as both logins; it starts again at the next login,
+where DWC asks again for every friend that is not a buddy of GP. WiiLink keeps
+friends in memory the same way.
 
 `status` is DWC's (1 online, 2 playing, 3 to 6 matchmaking), and `locstring`
 the game's own status data: `U0MyAQ**` (`SC2` and 1) in its menus.
@@ -240,6 +244,6 @@ which the server echoes. `statechanged` 2 means the game stops: no answer.
 
 ## Not served yet
 
-Server lists and matchmaking, deleting friends (`delbuddy`), GPSP,
+Server lists and matchmaking, GPSP,
 the server browser and NAT negotiation. NAS `svcloc` and `/pr` are not used by
 the game.
