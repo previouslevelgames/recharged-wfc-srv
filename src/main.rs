@@ -4,7 +4,9 @@ use std::{
     io::{self, IsTerminal},
 };
 
+use recharged_wfc_srv::App;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use tokio::net::{TcpListener, UdpSocket};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -36,13 +38,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .await?;
     sqlx::migrate!().run(&pool).await?;
 
-    let port: u16 = env::var("PORT")
-        .unwrap_or_else(|_| "8080".to_owned())
-        .parse()?;
-    let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
+    let http = TcpListener::bind(("0.0.0.0", port("PORT", 8080)?)).await?;
+    let gpcm = TcpListener::bind(("0.0.0.0", port("GPCM_PORT", 29900)?)).await?;
+    let master = UdpSocket::bind(("0.0.0.0", port("MASTER_PORT", 27900)?)).await?;
     info!(
-        "recharged-wfc-srv listening on {} (revision {})",
-        listener.local_addr()?,
+        "recharged-wfc-srv listening on {} (HTTP), {} (GPCM) and {}/udp (master) (revision {})",
+        http.local_addr()?,
+        gpcm.local_addr()?,
+        master.local_addr()?,
         recharged_wfc_srv::REVISION
     );
 
@@ -54,10 +57,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
         ),
     }
 
-    axum::serve(listener, recharged_wfc_srv::router(pool, admin))
-        .with_graceful_shutdown(shutdown())
-        .await?;
+    let app = App::new(pool);
+    let router = app.router(admin);
+    // HTTP stops gracefully on a signal; the others stop with it.
+    tokio::select! {
+        result = axum::serve(http, router).with_graceful_shutdown(shutdown()) => result?,
+        result = app.serve_gpcm(gpcm) => result?,
+        result = app.serve_master(master) => result?,
+    }
     Ok(())
+}
+
+/// The port in the variable `name`, or `default`.
+fn port(name: &str, default: u16) -> Result<u16, Box<dyn Error>> {
+    match env::var(name) {
+        Ok(port) => port
+            .parse()
+            .map_err(|error| format!("{name}: {error}").into()),
+        Err(_) => Ok(default),
+    }
 }
 
 async fn shutdown() {

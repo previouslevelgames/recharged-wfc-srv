@@ -11,6 +11,7 @@
 
 mod codec;
 mod leaderboard;
+pub(crate) mod submission;
 mod token;
 
 #[cfg(test)]
@@ -28,11 +29,10 @@ use axum::{
 use serde::Deserialize;
 use tracing::{trace, warn};
 
+use crate::GAME_NAME;
 use leaderboard::Leaderboard;
 use token::TokenStore;
 
-/// The game name in the request path.
-const GAME_NAME: &str = "mschargedwii";
 /// Signs tokens and responses: the first 20 characters of the init data the
 /// game passes to `DWC_RnkInitialize`.
 const GAMESTATS_KEY: &str = "DbfBialvJznkQWYuOrRa";

@@ -31,49 +31,14 @@
     </div>
   </header>
 
-  <main class="page">
-    <noscript><p class="notice">The dashboard needs JavaScript.</p></noscript>
-
-    <section id="status" class="status" data-level="pending" aria-live="polite">
-      <span class="status-icon" aria-hidden="true"></span>
-      <div class="status-text"><strong>Loading…</strong><span>Asking the server for its state.</span></div>
-    </section>
-
-    <section id="tiles" class="tiles" aria-label="Key figures"></section>
-
-    <section class="card">
-      <header class="card-head">
-        <h2>Leaderboards</h2>
-        <p>Rows in <code>scores</code>, by category and region</p>
-      </header>
-      <div id="leaderboards" class="table-wrap"></div>
-    </section>
-
-    <section class="card">
-      <header class="card-head">
-        <h2>Connections</h2>
-        <p>Clients of PostgreSQL, besides this dashboard</p>
-      </header>
-      <div id="connections" class="table-wrap"></div>
-    </section>
-
-    <section class="card">
-      <header class="card-head">
-        <h2>Tables</h2>
-        <p>Row counts are PostgreSQL's estimates</p>
-      </header>
-      <div id="tables" class="table-wrap"></div>
-    </section>
-
-    <section class="card">
-      <header class="card-head">
-        <h2>Migrations</h2>
-        <p>Applied by the server when it starts</p>
-      </header>
-      <div id="migrations" class="table-wrap"></div>
-    </section>
-  </main>
-
-  <footer class="page-footer" id="footer"></footer>
+  <div class="layout">
+    <nav class="sidebar" id="nav" aria-label="Sections"></nav>
+    <div class="main">
+      <main class="page" id="content">
+        <noscript><p class="notice">The dashboard needs JavaScript.</p></noscript>
+      </main>
+      <footer class="page-footer" id="footer"></footer>
+    </div>
+  </div>
 </body>
 </html>
