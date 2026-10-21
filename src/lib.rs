@@ -49,7 +49,12 @@ impl App {
             .merge(nas::router(self.pool.clone(), self.tickets.clone()))
             .merge(gamestats::router(self.pool.clone()));
         if let Some(config) = admin {
-            router = router.merge(admin::router(self.pool.clone(), self.gpcm.clone(), config));
+            router = router.merge(admin::router(
+                self.pool.clone(),
+                self.gpcm.clone(),
+                self.master.clone(),
+                config,
+            ));
         }
         // One span per request; its events are at `debug` (`RUST_LOG=tower_http=debug`).
         router.layer(TraceLayer::new_for_http())

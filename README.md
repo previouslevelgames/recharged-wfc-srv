@@ -102,10 +102,11 @@ seconds:
 - **Overview**: every section in a few figures, with its status.
 - **Game**: **Players** (the accounts and profiles with their Mii names and
   friend codes, last sign-in and address, and who is online with their status
-  and friends) and **Leaderboards** (the gamestats2 boards by category and
-  region, and the top 10 of each with Mii names, wins and losses).
-  **Matchmaking** and **Moderation** are planned: their pages say which
-  services they need.
+  and friends), **Matchmaking** (the games sending QR2 heartbeats: who is in
+  a ranked search, hosting or joining a friend battle, with mode, region
+  group, points and addresses) and **Leaderboards** (the gamestats2 boards by
+  category and region, and the top 10 of each with Mii names, wins and
+  losses). **Moderation** is planned: its page says what it needs.
 - **System**: **Database**, the health of PostgreSQL, its uptime, size,
   connections, cache hit ratio and transactions per second, the open
   connections and their queries, the tables, and the applied migrations.

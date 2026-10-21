@@ -4,13 +4,14 @@
 //! Sessions live in memory ([`session`]). Every page in [`PAGES`] is the same
 //! static page; its script shows the section for its path and polls that
 //! section's JSON under `/admin/api/` ([`page`]): [`overview`], [`players`],
-//! [`leaderboards`] and [`database`]. The other sections are planned with the
-//! services they need.
+//! [`matchmaking`], [`leaderboards`] and [`database`]. The other sections are
+//! planned with the services they need.
 
 mod config;
 mod database;
 mod google;
 mod leaderboards;
+mod matchmaking;
 mod overview;
 mod page;
 mod players;
@@ -32,7 +33,7 @@ use sqlx::PgPool;
 use time::OffsetDateTime;
 use tracing::{info, warn};
 
-use crate::gpcm::Gpcm;
+use crate::{gpcm::Gpcm, master::Master};
 pub use config::{Config, GoogleEndpoints, VARIABLES};
 use google::{Account, Login, SignInError};
 use page::PageData;
@@ -69,13 +70,15 @@ struct AdminState {
     pool: PgPool,
     /// Who is logged in, for the Players page.
     gpcm: Arc<Gpcm>,
+    /// The games' sessions, for the Matchmaking page.
+    master: Arc<Master>,
     /// For Google's token endpoint.
     http: reqwest::Client,
     sessions: Sessions,
     started_at: OffsetDateTime,
 }
 
-pub(crate) fn router(pool: PgPool, gpcm: Arc<Gpcm>, config: Config) -> Router {
+pub(crate) fn router(pool: PgPool, gpcm: Arc<Gpcm>, master: Arc<Master>, config: Config) -> Router {
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
@@ -84,6 +87,7 @@ pub(crate) fn router(pool: PgPool, gpcm: Arc<Gpcm>, config: Config) -> Router {
         config,
         pool,
         gpcm,
+        master,
         http,
         sessions: Sessions::default(),
         started_at: OffsetDateTime::now_utc(),
@@ -99,6 +103,7 @@ pub(crate) fn router(pool: PgPool, gpcm: Arc<Gpcm>, config: Config) -> Router {
         .route("/admin/logout", post(logout))
         .route("/admin/api/overview", get(api_overview))
         .route("/admin/api/players", get(api_players))
+        .route("/admin/api/matchmaking", get(api_matchmaking))
         .route("/admin/api/database", get(api_database))
         .route("/admin/api/leaderboards", get(api_leaderboards))
         .route("/admin/admin.css", get(stylesheet))
@@ -270,13 +275,22 @@ async fn logout(
 
 async fn api_overview(State(state): State<Arc<AdminState>>, jar: CookieJar) -> Response {
     state
-        .page_data(&jar, overview::read(&state.pool, &state.gpcm))
+        .page_data(
+            &jar,
+            overview::read(&state.pool, &state.gpcm, &state.master),
+        )
         .await
 }
 
 async fn api_players(State(state): State<Arc<AdminState>>, jar: CookieJar) -> Response {
     state
         .page_data(&jar, players::read(&state.pool, &state.gpcm))
+        .await
+}
+
+async fn api_matchmaking(State(state): State<Arc<AdminState>>, jar: CookieJar) -> Response {
+    state
+        .page_data(&jar, matchmaking::read(&state.pool, &state.master))
         .await
 }
 

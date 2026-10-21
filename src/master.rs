@@ -76,6 +76,11 @@ impl Session {
             .map(|(_, value)| value.as_str())
     }
 
+    /// How long since its game was last heard from.
+    pub fn quiet_for(&self) -> Duration {
+        self.seen.elapsed()
+    }
+
     fn live(&self, now: Instant) -> bool {
         now.duration_since(self.seen) < SESSION_TTL
     }
