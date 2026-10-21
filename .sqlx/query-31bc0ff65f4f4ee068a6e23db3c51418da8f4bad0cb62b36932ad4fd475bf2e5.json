@@ -1,0 +1,107 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT p.profile_id, p.user_id, p.gsbrcd, p.ingamesn, p.created_at,\n                  p.last_login_at, p.last_ip,\n                  (SELECT count(*) FROM scores s WHERE s.profile_id = p.profile_id) AS \"scores!\"\n           FROM profiles p\n           ORDER BY p.last_login_at DESC, p.profile_id\n           LIMIT $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "profile_id",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "profiles",
+            "name": "profile_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "profiles",
+            "name": "user_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "gsbrcd",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "profiles",
+            "name": "gsbrcd"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "ingamesn",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "profiles",
+            "name": "ingamesn"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "profiles",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "last_login_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "profiles",
+            "name": "last_login_at"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "last_ip",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "profiles",
+            "name": "last_ip"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "scores!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      null
+    ]
+  },
+  "hash": "31bc0ff65f4f4ee068a6e23db3c51418da8f4bad0cb62b36932ad4fd475bf2e5"
+}

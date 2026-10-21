@@ -17,19 +17,22 @@ pub const REVISION: &str = env!("BUILD_REVISION");
 /// The one game this server serves, as GameSpy names it.
 const GAME_NAME: &str = "mschargedwii";
 
-/// The server's services and what they share: the database, and NAS's login
-/// tokens, which GPCM checks.
+/// The server's services and what they share: the database, NAS's login
+/// tokens, which GPCM checks, and GPCM's logins, which `/admin` shows.
 #[derive(Clone)]
 pub struct App {
     pool: sqlx::PgPool,
     tickets: Arc<nas::Tickets>,
+    gpcm: Arc<gpcm::Gpcm>,
 }
 
 impl App {
     pub fn new(pool: sqlx::PgPool) -> Self {
+        let tickets = Arc::<nas::Tickets>::default();
         Self {
+            gpcm: Arc::new(gpcm::Gpcm::new(pool.clone(), tickets.clone())),
             pool,
-            tickets: Arc::default(),
+            tickets,
         }
     }
 
@@ -41,7 +44,7 @@ impl App {
             .merge(nas::router(self.pool.clone(), self.tickets.clone()))
             .merge(gamestats::router(self.pool.clone()));
         if let Some(config) = admin {
-            router = router.merge(admin::router(self.pool.clone(), config));
+            router = router.merge(admin::router(self.pool.clone(), self.gpcm.clone(), config));
         }
         // One span per request; its events are at `debug` (`RUST_LOG=tower_http=debug`).
         router.layer(TraceLayer::new_for_http())
@@ -49,9 +52,7 @@ impl App {
 
     /// GPCM, the GameSpy login, on `listener` (TCP 29900).
     pub async fn serve_gpcm(&self, listener: TcpListener) -> std::io::Result<()> {
-        Arc::new(gpcm::Gpcm::new(self.pool.clone(), self.tickets.clone()))
-            .serve(listener)
-            .await
+        self.gpcm.clone().serve(listener).await
     }
 
     /// The QR2 master server on `socket` (UDP 27900).

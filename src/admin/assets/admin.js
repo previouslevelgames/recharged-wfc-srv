@@ -17,6 +17,17 @@ const CATEGORIES = [
 ];
 // DWCRnkRegion.
 const REGIONS = { 1: 'JP', 2: 'US', 4: 'EU', 8: 'KR' };
+// DWC's status in GPCM's \status\ (docs/login.md, "Mutual friends"), with
+// its badge tone.
+const STATUSES = {
+  0: ['Offline', null],
+  1: ['Online', 'good'],
+  2: ['Playing', 'accent'],
+  3: ['Matchmaking', 'warning'],
+  4: ['Matchmaking with friends', 'warning'],
+  5: ['Joining a group', 'warning'],
+  6: ['Hosting a group', 'warning'],
+};
 const SEVERITY = ['good', 'warning', 'serious', 'critical'];
 
 const ICONS = {
@@ -50,29 +61,23 @@ const SECTIONS = [
     group: 'Game',
     name: 'Players',
     icon: 'players',
-    intro: 'Accounts and consoles that sign in, their profiles and their friends.',
-    planned: {
-      items: [
-        'Find a player by profile ID, friend code or Mii name',
-        'See their consoles, last sign-in and address',
-        'Browse their friend lists',
-      ],
-      needs: 'NAS sign-in, GPCM profiles and GPSP search',
-    },
+    intro: 'The consoles that registered, their profiles with friend codes, and who is online.',
+    api: 'players',
+    render: renderPlayers,
   },
   {
     path: '/admin/matchmaking',
     group: 'Game',
     name: 'Matchmaking',
     icon: 'matchmaking',
-    intro: 'Who is online right now, and the matches they play.',
+    intro: 'Who is looking for a match, and the matches they play.',
     planned: {
       items: [
-        'See the players online and their status',
+        'See who is looking for a match',
         'See the open matches and who is in them',
         'Spot players whose NAT negotiation fails',
       ],
-      needs: 'GPCM presence, the QR2 master server and NAT negotiation',
+      needs: 'the QR2 master server\'s sessions and NAT negotiation',
     },
   },
   {
@@ -318,6 +323,19 @@ function renderOverview(data, now) {
         foot: `PostgreSQL · up ${duration(since(db.started_at, now))}`,
       });
     }
+    if (target.path === '/admin/players') {
+      const players = content.players;
+      return serviceCard(target, {
+        tone: 'good',
+        status: 'Live',
+        facts: [
+          ['Online', count(players.online)],
+          ['Profiles', count(players.profiles)],
+          ['Last sign-in', players.last_login ? ago(players.last_login, now) : 'none yet'],
+        ],
+        foot: `NAS and GPCM · ${count(players.accounts)} accounts`,
+      });
+    }
     const boards = content.leaderboards;
     return serviceCard(target, {
       tone: 'good',
@@ -332,6 +350,58 @@ function renderOverview(data, now) {
   });
 
   return [banner(status), h('section', { class: 'services', 'aria-label': 'Sections' }, cards)];
+}
+
+// --- Players -------------------------------------------------------------
+
+function presence(player, now) {
+  if (player.cpu_buddy) return [badge('accent', 'Server'), h('span', { class: 'sub' }, 'Accepts every request')];
+  if (!player.online) return badge(null, 'Offline');
+  const [name, tone] = STATUSES[player.online.status] || ['Logged in', 'good'];
+  return [badge(tone, name), h('span', { class: 'sub' }, ['since ', ago(player.online.since, now)])];
+}
+
+function renderPlayers(data, now) {
+  const content = data.content;
+  if (!content) return [unreachable(data.error)];
+  const { totals, profiles } = content;
+  const shown = profiles.filter((player) => !player.cpu_buddy).length;
+
+  return [
+    h(
+      'section',
+      { class: 'tiles', 'aria-label': 'Key figures' },
+      tile('Online', count(totals.online), 'Logged in to GPCM now'),
+      tile('Profiles', count(totals.profiles), 'One per console and Mii'),
+      tile('Accounts', count(totals.accounts), 'Consoles registered with NAS'),
+      tile('Last sign-in', totals.last_login ? ago(totals.last_login, now) : '—', totals.last_login ? dateTime.format(new Date(totals.last_login)) : 'Nobody yet'),
+    ),
+    card(
+      'Players',
+      shown < totals.profiles
+        ? `The ${integer.format(shown)} profiles that signed in last, online first, of ${integer.format(totals.profiles)}`
+        : 'Every profile, online first; the CPU buddy is the server\'s own',
+      table(
+        [
+          { label: 'Player', cell: (p) => [p.mii_name || 'Unnamed', h('span', { class: 'sub' }, `Profile ${p.profile_id}`)] },
+          { label: 'Friend code', cell: (p) => h('code', null, p.friend_code) },
+          { label: 'Status', cell: (p) => presence(p, now) },
+          {
+            label: 'Friends',
+            num: true,
+            cell: (p) => (p.online ? [`${p.online.mutual_friends}`, h('span', { class: 'sub' }, `of ${p.online.friend_requests} asked`)] : '—'),
+          },
+          { label: 'Last sign-in', cell: (p) => (p.cpu_buddy ? '—' : ago(p.last_login_at, now)) },
+          { label: 'Console', cell: (p) => [h('code', null, `${p.user_id}`), h('span', { class: 'sub' }, p.gsbrcd)] },
+          { label: 'Address', cell: (p) => p.last_ip || '—' },
+          { label: 'Scores', num: true, cell: (p) => integer.format(p.scores) },
+          { label: 'Joined', cell: (p) => ago(p.created_at, now) },
+        ],
+        profiles,
+        'No players yet. A console appears here after its first sign-in.',
+      ),
+    ),
+  ];
 }
 
 // --- Leaderboards --------------------------------------------------------

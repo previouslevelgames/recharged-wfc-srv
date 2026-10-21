@@ -8,6 +8,8 @@ pub const USER_ID_LIMIT: i64 = 1 << 43;
 /// The CPU buddy's profile, made by a migration (docs/login.md): a friend to
 /// add before a second console is online.
 pub const CPU_BUDDY: i32 = 999_999_999;
+/// The CPU buddy's account.
+pub const CPU_BUDDY_ACCOUNT: i64 = 1;
 
 /// Registers a new account. Returns its userid.
 pub async fn register(pool: &PgPool) -> Result<i64, sqlx::Error> {
