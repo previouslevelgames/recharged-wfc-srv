@@ -24,7 +24,7 @@ branch patches out TLS. The services are told apart by port:
 |---|---|---|
 | TCP 80 | NAS `/ac`, gamestats2 | `naswii.`, `gamestats2.gs.` |
 | TCP 29900 | GPCM | `gpcm.gs.` |
-| UDP 27900 | QR2 master: availability check | `mschargedwii.available.gs.` |
+| UDP 27900 | QR2 master: availability check, heartbeats | `mschargedwii.available.gs.`, `mschargedwii.master.gs.` |
 
 The server listens on `PORT` (8080), `GPCM_PORT` (29900) and `MASTER_PORT`
 (27900); map host port 80 to `PORT`.
@@ -43,8 +43,7 @@ The server listens on `PORT` (8080), `GPCM_PORT` (29900) and `MASTER_PORT`
 5. **First login of a Mii slot**: `getprofile`, `updatepro` with DWC's login
    id as `lastname`, `getprofile` again, `logout`, and a second GPCM login with
    the same token.
-6. `\status\`, then QR2 heartbeats (not served yet: DWC drops the session
-   when no challenge arrives within about 40 seconds) and gamestats2.
+6. `\status\`, QR2 heartbeats ([below](#qr2-udp-27900)) and gamestats2.
 
 ## NAS: `POST /ac`
 
@@ -141,8 +140,40 @@ so each Mii slot is its own profile. Profile ids count from 1,000,000,000 and
 fit the 31 bits DWC's friend codes take; `unique_nick` is the userid in base32
 (`0-9a-v`) followed by the gsbrcd.
 
+## QR2: UDP 27900
+
+`P/src/RVL_SDK/gamespy/qr2/qr2.c` is the client. Its packets start with a
+type and a 4-byte instance key; the server's start with `FE FD`, the type and
+the key.
+
+Once logged in, DWC sends a heartbeat (`03`): `name\0value\0` fields up to an
+empty name (`localip0`, `localport`, `natneg`, `statechanged`, `gamename`,
+`publicip`, `publicport`, `numplayers`, `maxplayers`, then DWC's own fields as
+`unknown`, the profile id first: DWC names them only for matchmaking). Without
+an answer it tries four times, 10 seconds apart, then shows error 94020
+(`e_qrnochallengeerror`: 90000 after login, 4000 QR2, 20 server).
+
+The server answers every heartbeat with a challenge:
+
+```
+FE FD 01 <key> <6 letters> 00 <IP %08X><port %04X> \0
+```
+
+`00` are the backend options (no query challenges); the address is where the
+heartbeat came from, which the game takes as its public address. The game
+answers with `01 <key>` and the challenge encrypted with its secret key, then
+sends a heartbeat a minute and a keepalive (`08 <key>`) every 20 seconds,
+which the server echoes. `statechanged` 2 means the game stops: no answer.
+
+| Packet | Answer |
+|---|---|
+| `09 00000000 mschargedwii\0` | `FE FD 09 00000000`: up |
+| `03` heartbeat | `FE FD 01` challenge |
+| `01` challenge response | none (not checked) |
+| `08` keepalive | `FE FD 08 <key>` |
+
 ## Not served yet
 
-QR2 heartbeats and matchmaking, friends (`addbuddy`, status messages), GPSP,
+Server lists and matchmaking, friends (`addbuddy`, status messages), GPSP,
 the server browser and NAT negotiation. NAS `svcloc` and `/pr` are not used by
 the game.

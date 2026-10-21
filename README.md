@@ -84,8 +84,8 @@ traffic is plain HTTP and GameSpy's own protocols, so it cannot go through a
 Cloudflare Tunnel. On its first login the game registers the console and keeps
 the userid in `data/shared2/DWC_AUTHDATA`.
 
-Matchmaking is not served yet: DWC expects a QR2 heartbeat challenge on UDP
-27900 and drops the session about 40 seconds after logging in.
+The game logs in and stays online; matchmaking, friends and the server
+browser are not served yet.
 
 ## Admin dashboard
 

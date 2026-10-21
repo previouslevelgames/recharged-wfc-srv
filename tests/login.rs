@@ -1,5 +1,6 @@
 //! Registration and login as the port does them (docs/login.md): NAS
-//! `acctcreate` and `login` over HTTP, then GPCM over TCP.
+//! `acctcreate` and `login` over HTTP, GPCM over TCP, and the master server's
+//! availability check and heartbeats over UDP.
 
 use std::{collections::HashMap, net::SocketAddr};
 
@@ -115,22 +116,55 @@ async fn nas_refuses_logins_without_their_fields(pool: PgPool) {
 
 #[tokio::test]
 async fn the_game_is_available() {
-    use tokio::net::UdpSocket;
+    let master = Master::start().await;
+    let reply = master.send(b"\x09\0\0\0\0mschargedwii\0").await;
+    assert_eq!(reply, b"\xFE\xFD\x09\0\0\0\0");
+}
 
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .connect_lazy_with(sqlx::postgres::PgConnectOptions::new());
-    let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    let address = socket.local_addr().unwrap();
-    tokio::spawn(async move { App::new(pool).serve_master(socket).await });
+#[tokio::test]
+async fn a_logged_in_game_is_challenged() {
+    let master = Master::start().await;
+    let reply = master
+        .send(b"\x03\x01\x02\x03\x04statechanged\x001\x00gamename\x00mschargedwii\x00\x00\x00")
+        .await;
+    assert!(
+        reply.starts_with(b"\xFE\xFD\x01\x01\x02\x03\x04"),
+        "{reply:?}"
+    );
+    // 6 letters, options 00, then the address the heartbeat came from.
+    let port = master.client.local_addr().unwrap().port();
+    let challenge = String::from_utf8(reply[7..].to_vec()).unwrap();
+    assert_eq!(challenge[6..], format!("007F000001{port:04X}\0"));
+}
 
-    let client = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    client
-        .send_to(b"\x09\0\0\0\0mschargedwii\0", address)
-        .await
-        .unwrap();
-    let mut reply = [0; 16];
-    let len = client.recv(&mut reply).await.unwrap();
-    assert_eq!(&reply[..len], b"\xFE\xFD\x09\0\0\0\0");
+/// The master server on a local UDP port, and a client socket.
+struct Master {
+    address: SocketAddr,
+    client: tokio::net::UdpSocket,
+}
+
+impl Master {
+    async fn start() -> Self {
+        use tokio::net::UdpSocket;
+
+        // The master server keeps nothing in the database.
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy_with(sqlx::postgres::PgConnectOptions::new());
+        let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let address = socket.local_addr().unwrap();
+        tokio::spawn(async move { App::new(pool).serve_master(socket).await });
+        Self {
+            address,
+            client: UdpSocket::bind("127.0.0.1:0").await.unwrap(),
+        }
+    }
+
+    async fn send(&self, packet: &[u8]) -> Vec<u8> {
+        self.client.send_to(packet, self.address).await.unwrap();
+        let mut reply = [0; 1500];
+        let len = self.client.recv(&mut reply).await.unwrap();
+        reply[..len].to_vec()
+    }
 }
 
 /// The server on local ports: HTTP for NAS, TCP for GPCM.
