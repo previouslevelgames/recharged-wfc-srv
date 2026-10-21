@@ -132,6 +132,48 @@ async fn the_cpu_buddy_accepts_at_once(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn friends_who_add_each_other_see_each_other(pool: PgPool) {
+    let server = Server::start(pool).await;
+    let mut alice = Player::log_in(&server, 42).await;
+    let mut bob = Player::log_in(&server, 43).await;
+    alice.status(1, "QWxpY2U*").await;
+    bob.status(1, "Qm9i").await;
+
+    // Alice asks first: Bob has not asked for her, so nothing comes back.
+    alice.add(&bob.profile_id).await;
+    alice.client.send(r"\ka\\final\").await;
+    assert!(alice.client.receive().await.contains_key("ka"));
+
+    // Bob asks too: each gets the other's acceptance and status.
+    bob.add(&alice.profile_id).await;
+    let (alice_id, bob_id) = (alice.profile_id.clone(), bob.profile_id.clone());
+    for (player, friend, locstring) in [
+        (&mut bob, &alice_id, "QWxpY2U*"),
+        (&mut alice, &bob_id, "Qm9i"),
+    ] {
+        let accepted = player.client.receive().await;
+        assert_eq!((accepted["bm"].as_str(), &accepted["f"]), ("4", friend));
+        let status = player.client.receive().await;
+        assert_eq!((status["bm"].as_str(), &status["f"]), ("100", friend));
+        assert_eq!(
+            status["msg"],
+            format!("|s|1|ss||ls|{locstring}|ip|0|p|0|qm|0")
+        );
+    }
+
+    // A new status goes to the friend; leaving sends the offline one.
+    alice.status(2, "UGxheQ**").await;
+    assert!(bob.client.receive().await["msg"].starts_with("|s|2|ss||ls|UGxheQ**|"));
+    bob.client.send(r"\logout\\final\").await;
+    let offline = alice.client.receive().await;
+    assert_eq!(offline["f"], bob_id);
+    assert!(
+        offline["msg"].starts_with("|s|0|ss|Offline|"),
+        "{offline:?}"
+    );
+}
+
+#[sqlx::test]
 async fn a_login_needs_the_token_and_its_proof(pool: PgPool) {
     let server = Server::start(pool).await;
     let (token, challenge) = server.nas_login(42).await;
@@ -312,6 +354,42 @@ fn md5_hex(data: &str) -> String {
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect()
+}
+
+/// A logged-in GP client of its own account.
+struct Player {
+    client: Client,
+    profile_id: String,
+    sesskey: String,
+}
+
+impl Player {
+    async fn log_in(server: &Server, user_id: i64) -> Self {
+        let (token, challenge) = server.nas_login(user_id).await;
+        let mut client = Client::connect(server.gpcm).await;
+        let login = client.log_in(&token, &challenge).await;
+        Self {
+            client,
+            profile_id: login["profileid"].clone(),
+            sesskey: login["sesskey"].clone(),
+        }
+    }
+
+    async fn status(&mut self, status: u8, locstring: &str) {
+        let message = format!(
+            r"\status\{status}\sesskey\{}\statstring\\locstring\{locstring}\final\",
+            self.sesskey
+        );
+        self.client.send(&message).await;
+    }
+
+    async fn add(&mut self, profile_id: &str) {
+        let message = format!(
+            r"\addbuddy\\sesskey\{}\newprofileid\{profile_id}\reason\\final\",
+            self.sesskey
+        );
+        self.client.send(&message).await;
+    }
 }
 
 /// A GP client: sends raw messages and reads them back as fields.

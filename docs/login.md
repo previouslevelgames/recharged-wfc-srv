@@ -113,10 +113,10 @@ A login to a profile logged in elsewhere disconnects the other connection
 |---|---|
 | `getprofile` | `\pi\` with `profileid`, `nick`, `userid`, `email`, `sig`, `uniquenick`, `firstname`, `lastname`, `loc`; another profile's names are masked as `000000000R4QE0000000` |
 | `updatepro` | none; `firstname` and `lastname` are stored |
-| `status` | none; `locstring` is kept for `getprofile` |
+| `status` | none; `locstring` is kept for `getprofile`, and mutual friends get the status ([below](#mutual-friends)) |
 | `ka` | `\ka\\final\` |
 | `logout` | the server closes the connection |
-| `addbuddy` | none; `newprofileid` is kept for the login. For the [CPU buddy](#the-cpu-buddy): `\bm\4\`, then its status |
+| `addbuddy` | none; `newprofileid` is kept for the login ([below](#friend-requests)). Both players of a [mutual](#mutual-friends) request, and the [CPU buddy](#the-cpu-buddy), get `\bm\4\` and a status |
 | `authadd`, `delbuddy`, `bm`, … | none: not served yet |
 
 Errors are `\error\\err\<n>\errmsg\<text>\fatal\\final\` (with the request's `\id\`
@@ -146,8 +146,8 @@ buddy yet, by its profile id (`DWCi_UpdateFriendReq` in
 ```
 
 The server keeps the requests of each login in memory, up to 64, and answers
-none of them but the CPU buddy's ([below](#the-cpu-buddy)). DWC takes any GP
-error, even one that is not fatal, as a network error and goes offline
+none of them but mutual ones and the CPU buddy's. DWC takes any GP error, even
+one that is not fatal, as a network error and goes offline
 (`DWCi_GPErrorCallback` in `dwc_main.c`), so a bad `newprofileid` or the
 player's own is only logged.
 
@@ -156,8 +156,28 @@ A friend code is the profile id and, above it, 7 bits of a CRC-8 (polynomial
 (`DWC_Acc_CreateFriendKey` in `dwc_account.c`; not the MD5 WiiLink uses for
 other Wii games). DWC checks it with the player's own game code, so the same
 profile has one code in the US release (`R4QE`) and another in the European
-one (`R4QP`). Profile 1000000000 is `0868-9934-5920` in the
-US release.
+one (`R4QP`). Profile 1000000000 is `0868-9934-5920` in the US release.
+
+### Mutual friends
+
+A request is mutual when its friend is online and has asked for the player
+too, in its own login. Each of the two then gets the other's acceptance and,
+once the other has sent one, its status:
+
+```
+\bm\4\f\<friend>\msg\\final\
+\bm\100\f\<friend>\msg\|s|<status>|ss|<statstring>|ls|<locstring>|ip|0|p|0|qm|0\final\
+```
+
+A later `\status\` goes to the player's mutual friends the same way (values
+without `|`), and when a login ends they get it as offline:
+`|s|0|ss|Offline|ls||ip|0|p|0|qm|0`. The friendship lasts as long as both
+logins; it starts again at the next login, where DWC asks again for every
+friend that is not a buddy of GP. WiiLink keeps friends in memory the same
+way.
+
+`status` is DWC's (1 online, 2 playing, 3 to 6 matchmaking), and `locstring`
+the game's own status data: `U0MyAQ**` (`SC2` and 1) in its menus.
 
 ### The CPU buddy
 
@@ -220,6 +240,6 @@ which the server echoes. `statechanged` 2 means the game stops: no answer.
 
 ## Not served yet
 
-Server lists and matchmaking, mutual friends and their status messages, GPSP,
+Server lists and matchmaking, deleting friends (`delbuddy`), GPSP,
 the server browser and NAT negotiation. NAS `svcloc` and `/pr` are not used by
 the game.

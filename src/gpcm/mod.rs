@@ -3,9 +3,11 @@
 //! (docs/login.md). On a profile's first login DWC also stores its login id
 //! in the profile's `lastname`, then logs in again.
 //!
-//! Friend requests (`addbuddy`) are kept for the login; the CPU buddy accepts
-//! them at once. The rest of friends and presence comes later: those
-//! commands are accepted and ignored.
+//! Friends (docs/login.md): a request (`addbuddy`) is kept for the login. Two
+//! logins that asked for each other become mutual friends, get each other's
+//! status, and the offline one when either leaves. The CPU buddy accepts every
+//! request at once. `delbuddy` and the rest come later: those commands are
+//! accepted and ignored.
 
 mod message;
 
@@ -24,7 +26,7 @@ use sqlx::PgPool;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream, tcp::OwnedWriteHalf},
-    sync::Notify,
+    sync::{Notify, mpsc},
 };
 use tracing::{debug, info, trace, warn};
 
@@ -41,9 +43,14 @@ const PARTNER_ID: u32 = 11;
 /// The game's friend roster holds 64 friend codes (`DWC_InitFriendsMatch` in
 /// `NetworkSession.cpp`).
 const MAX_FRIENDS: usize = 64;
-/// The CPU buddy's status (`\bm\100\`): online (`|s|1`), with the status
-/// data the game sends from its menus as `locstring` (`SC2` and 1).
+/// `\bm\` kinds the server sends: a friend request accepted, a friend's status.
+const BM_AUTH: u32 = 4;
+const BM_STATUS: u32 = 100;
+/// The CPU buddy's status: online (`|s|1`), with the status data the game
+/// sends from its menus as `locstring` (`SC2` and 1).
 const CPU_BUDDY_STATUS: &str = "|s|1|ss||ls|U0MyAQ**|ip|0|p|0|qm|0";
+/// The status friends get when a login ends.
+const OFFLINE_STATUS: &str = "|s|0|ss|Offline|ls||ip|0|p|0|qm|0";
 
 /// GPCM's state: who is logged in where.
 pub struct Gpcm {
@@ -57,12 +64,30 @@ pub struct Gpcm {
 struct Session {
     connection: u64,
     kick: Arc<Notify>,
+    /// Messages to the connection from other logins: friends' answers and
+    /// statuses.
+    outbox: mpsc::UnboundedSender<Message>,
     /// The profiles this login has asked to add (`addbuddy`). DWC asks again
     /// at every login for each friend code of its roster that is not a buddy.
     friends: HashSet<i32>,
+    /// The friends online who have asked to add this profile too.
+    mutual: HashSet<i32>,
+    /// What mutual friends get from the last `\status\`.
+    status: Option<String>,
 }
 
 impl Session {
+    fn new(connection: u64, kick: Arc<Notify>, outbox: mpsc::UnboundedSender<Message>) -> Self {
+        Self {
+            connection,
+            kick,
+            outbox,
+            friends: HashSet::new(),
+            mutual: HashSet::new(),
+            status: None,
+        }
+    }
+
     /// Records a request to add `friend`. Whether it is new.
     fn add_friend(&mut self, friend: i32) -> bool {
         if self.friends.len() >= MAX_FRIENDS && !self.friends.contains(&friend) {
@@ -100,11 +125,13 @@ impl Gpcm {
         peer: SocketAddr,
     ) -> std::io::Result<()> {
         let (mut reader, writer) = stream.into_split();
+        let (outbox, mut inbox) = mpsc::unbounded_channel();
         let mut connection = Connection {
             id: self.next_connection.fetch_add(1, Ordering::Relaxed),
             peer: peer.ip(),
             challenge: uppercase(10),
             writer,
+            outbox,
             login: None,
         };
         debug!(target: "gpcm", %peer, "connected");
@@ -125,6 +152,10 @@ impl Gpcm {
                 () = async { kick.unwrap().notified().await }, if kick.is_some() => {
                     break connection.fail(Error::FORCED_DISCONNECT, None).await;
                 }
+                Some(message) = inbox.recv() => match connection.send(&message).await {
+                    Ok(()) => continue,
+                    Err(error) => break Err(error),
+                },
             };
             let read = match read {
                 Ok(0) => break Ok(()),
@@ -143,15 +174,23 @@ impl Gpcm {
         };
 
         if let Some(login) = &connection.login {
+            let profile_id = login.profile.profile_id;
             let mut sessions = self.sessions.lock().unwrap();
-            if sessions
-                .get(&login.profile.profile_id)
-                .map(|session| session.connection)
-                == Some(connection.id)
-            {
-                sessions.remove(&login.profile.profile_id);
+            if sessions.get(&profile_id).map(|session| session.connection) == Some(connection.id) {
+                let session = sessions.remove(&profile_id).unwrap();
+                for friend in session.mutual {
+                    if let Some(friend) = sessions.get_mut(&friend)
+                        && friend.mutual.remove(&profile_id)
+                    {
+                        let _ = friend.outbox.send(buddy_message(
+                            BM_STATUS,
+                            profile_id,
+                            OFFLINE_STATUS,
+                        ));
+                    }
+                }
             }
-            info!(target: "gpcm", profile_id = login.profile.profile_id, "logged out");
+            info!(target: "gpcm", profile_id, "logged out");
         }
         debug!(target: "gpcm", %peer, "disconnected");
         result
@@ -223,10 +262,9 @@ impl Gpcm {
                 Ok(true)
             }
             "status" => {
-                // Kept for `getprofile`; friends will see it once there are
-                // friends.
                 let login = connection.login.as_mut().unwrap();
                 login.locstring = message.get("locstring").unwrap_or_default().to_owned();
+                self.set_status(connection, &message);
                 Ok(true)
             }
             "addbuddy" => {
@@ -289,11 +327,7 @@ impl Gpcm {
         let kick = Arc::new(Notify::new());
         let previous = self.sessions.lock().unwrap().insert(
             profile.profile_id,
-            Session {
-                connection: connection.id,
-                kick: kick.clone(),
-                friends: HashSet::new(),
-            },
+            Session::new(connection.id, kick.clone(), connection.outbox.clone()),
         );
         if let Some(previous) = previous.filter(|previous| previous.connection != connection.id) {
             previous.kick.notify_one();
@@ -331,8 +365,67 @@ impl Gpcm {
             info!(target: "gpcm", profile_id, friend, friend_code, "friend request");
         } else if !session.friends.contains(&friend) {
             debug!(target: "gpcm", profile_id, friend, "too many friend requests");
+            return Some(friend);
         }
+        let status = session.status.clone();
+
+        // Mutual once the friend, online, has asked for this profile too.
+        // Each then gets the other's acceptance and status.
+        let Some(other) = sessions
+            .get_mut(&friend)
+            .filter(|other| other.friends.contains(&profile_id))
+        else {
+            return Some(friend);
+        };
+        other.mutual.insert(profile_id);
+        let _ = other.outbox.send(buddy_message(BM_AUTH, profile_id, ""));
+        if let Some(status) = &status {
+            let _ = other
+                .outbox
+                .send(buddy_message(BM_STATUS, profile_id, status));
+        }
+        let other_status = other.status.clone();
+        let session = sessions.get_mut(&profile_id).unwrap();
+        session.mutual.insert(friend);
+        let _ = session.outbox.send(buddy_message(BM_AUTH, friend, ""));
+        if let Some(status) = &other_status {
+            let _ = session
+                .outbox
+                .send(buddy_message(BM_STATUS, friend, status));
+        }
+        info!(target: "gpcm", profile_id, friend, "mutual friends");
         Some(friend)
+    }
+
+    /// `\status\`: what the game is doing, for mutual friends. The values go
+    /// into GP's `|key|value` form, so they lose any `|`.
+    fn set_status(&self, connection: &Connection, message: &Message) {
+        let profile_id = connection.login.as_ref().unwrap().profile.profile_id;
+        let value = |key| message.get(key).unwrap_or_default().replace('|', "");
+        let status = format!(
+            "|s|{}|ss|{}|ls|{}|ip|0|p|0|qm|0",
+            value("status"),
+            value("statstring"),
+            value("locstring")
+        );
+        let mut sessions = self.sessions.lock().unwrap();
+        let Some(session) = sessions
+            .get_mut(&profile_id)
+            .filter(|session| session.connection == connection.id)
+        else {
+            return;
+        };
+        session.status = Some(status.clone());
+        for friend in session.mutual.clone() {
+            if let Some(friend) = sessions
+                .get(&friend)
+                .filter(|friend| friend.mutual.contains(&profile_id))
+            {
+                let _ = friend
+                    .outbox
+                    .send(buddy_message(BM_STATUS, profile_id, &status));
+            }
+        }
     }
 
     /// `\getprofile\`: the profile asked for, all of it only for its owner.
@@ -394,6 +487,8 @@ struct Connection {
     /// Sent on connect; both login proofs include it.
     challenge: String,
     writer: OwnedWriteHalf,
+    /// For the session, so other logins can send to this connection.
+    outbox: mpsc::UnboundedSender<Message>,
     login: Option<Login>,
 }
 
@@ -420,14 +515,9 @@ impl Connection {
         let profile_id = self.login.as_ref().map(|login| login.profile.profile_id);
         info!(target: "gpcm", profile_id, "the CPU buddy accepts");
         let from = accounts::CPU_BUDDY;
-        self.send(&Message::new("bm", 4).with("f", from).with("msg", ""))
-            .await?;
-        self.send(
-            &Message::new("bm", 100)
-                .with("f", from)
-                .with("msg", CPU_BUDDY_STATUS),
-        )
-        .await
+        self.send(&buddy_message(BM_AUTH, from, "")).await?;
+        self.send(&buddy_message(BM_STATUS, from, CPU_BUDDY_STATUS))
+            .await
     }
 
     /// Sends `error`; the client then gives up the connection.
@@ -492,6 +582,11 @@ fn proof(nas_challenge: &str, token: &str, first: &str, second: &str) -> String 
     ))
 }
 
+/// `\bm\<kind>\f\<from>\msg\<msg>\final\`: a message from a buddy.
+fn buddy_message(kind: u32, from: i32, msg: &str) -> Message {
+    Message::new("bm", kind).with("f", from).with("msg", msg)
+}
+
 fn md5_hex(data: impl AsRef<[u8]>) -> String {
     Md5::digest(data)
         .iter()
@@ -511,11 +606,7 @@ mod tests {
 
     #[test]
     fn friend_requests_are_kept_once_up_to_the_roster_size() {
-        let mut session = Session {
-            connection: 1,
-            kick: Arc::new(Notify::new()),
-            friends: HashSet::new(),
-        };
+        let mut session = Session::new(1, Arc::new(Notify::new()), mpsc::unbounded_channel().0);
         assert!(session.add_friend(1_000_000_001));
         assert!(!session.add_friend(1_000_000_001));
         for friend in 1..MAX_FRIENDS as i32 {
