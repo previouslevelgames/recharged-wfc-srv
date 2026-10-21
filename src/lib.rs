@@ -11,6 +11,7 @@ mod gamestats;
 mod gpcm;
 mod master;
 mod nas;
+mod natneg;
 mod serverbrowser;
 
 pub const REVISION: &str = env!("BUILD_REVISION");
@@ -63,6 +64,11 @@ impl App {
     /// `listener` (TCP 28910).
     pub async fn serve_server_browser(&self, listener: TcpListener) -> std::io::Result<()> {
         serverbrowser::serve(self.master.clone(), listener).await
+    }
+
+    /// NAT negotiation on `socket` (UDP 27901).
+    pub async fn serve_natneg(&self, socket: UdpSocket) -> std::io::Result<()> {
+        Arc::new(natneg::Natneg::default()).serve(socket).await
     }
 
     /// The QR2 master server on `socket` (UDP 27900).

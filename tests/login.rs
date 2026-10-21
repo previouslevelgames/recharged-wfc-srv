@@ -1,7 +1,8 @@
 //! Registration and login as the port does them (docs/login.md): NAS
 //! `acctcreate` and `login` over HTTP, GPCM over TCP with friend requests,
 //! the master server's availability check and heartbeats over UDP, and the
-//! server browser's lookup of a host and its messages to one over TCP.
+//! server browser's lookup of a host and its messages to one over TCP, and
+//! NAT negotiation over UDP.
 
 use std::{collections::HashMap, net::SocketAddr};
 
@@ -361,6 +362,81 @@ async fn the_server_browser_passes_messages_on_until_acked() {
     )
     .await;
     assert!(again.is_err(), "sent again after the ack");
+}
+
+#[tokio::test]
+async fn nat_negotiation_gives_each_game_the_others_address() {
+    use tokio::net::UdpSocket;
+
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .connect_lazy_with(sqlx::postgres::PgConnectOptions::new());
+    let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let natneg = server.local_addr().unwrap();
+    tokio::spawn(async move { App::new(pool).serve_natneg(server).await });
+
+    let packet = |kind: u8, body: &[u8]| {
+        let mut packet = b"\xFD\xFC\x1E\x66\x6A\xB2\x03".to_vec();
+        packet.push(kind);
+        packet.extend_from_slice(&0xC0FF_EE00u32.to_be_bytes());
+        packet.extend_from_slice(body);
+        packet
+    };
+    async fn recv(socket: &UdpSocket) -> Vec<u8> {
+        let mut packet = [0; 512];
+        let len = socket.recv(&mut packet).await.unwrap();
+        packet[..len].to_vec()
+    }
+
+    // Each game: its game socket's INIT, then its negotiation socket's three.
+    let mut games = Vec::new();
+    for index in 0..2u8 {
+        let game = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let negotiate = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        for port_type in 0..4u8 {
+            let socket = if port_type == 0 { &game } else { &negotiate };
+            let init = packet(0, &[port_type, index, 1, 127, 0, 0, 1, 0, 0, b'm', 0]);
+            socket.send_to(&init, natneg).await.unwrap();
+        }
+        games.push((game, negotiate));
+    }
+
+    // INIT_ACKs to each socket, and once both games are known, a CONNECT
+    // with the other game's game socket to each negotiation socket.
+    for (index, (game, negotiate)) in games.iter().enumerate() {
+        let ack = recv(game).await;
+        assert_eq!((ack[7], ack[12], ack[13]), (1, 0, index as u8));
+        let other = games[1 - index].0.local_addr().unwrap();
+        let (mut acks, mut connects) = (Vec::new(), 0);
+        while acks.len() < 3 || connects == 0 {
+            let packet = recv(negotiate).await;
+            match packet[7] {
+                1 => acks.push(packet[12]),
+                5 => {
+                    assert_eq!(packet[12..16], [127, 0, 0, 1]);
+                    assert_eq!(packet[16..18], other.port().to_be_bytes());
+                    assert_eq!(packet[19], 0, "no error");
+                    connects += 1;
+                }
+                kind => panic!("packet type {kind}"),
+            }
+        }
+        acks.sort();
+        assert_eq!(acks, [1, 2, 3]);
+    }
+    // Only the first acks; the second gets its CONNECT again.
+    let first = &games[0].1;
+    first.send_to(&packet(6, &[0, 0]), natneg).await.unwrap();
+    assert_eq!(recv(&games[1].1).await[7], 5);
+
+    // The report, acked.
+    let mut report = vec![1, 0, 1, 2, 0, 0, 0, 1, 0, 0, 0];
+    report.extend_from_slice(&[0; 50]);
+    first.send_to(&packet(0x0D, &report), natneg).await.unwrap();
+    let mut ack = recv(first).await;
+    while ack[7] == 5 {
+        ack = recv(first).await;
+    }
+    assert_eq!(ack[7], 0x0E);
 }
 
 /// The master server on a local UDP port with its server browser on a TCP

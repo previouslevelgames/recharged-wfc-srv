@@ -42,12 +42,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let gpcm = TcpListener::bind(("0.0.0.0", port("GPCM_PORT", 29900)?)).await?;
     let master = UdpSocket::bind(("0.0.0.0", port("MASTER_PORT", 27900)?)).await?;
     let browser = TcpListener::bind(("0.0.0.0", port("SERVER_BROWSER_PORT", 28910)?)).await?;
+    let natneg = UdpSocket::bind(("0.0.0.0", port("NATNEG_PORT", 27901)?)).await?;
     info!(
-        "recharged-wfc-srv listening on {} (HTTP), {} (GPCM), {}/udp (master) and {} (server browser) (revision {})",
+        "recharged-wfc-srv listening on {} (HTTP), {} (GPCM), {}/udp (master), {} (server browser) and {}/udp (NAT negotiation) (revision {})",
         http.local_addr()?,
         gpcm.local_addr()?,
         master.local_addr()?,
         browser.local_addr()?,
+        natneg.local_addr()?,
         recharged_wfc_srv::REVISION
     );
 
@@ -67,6 +69,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         result = app.serve_gpcm(gpcm) => result?,
         result = app.serve_master(master) => result?,
         result = app.serve_server_browser(browser) => result?,
+        result = app.serve_natneg(natneg) => result?,
     }
     Ok(())
 }

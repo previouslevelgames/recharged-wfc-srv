@@ -13,6 +13,7 @@ services:
       - "29900:29900"
       - "27900:27900/udp"
       - "28910:28910"
+      - "27901:27901/udp"
     environment:
       PORT: "8080"
       POSTGRES_DB: ${POSTGRES_DB:-recharged_wfc}

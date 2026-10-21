@@ -26,9 +26,11 @@ branch patches out TLS. The services are told apart by port:
 | TCP 29900 | GPCM | `gpcm.gs.` |
 | UDP 27900 | QR2 master: availability check, heartbeats | `mschargedwii.available.gs.`, `mschargedwii.master.gs.` |
 | TCP 28910 | Server browser: the master's sessions | `mschargedwii.ms11.gs.` |
+| UDP 27901 | NAT negotiation | `natneg1.gs.`, `natneg2.gs.`, `natneg3.gs.` |
 
 The server listens on `PORT` (8080), `GPCM_PORT` (29900), `MASTER_PORT`
-(27900) and `SERVER_BROWSER_PORT` (28910); map host port 80 to `PORT`.
+(27900), `SERVER_BROWSER_PORT` (28910) and `NATNEG_PORT` (27901); map host port
+80 to `PORT`.
 
 ## The sequence
 
@@ -332,8 +334,30 @@ game as a client message, `FE FD 06 <key> <message key, 4 bytes> <message>`,
 again each second until the game acks it (`07 <key> <message key>`), for at
 most 10 seconds; the game drops one it has already had.
 
+## NAT negotiation: UDP 27901
+
+`P/src/RVL_SDK/gamespy/natneg/natneg.c` is the client, protocol version 3.
+Two games whose public addresses differ negotiate before they connect: the
+cookie they share comes in the server browser's messages (`FD FC 1E 66 6A B2`
+first). Every packet starts with that magic, the version, the type and the
+cookie (big-endian).
+
+| Packet | Answer |
+|---|---|
+| `00` INIT: port type, client index (0 or 1), whether it negotiates for its game socket, its local address, the game | `01` INIT_ACK with the port type and index |
+| `06` CONNECT_ACK: the client index | none; that CONNECT is not sent again |
+| `0D` REPORT: the client index, the result (1: they connected), the NAT type | `0E` REPORT_ACK |
+
+A game sends four INITs: port type 0 from its game socket, 1 to 3 from a
+negotiation socket (to `natneg1` to `natneg3`, all this server), again each
+half second until acked. Once both games of a cookie are known, each gets a
+`05` CONNECT at its negotiation socket with the other's game socket as the
+server sees it (IP and port big-endian, then `42` and `00`: no error), again
+each half second until it acks. The games then ping each other there and
+report. A negotiation is forgotten after 30 seconds.
+
 ## Not served yet
 
-Matchmaking with anybody (the server browser's other filters), NAT
-negotiation and GPSP. NAS
+Matchmaking with anybody (the server browser's other filters), NAT detection
+(`ADDRESS_CHECK`, `NATIFY_REQUEST`) and GPSP. NAS
 `svcloc` and `/pr` are not used by the game.
