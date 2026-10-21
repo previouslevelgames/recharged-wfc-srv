@@ -1,6 +1,7 @@
 //! Registration and login as the port does them (docs/login.md): NAS
 //! `acctcreate` and `login` over HTTP, GPCM over TCP with friend requests,
-//! and the master server's availability check and heartbeats over UDP.
+//! the master server's availability check and heartbeats over UDP, and the
+//! server browser's lookup of a host over TCP.
 
 use std::{collections::HashMap, net::SocketAddr};
 
@@ -297,9 +298,37 @@ async fn a_logged_in_game_is_challenged() {
     assert_eq!(challenge[6..], format!("007F000001{port:04X}\0"));
 }
 
-/// The master server on a local UDP port, and a client socket.
+#[tokio::test]
+async fn the_server_browser_finds_a_hosts_session() {
+    let master = Master::start().await;
+    master
+        .send(b"\x03\x01\x02\x03\x04localip0\x00192.168.1.131\x00localport\x0051021\x00natneg\x001\x00statechanged\x001\x00gamename\x00mschargedwii\x00dwc_pid\x001000000000\x00dwc_mtype\x002\x00\x00\x00")
+        .await;
+
+    // The port's request for its host's session, and one for nobody.
+    let lookup = b"\x00\x8d\x00\x01\x03\x00\x00\x00\x00mschargedwii\x00mschargedwii\x00Y];98goldwc_pid = 1000000000\x00\\numplayers\\maxplayers\\dwc_pid\\dwc_mtype\\dwc_mresv\\dwc_mver\\dwc_eval\x00\x00\x00\x00\x80\x06\x00\x00\x00";
+    let found = master.list(lookup).await;
+    let nobody = master
+        .list(&lookup.map(|byte| if byte == b'0' { b'1' } else { byte }))
+        .await;
+    // The encryption's header: 5 bytes, then 13 more of key.
+    for reply in [&found, &nobody] {
+        assert_eq!((reply[0] ^ 0xEC, reply[6] ^ 0xEA), (5, 13), "{reply:?}");
+    }
+    // The host's session, 17 bytes and its 7 fields, is in the first only.
+    assert!(
+        found.len() > nobody.len() + 17,
+        "{} {}",
+        found.len(),
+        nobody.len()
+    );
+}
+
+/// The master server on a local UDP port with its server browser on a TCP
+/// port, and a client socket.
 struct Master {
     address: SocketAddr,
+    browser: SocketAddr,
     client: tokio::net::UdpSocket,
 }
 
@@ -307,16 +336,32 @@ impl Master {
     async fn start() -> Self {
         use tokio::net::UdpSocket;
 
-        // The master server keeps nothing in the database.
+        // The master server and the server browser keep nothing in the
+        // database.
         let pool = sqlx::postgres::PgPoolOptions::new()
             .connect_lazy_with(sqlx::postgres::PgConnectOptions::new());
+        let app = App::new(pool);
         let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let address = socket.local_addr().unwrap();
-        tokio::spawn(async move { App::new(pool).serve_master(socket).await });
-        Self {
-            address,
+        let browser = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let master = Self {
+            address: socket.local_addr().unwrap(),
+            browser: browser.local_addr().unwrap(),
             client: UdpSocket::bind("127.0.0.1:0").await.unwrap(),
-        }
+        };
+        let browsing = app.clone();
+        tokio::spawn(async move { app.serve_master(socket).await });
+        tokio::spawn(async move { browsing.serve_server_browser(browser).await });
+        master
+    }
+
+    /// A list request to the server browser; the encrypted reply.
+    async fn list(&self, request: &[u8]) -> Vec<u8> {
+        let mut stream = TcpStream::connect(self.browser).await.unwrap();
+        stream.write_all(request).await.unwrap();
+        let mut reply = vec![0; 4096];
+        let len = stream.read(&mut reply).await.unwrap();
+        reply.truncate(len);
+        reply
     }
 
     async fn send(&self, packet: &[u8]) -> Vec<u8> {

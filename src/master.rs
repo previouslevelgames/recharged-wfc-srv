@@ -5,13 +5,6 @@
 //! four heartbeats, 10 seconds apart, with error 94020. Each game's last
 //! heartbeat is its session, which a game looking for a match asks the server
 //! browser for (docs/login.md).
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the server browser, the next step, lists the sessions"
-    )
-)]
 
 use std::{
     collections::HashMap,
@@ -97,7 +90,8 @@ impl Master {
             .collect()
     }
 
-    fn answer(&self, packet: &[u8], peer: SocketAddr) -> Option<Vec<u8>> {
+    /// The reply to a packet from `peer`, if any.
+    pub(crate) fn answer(&self, packet: &[u8], peer: SocketAddr) -> Option<Vec<u8>> {
         let (&kind, rest) = packet.split_first()?;
         // The game's instance key, which replies carry.
         let (key, body) = rest.split_first_chunk::<4>()?;

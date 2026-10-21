@@ -20,6 +20,7 @@ In **Docker → Add Container**, enable **Advanced View** and use these settings
 | Port (HTTP) | Config Type **Port**: Container Port `8080`, Host Port `80`, TCP. The game sends NAS and gamestats2 requests to port 80. |
 | Port (GPCM) | Config Type **Port**: Container Port `29900`, Host Port `29900`, TCP |
 | Port (master) | Config Type **Port**: Container Port `27900`, Host Port `27900`, UDP |
+| Port (server browser) | Config Type **Port**: Container Port `28910`, Host Port `28910`, TCP |
 | Path (SQL data) | Config Type **Path**: Container Path `/var/lib/postgresql`, Host Path `/mnt/user/appdata/recharged-wfc-srv/postgres`, Access Mode **Read/Write** |
 | WebUI | `http://[IP]:[PORT:8080]/status` |
 | Extra Parameters (Advanced) | `--stop-timeout=30` |
@@ -46,6 +47,7 @@ enter the **Key** and **Value** from the table, and set **Password Mask: Yes** f
 | `PORT` | no | HTTP port inside the container (NAS, gamestats2, `/status`, `/admin`). Default: `8080`; the Host Port mapping makes it 80. |
 | `GPCM_PORT` | no | GPCM port inside the container. Default: `29900`. |
 | `MASTER_PORT` | no | UDP port of the master server inside the container. Default: `27900`. |
+| `SERVER_BROWSER_PORT` | no | TCP port of the server browser inside the container. Default: `28910`. |
 | `PUBLIC_URL` | for `/admin` | The HTTPS address browsers use for this server, without a path, e.g. `https://wfc.example.com`. See [Admin dashboard](#admin-dashboard). |
 | `GOOGLE_CLIENT_ID` | for `/admin` | Client ID of the Google OAuth client. |
 | `GOOGLE_CLIENT_SECRET` | for `/admin` | Client secret of the Google OAuth client. Set **Password Mask: Yes**. |
@@ -78,14 +80,17 @@ IPv4 address. Set it in the game's `recharged.ini`:
 server = 192.168.1.42
 ```
 
-That address must reach the container on TCP 80, TCP 29900 and UDP 27900;
-for players outside your network, forward those three ports on the router. The
+That address must reach the container on TCP 80, TCP 29900, UDP 27900 and
+TCP 28910; for players outside your network, forward those four ports on the
+router. The
 traffic is plain HTTP and GameSpy's own protocols, so it cannot go through a
 Cloudflare Tunnel. On its first login the game registers the console and keeps
 the userid in `data/shared2/DWC_AUTHDATA`.
 
-The game logs in and stays online; matchmaking, friends and the server
-browser are not served yet.
+The game logs in and stays online, and friend codes work: friends who add
+each other see each other online. Battles with friends get as far as finding
+the host; connecting the two games (NAT negotiation) and matchmaking with
+anybody are not served yet.
 
 ## Admin dashboard
 
@@ -175,7 +180,7 @@ docker compose up -d --no-build --wait
 
 For Compose, `POSTGRES_DATA_DIR` sets the **host** folder and `HTTP_PORT` sets the
 host HTTP port (default 80, which the game needs); GPCM and the master server
-use 29900 and 27900/udp. In Unraid, use the **Path** and **Port** mappings above.
+use 29900, 27900/udp and 28910. In Unraid, use the **Path** and **Port** mappings above.
 Repeat the last two commands to update. To build locally instead, run
 `./scripts/build.sh` before `docker compose up -d --no-build --wait`.
 

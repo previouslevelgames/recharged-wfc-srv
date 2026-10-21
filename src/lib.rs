@@ -11,6 +11,7 @@ mod gamestats;
 mod gpcm;
 mod master;
 mod nas;
+mod serverbrowser;
 
 pub const REVISION: &str = env!("BUILD_REVISION");
 
@@ -56,6 +57,12 @@ impl App {
     /// GPCM, the GameSpy login, on `listener` (TCP 29900).
     pub async fn serve_gpcm(&self, listener: TcpListener) -> std::io::Result<()> {
         self.gpcm.clone().serve(listener).await
+    }
+
+    /// The server browser, which lists the master server's sessions, on
+    /// `listener` (TCP 28910).
+    pub async fn serve_server_browser(&self, listener: TcpListener) -> std::io::Result<()> {
+        serverbrowser::serve(self.master.clone(), listener).await
     }
 
     /// The QR2 master server on `socket` (UDP 27900).

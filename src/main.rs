@@ -41,11 +41,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let http = TcpListener::bind(("0.0.0.0", port("PORT", 8080)?)).await?;
     let gpcm = TcpListener::bind(("0.0.0.0", port("GPCM_PORT", 29900)?)).await?;
     let master = UdpSocket::bind(("0.0.0.0", port("MASTER_PORT", 27900)?)).await?;
+    let browser = TcpListener::bind(("0.0.0.0", port("SERVER_BROWSER_PORT", 28910)?)).await?;
     info!(
-        "recharged-wfc-srv listening on {} (HTTP), {} (GPCM) and {}/udp (master) (revision {})",
+        "recharged-wfc-srv listening on {} (HTTP), {} (GPCM), {}/udp (master) and {} (server browser) (revision {})",
         http.local_addr()?,
         gpcm.local_addr()?,
         master.local_addr()?,
+        browser.local_addr()?,
         recharged_wfc_srv::REVISION
     );
 
@@ -64,6 +66,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         result = axum::serve(http, router).with_graceful_shutdown(shutdown()) => result?,
         result = app.serve_gpcm(gpcm) => result?,
         result = app.serve_master(master) => result?,
+        result = app.serve_server_browser(browser) => result?,
     }
     Ok(())
 }

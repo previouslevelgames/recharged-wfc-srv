@@ -25,9 +25,10 @@ branch patches out TLS. The services are told apart by port:
 | TCP 80 | NAS `/ac`, gamestats2 | `naswii.`, `gamestats2.gs.` |
 | TCP 29900 | GPCM | `gpcm.gs.` |
 | UDP 27900 | QR2 master: availability check, heartbeats | `mschargedwii.available.gs.`, `mschargedwii.master.gs.` |
+| TCP 28910 | Server browser: the master's sessions | `mschargedwii.ms11.gs.` |
 
-The server listens on `PORT` (8080), `GPCM_PORT` (29900) and `MASTER_PORT`
-(27900); map host port 80 to `PORT`.
+The server listens on `PORT` (8080), `GPCM_PORT` (29900), `MASTER_PORT`
+(27900) and `SERVER_BROWSER_PORT` (28910); map host port 80 to `PORT`.
 
 ## The sequence
 
@@ -280,8 +281,41 @@ dwc_pid=1000000000 dwc_mtype=2 dwc_mresv=1000000001 dwc_mver=3 dwc_eval=1
 (2 hosting a group, 3 joining one), `dwc_mresv` the profile that reserved a
 place or that the game asks for, `dwc_mver` the matchmaking version.
 
+## Server browser: TCP 28910
+
+`P/src/RVL_SDK/gamespy/serverbrowsing/sb_serverlist.c` is the client. A friend
+who got a place in a host's group ([matchmaking messages](#matchmaking-messages))
+asks for the host's [session](#sessions) by profile. Each request starts with
+its length (2 bytes, big-endian, itself included) and its type; a list request
+(type `00`):
+
+```
+00 8d 00 01 03 00000000 mschargedwii\0 mschargedwii\0 <challenge, 8 bytes>
+dwc_pid = 1000000000\0 \numplayers\maxplayers\dwc_pid\dwc_mtype\dwc_mresv\dwc_mver\dwc_eval\0
+00000080 06000000
+```
+
+That is: protocol 1, encoding 3, game version 0, the game listed and the
+game asking, the client's challenge, the filter, the fields and the options
+(`80`: a limit on the results follows). The reply, before encryption:
+
+| Bytes | |
+|---|---|
+| 4 + 2 | the client's public IP and port |
+| 1, then per field `00` name `\0` | the fields (all strings), without the addresses |
+| `00` | no popular values |
+| per session: flags, public IP and port, `localip0` and `localport`, `00000000`, then per field `FF` value `\0` | flags `7E` (keys, every address, and `04` for `natneg`) |
+| `00 FF FF FF FF` | the end |
+
+It is encrypted as the client decrypts it (`sb_crypt.c`, `InitCryptKey`): a
+20-byte header (byte 0 `05 ^ EC`, bytes 1 and 2 the backend's flags, `00`, byte
+6 `0D ^ EA`, the rest random), then the reply under GOACrypt, keyed with the
+client's challenge mixed with the secret key `B4LdGW` and header bytes 7 to 19.
+Only a lookup by `dwc_pid` finds sessions yet; other filters (matchmaking
+with anybody) get an empty list, and other requests no answer.
+
 ## Not served yet
 
-Server lists and matchmaking, GPSP,
-the server browser and NAT negotiation. NAS `svcloc` and `/pr` are not used by
-the game.
+Matchmaking with anybody (the server browser's other filters), the server
+browser's other requests (messages to a host), NAT negotiation and GPSP. NAS
+`svcloc` and `/pr` are not used by the game.
