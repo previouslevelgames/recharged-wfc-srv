@@ -116,7 +116,7 @@ A login to a profile logged in elsewhere disconnects the other connection
 | `status` | none; `locstring` is kept for `getprofile` |
 | `ka` | `\ka\\final\` |
 | `logout` | the server closes the connection |
-| `addbuddy` | none; `newprofileid` is kept for the login ([below](#friend-requests)) |
+| `addbuddy` | none; `newprofileid` is kept for the login. For the [CPU buddy](#the-cpu-buddy): `\bm\4\`, then its status |
 | `authadd`, `delbuddy`, `bm`, … | none: not served yet |
 
 Errors are `\error\\err\<n>\errmsg\<text>\fatal\\final\` (with the request's `\id\`
@@ -146,9 +146,10 @@ buddy yet, by its profile id (`DWCi_UpdateFriendReq` in
 ```
 
 The server keeps the requests of each login in memory, up to 64, and answers
-none of them. DWC takes any GP error, even one that is not fatal, as a
-network error and goes offline (`DWCi_GPErrorCallback` in `dwc_main.c`), so a
-bad `newprofileid` or the player's own is only logged.
+none of them but the CPU buddy's ([below](#the-cpu-buddy)). DWC takes any GP
+error, even one that is not fatal, as a network error and goes offline
+(`DWCi_GPErrorCallback` in `dwc_main.c`), so a bad `newprofileid` or the
+player's own is only logged.
 
 A friend code is the profile id and, above it, 7 bits of a CRC-8 (polynomial
 0x07) of the profile id and the game code, both little-endian
@@ -158,17 +159,31 @@ profile has one code in the US release (`R4QE`) and another in the European
 one (`R4QP`). Profile 1000000000 is `0868-9934-5920` in the
 US release.
 
-**The CPU buddy** is a profile to add before a second console is online:
-profile 999999999 of account 1, Mii name `CPU`. Its friend code is
-`1770-9365-9135` in the US release and `0009-9999-9999` in the European one.
-Nothing logs in as it yet; a headless client of the port is to do so later.
+### The CPU buddy
+
+A profile to add before a second console is online: profile 999999999 of
+account 1, Mii name `CPU`. Its friend code is `1770-9365-9135` in the US
+release and `0009-9999-9999` in the European one.
+
+Nothing logs in as it yet (a headless client of the port is to do so later),
+so the server accepts every request for it at once, then sends its status:
+online, with the status data the game sends from its menus.
+
+```
+\bm\4\f\999999999\msg\\final\
+\bm\100\f\999999999\msg\|s|1|ss||ls|U0MyAQ**|ip|0|p|0|qm|0\final\
+```
+
+On `\bm\4\` DWC asks for the profile (`getprofile`) and makes the friend code a
+buddy (`DWCi_GPGetInfoCallback_RecvAuthMessage` in `dwc_friend.c`); the status
+makes it a buddy of GP, so DWC does not ask again in this login.
 
 ## Accounts and profiles
 
 `accounts` has one row per userid. `profiles` has one per userid and gsbrcd,
 so each Mii slot is its own profile. Profile ids count from 1,000,000,000 and
 fit the 31 bits DWC's friend codes take; the ids below are kept for the
-server's own profiles, such as the [CPU buddy](#friend-requests).
+server's own profiles, such as the [CPU buddy](#the-cpu-buddy).
 `unique_nick` is the userid in base32 (`0-9a-v`) followed by the gsbrcd.
 
 ## QR2: UDP 27900

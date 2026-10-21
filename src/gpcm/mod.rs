@@ -3,8 +3,9 @@
 //! (docs/login.md). On a profile's first login DWC also stores its login id
 //! in the profile's `lastname`, then logs in again.
 //!
-//! Friend requests (`addbuddy`) are kept for the login. The rest of friends
-//! and presence comes later: those commands are accepted and ignored.
+//! Friend requests (`addbuddy`) are kept for the login; the CPU buddy accepts
+//! them at once. The rest of friends and presence comes later: those
+//! commands are accepted and ignored.
 
 mod message;
 
@@ -40,6 +41,9 @@ const PARTNER_ID: u32 = 11;
 /// The game's friend roster holds 64 friend codes (`DWC_InitFriendsMatch` in
 /// `NetworkSession.cpp`).
 const MAX_FRIENDS: usize = 64;
+/// The CPU buddy's status (`\bm\100\`): online (`|s|1`), with the status
+/// data the game sends from its menus as `locstring` (`SC2` and 1).
+const CPU_BUDDY_STATUS: &str = "|s|1|ss||ls|U0MyAQ**|ip|0|p|0|qm|0";
 
 /// GPCM's state: who is logged in where.
 pub struct Gpcm {
@@ -226,7 +230,9 @@ impl Gpcm {
                 Ok(true)
             }
             "addbuddy" => {
-                self.add_friend(connection, &message);
+                if self.add_friend(connection, &message) == Some(accounts::CPU_BUDDY) {
+                    connection.accept_as_cpu_buddy().await?;
+                }
                 Ok(true)
             }
             command => {
@@ -301,9 +307,10 @@ impl Gpcm {
     }
 
     /// `\addbuddy\`: a friend code of the game's roster, as `newprofileid`.
-    /// Kept for the login and never answered: DWC takes any GP error, even
-    /// one that is not fatal, as a network error and goes offline.
-    fn add_friend(&self, connection: &Connection, message: &Message) {
+    /// Kept for the login. Returns the friend, `None` for a bad request: no
+    /// error goes back, as DWC takes any GP error, even one that is not fatal,
+    /// as a network error and goes offline.
+    fn add_friend(&self, connection: &Connection, message: &Message) -> Option<i32> {
         let profile = &connection.login.as_ref().unwrap().profile;
         let profile_id = profile.profile_id;
         let newprofileid = message.get("newprofileid");
@@ -312,15 +319,12 @@ impl Gpcm {
             .filter(|&friend| friend > 0 && friend != profile_id)
         else {
             debug!(target: "gpcm", profile_id, newprofileid, "bad friend request");
-            return;
+            return None;
         };
         let mut sessions = self.sessions.lock().unwrap();
-        let Some(session) = sessions
+        let session = sessions
             .get_mut(&profile_id)
-            .filter(|session| session.connection == connection.id)
-        else {
-            return;
-        };
+            .filter(|session| session.connection == connection.id)?;
         if session.add_friend(friend) {
             let game = profile.gsbrcd.get(..4).unwrap_or_default();
             let friend_code = accounts::friend_code(friend, game);
@@ -328,6 +332,7 @@ impl Gpcm {
         } else if !session.friends.contains(&friend) {
             debug!(target: "gpcm", profile_id, friend, "too many friend requests");
         }
+        Some(friend)
     }
 
     /// `\getprofile\`: the profile asked for, all of it only for its owner.
@@ -404,6 +409,25 @@ impl Connection {
     async fn send(&mut self, message: &Message) -> std::io::Result<()> {
         trace!(target: "raw::gpcm", peer = %self.peer, %message, "reply");
         self.writer.write_all(message.to_string().as_bytes()).await
+    }
+
+    /// Nothing logs in as the CPU buddy yet, so it accepts every request
+    /// itself (`\bm\4\`) and is online. DWC then asks for its profile and
+    /// makes the friend code a buddy (`DWCi_GPGetInfoCallback_RecvAuthMessage`
+    /// in `dwc_friend.c`); the status makes it a GP buddy, which DWC asks no
+    /// more of in this login.
+    async fn accept_as_cpu_buddy(&mut self) -> std::io::Result<()> {
+        let profile_id = self.login.as_ref().map(|login| login.profile.profile_id);
+        info!(target: "gpcm", profile_id, "the CPU buddy accepts");
+        let from = accounts::CPU_BUDDY;
+        self.send(&Message::new("bm", 4).with("f", from).with("msg", ""))
+            .await?;
+        self.send(
+            &Message::new("bm", 100)
+                .with("f", from)
+                .with("msg", CPU_BUDDY_STATUS),
+        )
+        .await
     }
 
     /// Sends `error`; the client then gives up the connection.

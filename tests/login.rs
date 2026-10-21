@@ -102,6 +102,36 @@ async fn friend_requests_get_no_answer(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn the_cpu_buddy_accepts_at_once(pool: PgPool) {
+    let server = Server::start(pool).await;
+    let (token, challenge) = server.nas_login(42).await;
+    let mut client = Client::connect(server.gpcm).await;
+    let login = client.log_in(&token, &challenge).await;
+
+    client
+        .send(&format!(
+            r"\addbuddy\\sesskey\{}\newprofileid\999999999\reason\\final\",
+            login["sesskey"]
+        ))
+        .await;
+    let accepted = client.receive().await;
+    assert_eq!(
+        (accepted["bm"].as_str(), accepted["f"].as_str()),
+        ("4", "999999999")
+    );
+    let status = client.receive().await;
+    assert_eq!(
+        (status["bm"].as_str(), status["f"].as_str()),
+        ("100", "999999999")
+    );
+    assert!(status["msg"].starts_with("|s|1|"), "{status:?}");
+
+    // DWC then asks for the buddy's profile.
+    let buddy = client.get_profile("999999999").await;
+    assert_eq!(buddy["userid"], "0");
+}
+
+#[sqlx::test]
 async fn a_login_needs_the_token_and_its_proof(pool: PgPool) {
     let server = Server::start(pool).await;
     let (token, challenge) = server.nas_login(42).await;

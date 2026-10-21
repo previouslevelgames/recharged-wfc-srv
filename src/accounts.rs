@@ -5,6 +5,9 @@ use sqlx::PgPool;
 
 /// DWC keeps 43 bits of a userid.
 pub const USER_ID_LIMIT: i64 = 1 << 43;
+/// The CPU buddy's profile, made by a migration (docs/login.md): a friend to
+/// add before a second console is online.
+pub const CPU_BUDDY: i32 = 999_999_999;
 
 /// Registers a new account. Returns its userid.
 pub async fn register(pool: &PgPool) -> Result<i64, sqlx::Error> {
@@ -183,13 +186,13 @@ mod tests {
         // The port's first profile, as its Friend Roster shows it.
         assert_eq!(friend_code(1_000_000_000, "R4QE"), "0868-9934-5920");
         // The CPU buddy (docs/login.md).
-        assert_eq!(friend_code(999_999_999, "R4QE"), "1770-9365-9135");
-        assert_eq!(friend_code(999_999_999, "R4QP"), "0009-9999-9999");
+        assert_eq!(friend_code(CPU_BUDDY, "R4QE"), "1770-9365-9135");
+        assert_eq!(friend_code(CPU_BUDDY, "R4QP"), "0009-9999-9999");
     }
 
     #[sqlx::test]
     async fn the_cpu_buddy_is_there(pool: PgPool) {
-        let buddy = profile(&pool, 999_999_999).await.unwrap().unwrap();
+        let buddy = profile(&pool, CPU_BUDDY).await.unwrap().unwrap();
         assert_eq!(buddy.user_id, 1);
         // New profiles still count from 1,000,000,000.
         log_in(&pool, 42).await.unwrap();
