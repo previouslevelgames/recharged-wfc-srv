@@ -288,7 +288,8 @@ place or that the game asks for, `dwc_mver` the matchmaking version.
 
 `P/src/RVL_SDK/gamespy/serverbrowsing/sb_serverlist.c` is the client. A friend
 who got a place in a host's group ([matchmaking messages](#matchmaking-messages))
-asks for the host's [session](#sessions) by profile. Each request starts with
+asks for the host's [session](#sessions) by profile; a ranked search asks for
+every game searching like it ([filters](#filters)). Each request starts with
 its length (2 bytes, big-endian, itself included) and its type; a list request
 (type `00`):
 
@@ -314,8 +315,33 @@ It is encrypted as the client decrypts it (`sb_crypt.c`, `InitCryptKey`): a
 20-byte header (byte 0 `05 ^ EC`, bytes 1 and 2 the backend's flags, `00`, byte
 6 `0D ^ EA`, the rest random), then the reply under GOACrypt, keyed with the
 client's challenge mixed with the secret key `B4LdGW` and header bytes 7 to 19.
-Only a lookup by `dwc_pid` finds sessions yet; other filters (matchmaking
-with anybody) get an empty list.
+
+### Filters
+
+A list holds the game's sessions whose fields pass the request's filter,
+GameSpy's SQL-like condition (`src/serverbrowser/filter.rs`). A ranked search
+(RANKED in WFC Central) first looks up its own session by profile, until its
+heartbeat with `dwc_pid` has arrived, then asks every 3 seconds for others:
+
+```
+dwc_mver = 3 and dwc_pid != 1000000000 and maxplayers = 1 and numplayers < 1
+and dwc_mtype = 0 and dwc_mresv != dwc_pid and (AP = 463715253 and GT = 0 and CO = 0)
+```
+
+DWC writes everything before the parentheses (`dwc_match.c`,
+`DWCi_GetDefaultMatchFilter`): its matchmaking version, not itself, a match of
+as many others as it wants (`maxplayers` counts the others, so 1 is a match of
+two), anybody matchmaking (`dwc_mtype = 0`), and no game that already reserved
+a place for itself. The game adds its own (`NetworkLobby.cpp`): its version
+(`AP`), the mode (`GT`: 1 tournament, 2 two players at one console) and the
+region group (`CO`), and ` and PI != <pid>` for each opponent it turned down.
+A searching game's heartbeat carries these fields, and `PT`, the points the
+game rates opponents by (`EvaluateMatchmakingPlayer`).
+
+Comparisons of fields, numbers and quoted texts join with `and`, `or`, `not`
+and parentheses; two numbers compare as numbers, anything else as text, and a
+comparison with a missing field is false. A filter the server does not
+understand lists nothing.
 
 ### Messages to a host
 

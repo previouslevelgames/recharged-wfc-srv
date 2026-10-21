@@ -90,8 +90,9 @@ Cloudflare Tunnel. On its first login the game registers the console and keeps
 the userid in `data/shared2/DWC_AUTHDATA`.
 
 The game logs in and stays online, friend codes work (friends who add each
-other see each other online), and friends can battle each other. Matchmaking
-with anybody (ranked matches) is not served yet.
+other see each other online), friends can battle each other, and ranked
+matches (RANKED) pair players who search at the same time; their results go
+to the leaderboards.
 
 ## Admin dashboard
 
