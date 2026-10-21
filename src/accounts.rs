@@ -125,6 +125,31 @@ pub async fn set_names(
     Ok(())
 }
 
+/// The friend code of `profile_id` for a player of `game` (`R4QE`, `R4QP`):
+/// the profile id, and above it 7 bits of a CRC-8 (polynomial 0x07) of the
+/// profile id and the game code, both little-endian
+/// (`DWC_Acc_CreateFriendKey` in `dwc_account.c`). DWC checks it with the
+/// player's own game code, so the same profile has a code per release.
+pub fn friend_code(profile_id: i32, game: &str) -> String {
+    let profile_id = profile_id as u32;
+    let mut data = profile_id.to_le_bytes().to_vec();
+    data.extend(game.bytes().rev());
+    let crc = data.iter().fold(0u8, |crc, &byte| {
+        (0..8).fold(crc ^ byte, |crc, _| {
+            if crc & 0x80 == 0 {
+                crc << 1
+            } else {
+                crc << 1 ^ 0x07
+            }
+        })
+    });
+    let digits = format!(
+        "{:012}",
+        u64::from(crc & 0x7F) << 32 | u64::from(profile_id)
+    );
+    format!("{}-{}-{}", &digits[..4], &digits[4..8], &digits[8..])
+}
+
 /// GameSpy's unique nick for a console's profile: its userid in base32
 /// (`0-9a-v`, most significant digit first), then `gsbrcd`.
 fn unique_nick(user_id: i64, gsbrcd: &str) -> String {
@@ -151,6 +176,27 @@ mod tests {
         assert_eq!(unique_nick(0, "R4QEabc1234"), "0R4QEabc1234");
         assert_eq!(unique_nick(32 * 32 + 31, "R4QE"), "10vR4QE");
         assert_eq!(unique_nick(USER_ID_LIMIT - 1, "R4QE"), "7vvvvvvvvR4QE");
+    }
+
+    #[test]
+    fn friend_codes_are_checked_with_the_game_code() {
+        // The port's first profile, as its Friend Roster shows it.
+        assert_eq!(friend_code(1_000_000_000, "R4QE"), "0868-9934-5920");
+        // The CPU buddy (docs/login.md).
+        assert_eq!(friend_code(999_999_999, "R4QE"), "1770-9365-9135");
+        assert_eq!(friend_code(999_999_999, "R4QP"), "0009-9999-9999");
+    }
+
+    #[sqlx::test]
+    async fn the_cpu_buddy_is_there(pool: PgPool) {
+        let buddy = profile(&pool, 999_999_999).await.unwrap().unwrap();
+        assert_eq!(buddy.user_id, 1);
+        // New profiles still count from 1,000,000,000.
+        log_in(&pool, 42).await.unwrap();
+        let first = profile_login(&pool, 42, "R4QEaaaaaaa", None, "10.0.0.1")
+            .await
+            .unwrap();
+        assert_eq!(first.profile_id, 1_000_000_000);
     }
 
     #[sqlx::test]

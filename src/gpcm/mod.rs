@@ -3,12 +3,13 @@
 //! (docs/login.md). On a profile's first login DWC also stores its login id
 //! in the profile's `lastname`, then logs in again.
 //!
-//! Friends and presence come later: their commands are accepted and ignored.
+//! Friend requests (`addbuddy`) are kept for the login. The rest of friends
+//! and presence comes later: those commands are accepted and ignored.
 
 mod message;
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     net::{IpAddr, SocketAddr},
     sync::{
         Arc, Mutex,
@@ -36,6 +37,9 @@ use message::{Message, split};
 const MAX_BUFFER: usize = 0x4000;
 /// DWC's partner id: Nintendo.
 const PARTNER_ID: u32 = 11;
+/// The game's friend roster holds 64 friend codes (`DWC_InitFriendsMatch` in
+/// `NetworkSession.cpp`).
+const MAX_FRIENDS: usize = 64;
 
 /// GPCM's state: who is logged in where.
 pub struct Gpcm {
@@ -49,6 +53,19 @@ pub struct Gpcm {
 struct Session {
     connection: u64,
     kick: Arc<Notify>,
+    /// The profiles this login has asked to add (`addbuddy`). DWC asks again
+    /// at every login for each friend code of its roster that is not a buddy.
+    friends: HashSet<i32>,
+}
+
+impl Session {
+    /// Records a request to add `friend`. Whether it is new.
+    fn add_friend(&mut self, friend: i32) -> bool {
+        if self.friends.len() >= MAX_FRIENDS && !self.friends.contains(&friend) {
+            return false;
+        }
+        self.friends.insert(friend)
+    }
 }
 
 impl Gpcm {
@@ -208,6 +225,10 @@ impl Gpcm {
                 login.locstring = message.get("locstring").unwrap_or_default().to_owned();
                 Ok(true)
             }
+            "addbuddy" => {
+                self.add_friend(connection, &message);
+                Ok(true)
+            }
             command => {
                 debug!(target: "gpcm", command, "not implemented yet");
                 Ok(true)
@@ -265,6 +286,7 @@ impl Gpcm {
             Session {
                 connection: connection.id,
                 kick: kick.clone(),
+                friends: HashSet::new(),
             },
         );
         if let Some(previous) = previous.filter(|previous| previous.connection != connection.id) {
@@ -276,6 +298,36 @@ impl Gpcm {
             locstring: String::new(),
         });
         connection.send(&reply).await.map_err(|_| Error::NETWORK)
+    }
+
+    /// `\addbuddy\`: a friend code of the game's roster, as `newprofileid`.
+    /// Kept for the login and never answered: DWC takes any GP error, even
+    /// one that is not fatal, as a network error and goes offline.
+    fn add_friend(&self, connection: &Connection, message: &Message) {
+        let profile = &connection.login.as_ref().unwrap().profile;
+        let profile_id = profile.profile_id;
+        let newprofileid = message.get("newprofileid");
+        let Some(friend) = newprofileid
+            .and_then(|friend| friend.parse::<i32>().ok())
+            .filter(|&friend| friend > 0 && friend != profile_id)
+        else {
+            debug!(target: "gpcm", profile_id, newprofileid, "bad friend request");
+            return;
+        };
+        let mut sessions = self.sessions.lock().unwrap();
+        let Some(session) = sessions
+            .get_mut(&profile_id)
+            .filter(|session| session.connection == connection.id)
+        else {
+            return;
+        };
+        if session.add_friend(friend) {
+            let game = profile.gsbrcd.get(..4).unwrap_or_default();
+            let friend_code = accounts::friend_code(friend, game);
+            info!(target: "gpcm", profile_id, friend, friend_code, "friend request");
+        } else if !session.friends.contains(&friend) {
+            debug!(target: "gpcm", profile_id, friend, "too many friend requests");
+        }
     }
 
     /// `\getprofile\`: the profile asked for, all of it only for its owner.
@@ -432,6 +484,22 @@ fn uppercase(len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn friend_requests_are_kept_once_up_to_the_roster_size() {
+        let mut session = Session {
+            connection: 1,
+            kick: Arc::new(Notify::new()),
+            friends: HashSet::new(),
+        };
+        assert!(session.add_friend(1_000_000_001));
+        assert!(!session.add_friend(1_000_000_001));
+        for friend in 1..MAX_FRIENDS as i32 {
+            assert!(session.add_friend(friend));
+        }
+        assert!(!session.add_friend(2_000_000_000));
+        assert_eq!(session.friends.len(), MAX_FRIENDS);
+    }
 
     #[test]
     fn proofs_follow_gamespy() {

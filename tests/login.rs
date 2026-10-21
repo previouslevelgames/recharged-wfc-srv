@@ -1,6 +1,6 @@
 //! Registration and login as the port does them (docs/login.md): NAS
-//! `acctcreate` and `login` over HTTP, GPCM over TCP, and the master server's
-//! availability check and heartbeats over UDP.
+//! `acctcreate` and `login` over HTTP, GPCM over TCP with friend requests,
+//! and the master server's availability check and heartbeats over UDP.
 
 use std::{collections::HashMap, net::SocketAddr};
 
@@ -77,6 +77,28 @@ async fn a_new_login_disconnects_the_old_one(pool: PgPool) {
     assert_eq!(error["error"], "");
     assert_eq!(error["err"], "6");
     assert!(first.closed().await);
+}
+
+#[sqlx::test]
+async fn friend_requests_get_no_answer(pool: PgPool) {
+    let server = Server::start(pool).await;
+    let (token, challenge) = server.nas_login(42).await;
+    let mut client = Client::connect(server.gpcm).await;
+    let login = client.log_in(&token, &challenge).await;
+
+    // A friend code, the player's own and a broken one: at any GP error DWC
+    // would go offline.
+    for friend in ["1000000001", &login["profileid"], "x"] {
+        client
+            .send(&format!(
+                r"\addbuddy\\sesskey\{}\newprofileid\{friend}\reason\\final\",
+                login["sesskey"]
+            ))
+            .await;
+    }
+    client.send(r"\ka\\final\").await;
+    let reply = client.receive().await;
+    assert!(reply.contains_key("ka"), "{reply:?}");
 }
 
 #[sqlx::test]

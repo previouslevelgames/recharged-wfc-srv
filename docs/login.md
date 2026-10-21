@@ -116,7 +116,8 @@ A login to a profile logged in elsewhere disconnects the other connection
 | `status` | none; `locstring` is kept for `getprofile` |
 | `ka` | `\ka\\final\` |
 | `logout` | the server closes the connection |
-| `addbuddy`, `authadd`, `delbuddy`, `bm`, … | none: not served yet |
+| `addbuddy` | none; `newprofileid` is kept for the login ([below](#friend-requests)) |
+| `authadd`, `delbuddy`, `bm`, … | none: not served yet |
 
 Errors are `\error\\err\<n>\errmsg\<text>\fatal\\final\` (with the request's `\id\`
 when there is one), then the
@@ -133,12 +134,42 @@ server closes the connection:
 | 268 | a token older than 10 minutes |
 | 2561 | `getprofile` of an unknown profile |
 
+### Friend requests
+
+The game's roster holds 64 friend codes; a friend code is a profile id with
+a checksum. At every login DWC asks to add each friend code that is not a
+buddy yet, by its profile id (`DWCi_UpdateFriendReq` in
+`P/src/RVL_SDK/dwc/dwc_friend.c`):
+
+```
+\addbuddy\\sesskey\<n>\newprofileid\<pid>\reason\\final\
+```
+
+The server keeps the requests of each login in memory, up to 64, and answers
+none of them. DWC takes any GP error, even one that is not fatal, as a
+network error and goes offline (`DWCi_GPErrorCallback` in `dwc_main.c`), so a
+bad `newprofileid` or the player's own is only logged.
+
+A friend code is the profile id and, above it, 7 bits of a CRC-8 (polynomial
+0x07) of the profile id and the game code, both little-endian
+(`DWC_Acc_CreateFriendKey` in `dwc_account.c`; not the MD5 WiiLink uses for
+other Wii games). DWC checks it with the player's own game code, so the same
+profile has one code in the US release (`R4QE`) and another in the European
+one (`R4QP`). Profile 1000000000 is `0868-9934-5920` in the
+US release.
+
+**The CPU buddy** is a profile to add before a second console is online:
+profile 999999999 of account 1, Mii name `CPU`. Its friend code is
+`1770-9365-9135` in the US release and `0009-9999-9999` in the European one.
+Nothing logs in as it yet; a headless client of the port is to do so later.
+
 ## Accounts and profiles
 
 `accounts` has one row per userid. `profiles` has one per userid and gsbrcd,
 so each Mii slot is its own profile. Profile ids count from 1,000,000,000 and
-fit the 31 bits DWC's friend codes take; `unique_nick` is the userid in base32
-(`0-9a-v`) followed by the gsbrcd.
+fit the 31 bits DWC's friend codes take; the ids below are kept for the
+server's own profiles, such as the [CPU buddy](#friend-requests).
+`unique_nick` is the userid in base32 (`0-9a-v`) followed by the gsbrcd.
 
 ## QR2: UDP 27900
 
@@ -174,6 +205,6 @@ which the server echoes. `statechanged` 2 means the game stops: no answer.
 
 ## Not served yet
 
-Server lists and matchmaking, friends (`addbuddy`, status messages), GPSP,
+Server lists and matchmaking, mutual friends and their status messages, GPSP,
 the server browser and NAT negotiation. NAS `svcloc` and `/pr` are not used by
 the game.
