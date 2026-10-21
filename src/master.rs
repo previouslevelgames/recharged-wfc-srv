@@ -143,6 +143,12 @@ impl Master {
     }
 
     /// The sessions of the games heard from lately.
+    /// The live session of the game at `address`.
+    pub fn session(&self, address: SocketAddr) -> Option<Session> {
+        let session = self.sessions.lock().unwrap().get(&address)?.clone();
+        session.live(Instant::now()).then_some(session)
+    }
+
     pub fn sessions(&self) -> Vec<(SocketAddr, Session)> {
         let now = Instant::now();
         let sessions = self.sessions.lock().unwrap();

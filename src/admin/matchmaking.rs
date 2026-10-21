@@ -1,7 +1,8 @@
 //! The Matchmaking page: the master server's sessions, one per game that
 //! sends heartbeats, and what each is doing in matchmaking (docs/login.md,
 //! "Sessions" and "Filters"). DWC adds its keys to the heartbeats once
-//! matchmaking starts; before that a session is only online.
+//! matchmaking starts; before that a session is only online. Then the latest
+//! searches, match commands and NAT negotiations ([`Activity`]).
 
 use std::{collections::HashMap, net::SocketAddr};
 
@@ -9,7 +10,10 @@ use serde::Serialize;
 use sqlx::PgPool;
 use time::OffsetDateTime;
 
-use crate::master::{Master, Session};
+use crate::{
+    activity::{Activity, Event, What},
+    master::{Master, Session},
+};
 
 /// DWC's `dwc_mtype` (`dwc_match.h`): a ranked search, a search among
 /// friends, hosting a friend battle, joining one.
@@ -21,6 +25,10 @@ pub struct Matchmaking {
     totals: Totals,
     /// Matchmaking first, then the games heard from last.
     sessions: Vec<Game>,
+    /// The latest first.
+    activity: Vec<Event>,
+    /// The Mii names of the profiles in the activity.
+    names: HashMap<i32, String>,
 }
 
 #[derive(Serialize)]
@@ -76,15 +84,48 @@ pub fn totals(master: &Master) -> Totals {
     }
 }
 
-pub async fn read(pool: &PgPool, master: &Master) -> Result<Matchmaking, sqlx::Error> {
+pub async fn read(
+    pool: &PgPool,
+    master: &Master,
+    activity: &Activity,
+) -> Result<Matchmaking, sqlx::Error> {
     let totals = totals(master);
     let now = OffsetDateTime::now_utc();
-    let mut games: Vec<Game> = games(master)
+    let sessions = games(master);
+    let mut games: Vec<Game> = sessions
         .iter()
         .map(|(address, session)| Game::new(*address, session, now))
         .collect();
 
-    let profiles: Vec<i32> = games.iter().filter_map(|game| game.profile_id).collect();
+    // A negotiation's games by the profile of the session at their address.
+    let by_address: HashMap<String, i32> = games
+        .iter()
+        .filter_map(|game| Some((game.address.clone(), game.profile_id?)))
+        .collect();
+    let mut activity = activity.events();
+    for event in &mut activity {
+        if let What::Negotiation { games, .. } = &mut event.what {
+            for party in games {
+                party.profile_id = by_address.get(&party.address).copied();
+            }
+        }
+    }
+
+    let mut profiles: Vec<i32> = games.iter().filter_map(|game| game.profile_id).collect();
+    profiles.extend(
+        activity
+            .iter()
+            .flat_map(|event| match &event.what {
+                What::Search { profile_id, .. } => vec![*profile_id],
+                What::Command { from, to, .. } => vec![*from, *to],
+                What::Negotiation { games, .. } => {
+                    games.iter().map(|party| party.profile_id).collect()
+                }
+            })
+            .flatten(),
+    );
+    profiles.sort_unstable();
+    profiles.dedup();
     let names: HashMap<i32, Option<String>> = sqlx::query!(
         "SELECT profile_id, ingamesn FROM profiles WHERE profile_id = ANY($1)",
         &profiles,
@@ -106,6 +147,11 @@ pub async fn read(pool: &PgPool, master: &Master) -> Result<Matchmaking, sqlx::E
     Ok(Matchmaking {
         totals,
         sessions: games,
+        activity,
+        names: names
+            .into_iter()
+            .filter_map(|(profile, name)| Some((profile, name?)))
+            .collect(),
     })
 }
 
@@ -177,7 +223,10 @@ mod tests {
             (totals.sessions, totals.searching, totals.with_friends),
             (3, 1, 1)
         );
-        let page = read(&pool, &master).await.unwrap();
+        let activity = Activity::default();
+        activity.search(Some(1000000001), "dwc_pid != 1000000001", 1);
+        activity.negotiation(1, "172.17.0.1:44719".parse().ok());
+        let page = read(&pool, &master, &activity).await.unwrap();
         let [first, second, online] = &page.sessions[..] else {
             panic!("three sessions");
         };
@@ -215,5 +264,20 @@ mod tests {
         assert_eq!(online.match_type, None);
         assert_eq!(online.profile_id, None);
         assert!(!online.listed);
+
+        // The negotiation's game is the host, by its session's address.
+        let [negotiation, search] = &page.activity[..] else {
+            panic!("two events");
+        };
+        let What::Negotiation { games, .. } = &negotiation.what else {
+            panic!("{negotiation:?}");
+        };
+        assert_eq!(games[0].profile_id, Some(1000000000));
+        assert!(matches!(search.what, What::Search { .. }));
+        assert_eq!(
+            page.names.get(&1000000000).map(String::as_str),
+            Some("Mario")
+        );
+        assert_eq!(page.names.get(&1000000001), None);
     }
 }

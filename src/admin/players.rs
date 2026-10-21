@@ -157,7 +157,7 @@ mod tests {
         let profile = accounts::profile_login(&pool, 42, "R4QEaaaaaaa", Some("Mario"), "10.0.0.1")
             .await
             .unwrap();
-        let gpcm = Gpcm::new(pool.clone(), Arc::new(Tickets::default()));
+        let gpcm = Gpcm::new(pool.clone(), Arc::new(Tickets::default()), Arc::default());
 
         let players = read(&pool, &gpcm).await.unwrap();
         assert_eq!((players.totals.accounts, players.totals.profiles), (1, 1));

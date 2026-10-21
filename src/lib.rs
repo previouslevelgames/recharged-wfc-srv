@@ -6,6 +6,7 @@ use tokio::net::{TcpListener, UdpSocket};
 use tower_http::trace::TraceLayer;
 
 mod accounts;
+mod activity;
 pub mod admin;
 mod gamestats;
 mod gpcm;
@@ -28,14 +29,22 @@ pub struct App {
     tickets: Arc<nas::Tickets>,
     gpcm: Arc<gpcm::Gpcm>,
     master: Arc<master::Master>,
+    /// What happened in matchmaking lately, which `/admin` shows.
+    activity: Arc<activity::Activity>,
 }
 
 impl App {
     pub fn new(pool: sqlx::PgPool) -> Self {
         let tickets = Arc::<nas::Tickets>::default();
+        let activity = Arc::<activity::Activity>::default();
         Self {
-            gpcm: Arc::new(gpcm::Gpcm::new(pool.clone(), tickets.clone())),
+            gpcm: Arc::new(gpcm::Gpcm::new(
+                pool.clone(),
+                tickets.clone(),
+                activity.clone(),
+            )),
             master: Arc::default(),
+            activity,
             pool,
             tickets,
         }
@@ -53,6 +62,7 @@ impl App {
                 self.pool.clone(),
                 self.gpcm.clone(),
                 self.master.clone(),
+                self.activity.clone(),
                 config,
             ));
         }
@@ -68,12 +78,14 @@ impl App {
     /// The server browser, which lists the master server's sessions, on
     /// `listener` (TCP 28910).
     pub async fn serve_server_browser(&self, listener: TcpListener) -> std::io::Result<()> {
-        serverbrowser::serve(self.master.clone(), listener).await
+        serverbrowser::serve(self.master.clone(), self.activity.clone(), listener).await
     }
 
     /// NAT negotiation on `socket` (UDP 27901).
     pub async fn serve_natneg(&self, socket: UdpSocket) -> std::io::Result<()> {
-        Arc::new(natneg::Natneg::default()).serve(socket).await
+        Arc::new(natneg::Natneg::new(self.activity.clone()))
+            .serve(socket)
+            .await
     }
 
     /// The QR2 master server on `socket` (UDP 27900).

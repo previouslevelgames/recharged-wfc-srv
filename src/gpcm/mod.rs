@@ -34,6 +34,7 @@ use tracing::{debug, info, trace, warn};
 
 use crate::{
     accounts::{self, Profile},
+    activity::{Activity, Via},
     nas::{TicketError, Tickets},
 };
 use message::{Message, split};
@@ -50,6 +51,9 @@ const MAX_FRIENDS: usize = 64;
 const BM_MESSAGE: u32 = 1;
 const BM_AUTH: u32 = 4;
 const BM_STATUS: u32 = 100;
+/// A match command between friends is `GPCM3vMAT`, the command byte, then its
+/// values (`DWCi_SendGPBuddyMsgCommand`).
+const MATCH_COMMAND_AT: usize = "GPCM3vMAT".len();
 /// The CPU buddy's status: online (`|s|1`), with the status data the game
 /// sends from its menus as `locstring` (`SC2` and 1).
 const CPU_BUDDY_STATUS: &str = "|s|1|ss||ls|U0MyAQ**|ip|0|p|0|qm|0";
@@ -60,6 +64,8 @@ const OFFLINE_STATUS: &str = "|s|0|ss|Offline|ls||ip|0|p|0|qm|0";
 pub struct Gpcm {
     pool: PgPool,
     tickets: Arc<Tickets>,
+    /// Where the match commands relayed are told.
+    activity: Arc<Activity>,
     /// The connection logged in to each profile, to log out by a new login.
     sessions: Mutex<HashMap<i32, Session>>,
     next_connection: AtomicU64,
@@ -118,10 +124,11 @@ impl Session {
 }
 
 impl Gpcm {
-    pub fn new(pool: PgPool, tickets: Arc<Tickets>) -> Self {
+    pub fn new(pool: PgPool, tickets: Arc<Tickets>, activity: Arc<Activity>) -> Self {
         Self {
             pool,
             tickets,
+            activity,
             sessions: Mutex::default(),
             next_connection: AtomicU64::new(1),
         }
@@ -500,6 +507,11 @@ impl Gpcm {
             .outbox
             .send(buddy_message(BM_MESSAGE, profile_id, msg));
         debug!(target: "gpcm", profile_id, to, "message relayed");
+        // `GPCM3vMAT`, then the command byte.
+        if let Some(&command) = msg.as_bytes().get(MATCH_COMMAND_AT) {
+            self.activity
+                .command(Some(profile_id), Some(to), command, Via::Gpcm);
+        }
     }
 
     /// `\status\`: what the game is doing, for mutual friends. The values go
@@ -714,7 +726,7 @@ mod tests {
     async fn presence_tells_who_is_logged_in() {
         let pool = sqlx::postgres::PgPoolOptions::new()
             .connect_lazy_with(sqlx::postgres::PgConnectOptions::new());
-        let gpcm = Gpcm::new(pool, Arc::default());
+        let gpcm = Gpcm::new(pool, Arc::default(), Arc::default());
         let mut session = Session::new(1, Arc::new(Notify::new()), mpsc::unbounded_channel().0);
         session.add_friend(1_000_000_001);
         session.mutual.insert(1_000_000_001);

@@ -36,6 +36,31 @@ const MATCH_TYPES = {
   2: ['Hosting friends', 'accent'],
   3: ['Joining a friend', 'accent'],
 };
+// DWC's match commands (dwc_match.h), with their badge tone.
+const MATCH_COMMANDS = {
+  0x01: ['Reservation', 'accent'],
+  0x02: ['Reservation accepted', 'good'],
+  0x03: ['Reservation declined', 'serious'],
+  0x04: ['Asked to wait', 'warning'],
+  0x05: ['Reservation cancelled', 'serious'],
+  0x06: ['Address sent', 'accent'],
+  0x07: ['New player', 'accent'],
+  0x08: ['Close requested', null],
+  0x09: ['Closed', null],
+  0x0a: ['Connection closed', null],
+  0x0b: ['Prior reservation', 'accent'],
+  0x0c: ['Cancel', 'serious'],
+  0x0d: ['Cancel sync', null],
+  0x0e: ['Cancel sync ack', null],
+  0x0f: ['Cancel ack', null],
+  0x10: ['Host closed a guest', null],
+  0x11: ['Poll timeout', 'warning'],
+  0x12: ['Poll timeout ack', null],
+  0x13: ['Host blocks guests', 'warning'],
+  0x20: ['Friend accepted', 'good'],
+  0x40: ['Guest waiting', null],
+  0x41: ['Host keepalive', null],
+};
 const SEVERITY = ['good', 'warning', 'serious', 'critical'];
 
 const ICONS = {
@@ -439,10 +464,59 @@ function matchMode(game) {
   return [kinds.join(', ') || 'Normal', h('span', { class: 'sub' }, `Region group ${game.region_group ?? '—'}`)];
 }
 
+// A profile in an event: its Mii name and number.
+function party(profile, names) {
+  if (profile == null) return h('span', { class: 'sub' }, 'Unknown');
+  return [names[profile] || 'Unnamed', h('span', { class: 'sub' }, `Profile ${profile}`)];
+}
+
+function eventWhat(event) {
+  if (event.kind === 'search') {
+    const repeats = event.searches > 1 ? ` · ${integer.format(event.searches)} times` : '';
+    return [badge('warning', 'Search'), h('span', { class: 'sub' }, `Found ${event.found}${repeats}`)];
+  }
+  if (event.kind === 'command') {
+    const [name, tone] = MATCH_COMMANDS[event.command] || [`Command 0x${event.command.toString(16)}`, null];
+    const via = event.via === 'gpcm' ? 'between friends, GPCM' : 'server browser';
+    const repeats = event.count > 1 ? ` · ${integer.format(event.count)} times` : '';
+    return [badge(tone, name), h('span', { class: 'sub' }, `${via}${repeats}`)];
+  }
+  const failed = event.reports.some((report) => report.result !== 1);
+  const done = event.reports.length >= 2 && !failed;
+  let state;
+  if (failed) state = badge('critical', 'NAT negotiation failed');
+  else if (done) state = badge('good', 'NAT negotiation ok');
+  else state = badge('warning', event.connected ? 'NAT negotiation connecting' : 'NAT negotiation started');
+  return [state, h('span', { class: 'sub' }, `Cookie ${event.cookie} · ${event.reports.length} of 2 reports`)];
+}
+
+function eventWho(event, names) {
+  if (event.kind === 'search') return party(event.profile_id, names);
+  if (event.kind === 'command') {
+    return h('div', { class: 'pair' }, h('div', null, party(event.from, names)), h('span', { class: 'sub' }, '→'), h('div', null, party(event.to, names)));
+  }
+  if (!event.games.length) return '—';
+  return h(
+    'div',
+    { class: 'pair' },
+    event.games.flatMap((game, index) => [
+      index ? h('span', { class: 'sub' }, '↔') : null,
+      h('div', null, game.profile_id == null ? [game.address, h('span', { class: 'sub' }, 'No session')] : party(game.profile_id, names)),
+    ]),
+  );
+}
+
+// The game's own part of a search filter, in its parentheses.
+function eventDetail(event) {
+  if (event.kind !== 'search') return '—';
+  const own = event.filter.match(/\((.*)\)\s*$/);
+  return h('code', { title: event.filter }, own ? own[1] : event.filter);
+}
+
 function renderMatchmaking(data, now) {
   const content = data.content;
   if (!content) return [unreachable(data.error)];
-  const { totals, sessions } = content;
+  const { totals, sessions, activity, names } = content;
   const idle = totals.sessions - totals.searching - totals.with_friends;
 
   return [
@@ -473,6 +547,27 @@ function renderMatchmaking(data, now) {
         ],
         sessions,
         'No game is online. A game appears here with its first heartbeat after it signs in.',
+      ),
+    ),
+    card(
+      'Recent activity',
+      'The latest searches, match commands and NAT negotiations, kept in memory until the server restarts',
+      table(
+        [
+          {
+            label: 'When',
+            cell: (e) => {
+              const last = ago(e.last_at, now);
+              const first = ago(e.first_at, now);
+              return [last, first.textContent === last.textContent ? null : h('span', { class: 'sub' }, ['since ', first])];
+            },
+          },
+          { label: 'What', cell: (e) => eventWhat(e) },
+          { label: 'Who', cell: (e) => eventWho(e, names) },
+          { label: 'Filter', class: 'query', cell: (e) => eventDetail(e) },
+        ],
+        activity,
+        'Nothing yet. Searches, reservations and NAT negotiations appear here as games make them.',
       ),
     ),
   ];

@@ -33,7 +33,7 @@ use sqlx::PgPool;
 use time::OffsetDateTime;
 use tracing::{info, warn};
 
-use crate::{gpcm::Gpcm, master::Master};
+use crate::{activity::Activity, gpcm::Gpcm, master::Master};
 pub use config::{Config, GoogleEndpoints, VARIABLES};
 use google::{Account, Login, SignInError};
 use page::PageData;
@@ -70,15 +70,23 @@ struct AdminState {
     pool: PgPool,
     /// Who is logged in, for the Players page.
     gpcm: Arc<Gpcm>,
-    /// The games' sessions, for the Matchmaking page.
+    /// The games' sessions and what they did lately, for the Matchmaking
+    /// page.
     master: Arc<Master>,
+    activity: Arc<Activity>,
     /// For Google's token endpoint.
     http: reqwest::Client,
     sessions: Sessions,
     started_at: OffsetDateTime,
 }
 
-pub(crate) fn router(pool: PgPool, gpcm: Arc<Gpcm>, master: Arc<Master>, config: Config) -> Router {
+pub(crate) fn router(
+    pool: PgPool,
+    gpcm: Arc<Gpcm>,
+    master: Arc<Master>,
+    activity: Arc<Activity>,
+    config: Config,
+) -> Router {
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
@@ -88,6 +96,7 @@ pub(crate) fn router(pool: PgPool, gpcm: Arc<Gpcm>, master: Arc<Master>, config:
         pool,
         gpcm,
         master,
+        activity,
         http,
         sessions: Sessions::default(),
         started_at: OffsetDateTime::now_utc(),
@@ -290,7 +299,10 @@ async fn api_players(State(state): State<Arc<AdminState>>, jar: CookieJar) -> Re
 
 async fn api_matchmaking(State(state): State<Arc<AdminState>>, jar: CookieJar) -> Response {
     state
-        .page_data(&jar, matchmaking::read(&state.pool, &state.master))
+        .page_data(
+            &jar,
+            matchmaking::read(&state.pool, &state.master, &state.activity),
+        )
         .await
 }
 

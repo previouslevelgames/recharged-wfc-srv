@@ -13,6 +13,8 @@ use std::{
 use tokio::net::UdpSocket;
 use tracing::{debug, info, trace};
 
+use crate::activity::Activity;
+
 /// Every packet starts with this, then the version, the type and the cookie
 /// the two games share (big-endian).
 const MAGIC: [u8; 6] = [0xFD, 0xFC, 0x1E, 0x66, 0x6A, 0xB2];
@@ -39,6 +41,7 @@ const MAX_SESSIONS: usize = 4096;
 #[derive(Default)]
 pub struct Natneg {
     sessions: Mutex<HashMap<u32, Session>>,
+    activity: Arc<Activity>,
 }
 
 struct Session {
@@ -66,6 +69,13 @@ impl Client {
 }
 
 impl Natneg {
+    pub fn new(activity: Arc<Activity>) -> Self {
+        Self {
+            sessions: Mutex::default(),
+            activity,
+        }
+    }
+
     pub async fn serve(self: Arc<Self>, socket: UdpSocket) -> std::io::Result<()> {
         let socket = Arc::new(socket);
         let mut packet = [0; 512];
@@ -107,6 +117,8 @@ impl Natneg {
                 // The game's result: 1 when the two reached each other.
                 let (index, result) = (body.get(1), body.get(2));
                 info!(target: "natneg", cookie = format!("{cookie:08x}"), %peer, ?index, ?result, "report");
+                self.activity
+                    .report(cookie, index.copied(), result.copied());
                 let mut reply = header(version, REPORT_ACK, cookie);
                 let mut echo = [0; 9];
                 let len = body.len().min(echo.len());
@@ -165,6 +177,7 @@ impl Natneg {
         if use_game_port == 0 || port_type == GAME_PORT {
             client.game = Some(peer);
         }
+        self.activity.negotiation(cookie, client.game);
 
         let mut ack = header(version, INIT_ACK, cookie);
         ack.extend_from_slice(&[port_type, index, 0xFF, 0xFF, 0x6D, 0x16, 0xB5, 0x7D, 0xEA]);
@@ -190,6 +203,7 @@ impl Natneg {
     /// address, again until it acks.
     async fn connect(self: Arc<Self>, socket: Arc<UdpSocket>, cookie: u32) {
         info!(target: "natneg", cookie = format!("{cookie:08x}"), "connect");
+        self.activity.connected(cookie);
         for _ in 0..CONNECT_TRIES {
             let packets = {
                 let sessions = self.sessions.lock().unwrap();
