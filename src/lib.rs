@@ -11,6 +11,8 @@ mod gamestats;
 mod gpcm;
 mod master;
 mod nas;
+mod natneg;
+mod serverbrowser;
 
 pub const REVISION: &str = env!("BUILD_REVISION");
 
@@ -56,6 +58,17 @@ impl App {
     /// GPCM, the GameSpy login, on `listener` (TCP 29900).
     pub async fn serve_gpcm(&self, listener: TcpListener) -> std::io::Result<()> {
         self.gpcm.clone().serve(listener).await
+    }
+
+    /// The server browser, which lists the master server's sessions, on
+    /// `listener` (TCP 28910).
+    pub async fn serve_server_browser(&self, listener: TcpListener) -> std::io::Result<()> {
+        serverbrowser::serve(self.master.clone(), listener).await
+    }
+
+    /// NAT negotiation on `socket` (UDP 27901).
+    pub async fn serve_natneg(&self, socket: UdpSocket) -> std::io::Result<()> {
+        Arc::new(natneg::Natneg::default()).serve(socket).await
     }
 
     /// The QR2 master server on `socket` (UDP 27900).

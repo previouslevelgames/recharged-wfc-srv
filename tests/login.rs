@@ -1,6 +1,8 @@
 //! Registration and login as the port does them (docs/login.md): NAS
 //! `acctcreate` and `login` over HTTP, GPCM over TCP with friend requests,
-//! and the master server's availability check and heartbeats over UDP.
+//! the master server's availability check and heartbeats over UDP, and the
+//! server browser's lookup of a host and its messages to one over TCP, and
+//! NAT negotiation over UDP.
 
 use std::{collections::HashMap, net::SocketAddr};
 
@@ -297,9 +299,151 @@ async fn a_logged_in_game_is_challenged() {
     assert_eq!(challenge[6..], format!("007F000001{port:04X}\0"));
 }
 
-/// The master server on a local UDP port, and a client socket.
+#[tokio::test]
+async fn the_server_browser_finds_a_hosts_session() {
+    let master = Master::start().await;
+    master
+        .send(b"\x03\x01\x02\x03\x04localip0\x00192.168.1.131\x00localport\x0051021\x00natneg\x001\x00statechanged\x001\x00gamename\x00mschargedwii\x00dwc_pid\x001000000000\x00dwc_mtype\x002\x00\x00\x00")
+        .await;
+
+    // The port's request for its host's session, and one for nobody.
+    let lookup = b"\x00\x8d\x00\x01\x03\x00\x00\x00\x00mschargedwii\x00mschargedwii\x00Y];98goldwc_pid = 1000000000\x00\\numplayers\\maxplayers\\dwc_pid\\dwc_mtype\\dwc_mresv\\dwc_mver\\dwc_eval\x00\x00\x00\x00\x80\x06\x00\x00\x00";
+    let found = master.list(lookup).await;
+    let nobody = master
+        .list(&lookup.map(|byte| if byte == b'0' { b'1' } else { byte }))
+        .await;
+    // The encryption's header: 5 bytes, then 13 more of key.
+    for reply in [&found, &nobody] {
+        assert_eq!((reply[0] ^ 0xEC, reply[6] ^ 0xEA), (5, 13), "{reply:?}");
+    }
+    // The host's session, 17 bytes and its 7 fields, is in the first only.
+    assert!(
+        found.len() > nobody.len() + 17,
+        "{} {}",
+        found.len(),
+        nobody.len()
+    );
+}
+
+#[tokio::test]
+async fn the_server_browser_passes_messages_on_until_acked() {
+    let master = Master::start().await;
+    master
+        .send(b"\x03\x01\x02\x03\x04localip0\x00192.168.1.131\x00localport\x0051021\x00statechanged\x001\x00gamename\x00mschargedwii\x00dwc_pid\x001000000000\x00\x00\x00")
+        .await;
+
+    // The port's message to its host: a match command (SBCM), command 6.
+    let message: &[u8] = b"SBCM\x03\x00\x00\x00\x06\x08\x5b\xa3\xac\x11\x00\x01\x01\xca\x9a\x3b\xc0\xa8\x01\x83\x2a\xdf\x00\x00";
+    let host = master.client.local_addr().unwrap();
+    let mut request = vec![0, 0, 2, 127, 0, 0, 1];
+    request.extend_from_slice(&host.port().to_be_bytes());
+    request.extend_from_slice(message);
+    request[1] = request.len() as u8;
+    let mut stream = TcpStream::connect(master.browser).await.unwrap();
+    stream.write_all(&request).await.unwrap();
+
+    // FE FD 06, the instance key, a message key and the message; again
+    // until the game acks it.
+    let mut packet = [0; 1500];
+    let mut keys = Vec::new();
+    for _ in 0..2 {
+        let len = master.client.recv(&mut packet).await.unwrap();
+        assert_eq!(packet[..7], *b"\xFE\xFD\x06\x01\x02\x03\x04");
+        assert_eq!(&packet[11..len], message);
+        keys.push(packet[7..11].to_vec());
+    }
+    assert_eq!(keys[0], keys[1]);
+    let mut ack = b"\x07\x01\x02\x03\x04".to_vec();
+    ack.extend_from_slice(&keys[0]);
+    master.client.send_to(&ack, master.address).await.unwrap();
+    let again = tokio::time::timeout(
+        std::time::Duration::from_millis(1500),
+        master.client.recv(&mut packet),
+    )
+    .await;
+    assert!(again.is_err(), "sent again after the ack");
+}
+
+#[tokio::test]
+async fn nat_negotiation_gives_each_game_the_others_address() {
+    use tokio::net::UdpSocket;
+
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .connect_lazy_with(sqlx::postgres::PgConnectOptions::new());
+    let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let natneg = server.local_addr().unwrap();
+    tokio::spawn(async move { App::new(pool).serve_natneg(server).await });
+
+    let packet = |kind: u8, body: &[u8]| {
+        let mut packet = b"\xFD\xFC\x1E\x66\x6A\xB2\x03".to_vec();
+        packet.push(kind);
+        packet.extend_from_slice(&0xC0FF_EE00u32.to_be_bytes());
+        packet.extend_from_slice(body);
+        packet
+    };
+    async fn recv(socket: &UdpSocket) -> Vec<u8> {
+        let mut packet = [0; 512];
+        let len = socket.recv(&mut packet).await.unwrap();
+        packet[..len].to_vec()
+    }
+
+    // Each game: its game socket's INIT, then its negotiation socket's three.
+    let mut games = Vec::new();
+    for index in 0..2u8 {
+        let game = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let negotiate = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        for port_type in 0..4u8 {
+            let socket = if port_type == 0 { &game } else { &negotiate };
+            let init = packet(0, &[port_type, index, 1, 127, 0, 0, 1, 0, 0, b'm', 0]);
+            socket.send_to(&init, natneg).await.unwrap();
+        }
+        games.push((game, negotiate));
+    }
+
+    // INIT_ACKs to each socket, and once both games are known, a CONNECT
+    // with the other game's game socket to each negotiation socket.
+    for (index, (game, negotiate)) in games.iter().enumerate() {
+        let ack = recv(game).await;
+        assert_eq!((ack[7], ack[12], ack[13]), (1, 0, index as u8));
+        let other = games[1 - index].0.local_addr().unwrap();
+        let (mut acks, mut connects) = (Vec::new(), 0);
+        while acks.len() < 3 || connects == 0 {
+            let packet = recv(negotiate).await;
+            match packet[7] {
+                1 => acks.push(packet[12]),
+                5 => {
+                    assert_eq!(packet[12..16], [127, 0, 0, 1]);
+                    assert_eq!(packet[16..18], other.port().to_be_bytes());
+                    assert_eq!(packet[19], 0, "no error");
+                    connects += 1;
+                }
+                kind => panic!("packet type {kind}"),
+            }
+        }
+        acks.sort();
+        assert_eq!(acks, [1, 2, 3]);
+    }
+    // Only the first acks; the second gets its CONNECT again.
+    let first = &games[0].1;
+    first.send_to(&packet(6, &[0, 0]), natneg).await.unwrap();
+    assert_eq!(recv(&games[1].1).await[7], 5);
+
+    // The report, acked.
+    let mut report = vec![1, 0, 1, 2, 0, 0, 0, 1, 0, 0, 0];
+    report.extend_from_slice(&[0; 50]);
+    first.send_to(&packet(0x0D, &report), natneg).await.unwrap();
+    let mut ack = recv(first).await;
+    while ack[7] == 5 {
+        ack = recv(first).await;
+    }
+    assert_eq!(ack[7], 0x0E);
+}
+
+/// The master server on a local UDP port with its server browser on a TCP
+/// port, and a client socket.
 struct Master {
     address: SocketAddr,
+    browser: SocketAddr,
     client: tokio::net::UdpSocket,
 }
 
@@ -307,16 +451,32 @@ impl Master {
     async fn start() -> Self {
         use tokio::net::UdpSocket;
 
-        // The master server keeps nothing in the database.
+        // The master server and the server browser keep nothing in the
+        // database.
         let pool = sqlx::postgres::PgPoolOptions::new()
             .connect_lazy_with(sqlx::postgres::PgConnectOptions::new());
+        let app = App::new(pool);
         let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-        let address = socket.local_addr().unwrap();
-        tokio::spawn(async move { App::new(pool).serve_master(socket).await });
-        Self {
-            address,
+        let browser = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let master = Self {
+            address: socket.local_addr().unwrap(),
+            browser: browser.local_addr().unwrap(),
             client: UdpSocket::bind("127.0.0.1:0").await.unwrap(),
-        }
+        };
+        let browsing = app.clone();
+        tokio::spawn(async move { app.serve_master(socket).await });
+        tokio::spawn(async move { browsing.serve_server_browser(browser).await });
+        master
+    }
+
+    /// A list request to the server browser; the encrypted reply.
+    async fn list(&self, request: &[u8]) -> Vec<u8> {
+        let mut stream = TcpStream::connect(self.browser).await.unwrap();
+        stream.write_all(request).await.unwrap();
+        let mut reply = vec![0; 4096];
+        let len = stream.read(&mut reply).await.unwrap();
+        reply.truncate(len);
+        reply
     }
 
     async fn send(&self, packet: &[u8]) -> Vec<u8> {

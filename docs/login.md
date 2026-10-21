@@ -25,9 +25,12 @@ branch patches out TLS. The services are told apart by port:
 | TCP 80 | NAS `/ac`, gamestats2 | `naswii.`, `gamestats2.gs.` |
 | TCP 29900 | GPCM | `gpcm.gs.` |
 | UDP 27900 | QR2 master: availability check, heartbeats | `mschargedwii.available.gs.`, `mschargedwii.master.gs.` |
+| TCP 28910 | Server browser: the master's sessions | `mschargedwii.ms11.gs.` |
+| UDP 27901 | NAT negotiation | `natneg1.gs.`, `natneg2.gs.`, `natneg3.gs.` |
 
-The server listens on `PORT` (8080), `GPCM_PORT` (29900) and `MASTER_PORT`
-(27900); map host port 80 to `PORT`.
+The server listens on `PORT` (8080), `GPCM_PORT` (29900), `MASTER_PORT`
+(27900), `SERVER_BROWSER_PORT` (28910) and `NATNEG_PORT` (27901); map host port
+80 to `PORT`.
 
 ## The sequence
 
@@ -260,6 +263,7 @@ which the server echoes. `statechanged` 2 means the game stops: no answer.
 | `03` heartbeat | `FE FD 01` challenge |
 | `01` challenge response | none (not checked) |
 | `08` keepalive | `FE FD 08 <key>` |
+| `07` client message ack | none; the [message](#messages-to-a-host) is delivered |
 
 ### Sessions
 
@@ -280,8 +284,80 @@ dwc_pid=1000000000 dwc_mtype=2 dwc_mresv=1000000001 dwc_mver=3 dwc_eval=1
 (2 hosting a group, 3 joining one), `dwc_mresv` the profile that reserved a
 place or that the game asks for, `dwc_mver` the matchmaking version.
 
+## Server browser: TCP 28910
+
+`P/src/RVL_SDK/gamespy/serverbrowsing/sb_serverlist.c` is the client. A friend
+who got a place in a host's group ([matchmaking messages](#matchmaking-messages))
+asks for the host's [session](#sessions) by profile. Each request starts with
+its length (2 bytes, big-endian, itself included) and its type; a list request
+(type `00`):
+
+```
+00 8d 00 01 03 00000000 mschargedwii\0 mschargedwii\0 <challenge, 8 bytes>
+dwc_pid = 1000000000\0 \numplayers\maxplayers\dwc_pid\dwc_mtype\dwc_mresv\dwc_mver\dwc_eval\0
+00000080 06000000
+```
+
+That is: protocol 1, encoding 3, game version 0, the game listed and the
+game asking, the client's challenge, the filter, the fields and the options
+(`80`: a limit on the results follows). The reply, before encryption:
+
+| Bytes | |
+|---|---|
+| 4 + 2 | the client's public IP and port |
+| 1, then per field `00` name `\0` | the fields (all strings), without the addresses |
+| `00` | no popular values |
+| per session: flags, public IP and port, `localip0` and `localport`, `00000000`, then per field `FF` value `\0` | flags `7E` (keys, every address, and `04` for `natneg`) |
+| `00 FF FF FF FF` | the end |
+
+It is encrypted as the client decrypts it (`sb_crypt.c`, `InitCryptKey`): a
+20-byte header (byte 0 `05 ^ EC`, bytes 1 and 2 the backend's flags, `00`, byte
+6 `0D ^ EA`, the rest random), then the reply under GOACrypt, keyed with the
+client's challenge mixed with the secret key `B4LdGW` and header bytes 7 to 19.
+Only a lookup by `dwc_pid` finds sessions yet; other filters (matchmaking
+with anybody) get an empty list.
+
+### Messages to a host
+
+With the host's address the friend sends it messages through the server
+browser (type `02`: the session's public IP and port, then the message):
+
+```
+00 25 02 ac110001 d79b SBCM 03000000 06 08 5ba3 ac110001 01ca9a3b c0a80183 2adf 0000
+```
+
+`SBCM` and version 3 are DWC's, then the match command (`06`: the sender's
+addresses and profile, `DWC_MATCH_COMMAND_TELL_ADDR`) and its data; NAT
+negotiation sends its cookie the same way (`FD FC 1E 66 6A B2` first). The
+client gets no answer. The master server sends the message to the session's
+game as a client message, `FE FD 06 <key> <message key, 4 bytes> <message>`,
+again each second until the game acks it (`07 <key> <message key>`), for at
+most 10 seconds; the game drops one it has already had.
+
+## NAT negotiation: UDP 27901
+
+`P/src/RVL_SDK/gamespy/natneg/natneg.c` is the client, protocol version 3.
+Two games whose public addresses differ negotiate before they connect: the
+cookie they share comes in the server browser's messages (`FD FC 1E 66 6A B2`
+first). Every packet starts with that magic, the version, the type and the
+cookie (big-endian).
+
+| Packet | Answer |
+|---|---|
+| `00` INIT: port type, client index (0 or 1), whether it negotiates for its game socket, its local address, the game | `01` INIT_ACK with the port type and index |
+| `06` CONNECT_ACK: the client index | none; that CONNECT is not sent again |
+| `0D` REPORT: the client index, the result (1: they connected), the NAT type | `0E` REPORT_ACK |
+
+A game sends four INITs: port type 0 from its game socket, 1 to 3 from a
+negotiation socket (to `natneg1` to `natneg3`, all this server), again each
+half second until acked. Once both games of a cookie are known, each gets a
+`05` CONNECT at its negotiation socket with the other's game socket as the
+server sees it (IP and port big-endian, then `42` and `00`: no error), again
+each half second until it acks. The games then ping each other there and
+report. A negotiation is forgotten after 30 seconds.
+
 ## Not served yet
 
-Server lists and matchmaking, GPSP,
-the server browser and NAT negotiation. NAS `svcloc` and `/pr` are not used by
-the game.
+Matchmaking with anybody (the server browser's other filters), NAT detection
+(`ADDRESS_CHECK`, `NATIFY_REQUEST`) and GPSP. NAS
+`svcloc` and `/pr` are not used by the game.
