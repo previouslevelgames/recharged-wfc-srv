@@ -236,8 +236,9 @@ the key.
 
 Once logged in, DWC sends a heartbeat (`03`): `name\0value\0` fields up to an
 empty name (`localip0`, `localport`, `natneg`, `statechanged`, `gamename`,
-`publicip`, `publicport`, `numplayers`, `maxplayers`, then DWC's own fields as
-`unknown`, the profile id first: DWC names them only for matchmaking). Without
+`publicip`, `publicport`, `numplayers`, `maxplayers`, then DWC's own: the
+first login sends them as `unknown`, the profile id first; once matchmaking
+is set up they are named, below). Without
 an answer it tries four times, 10 seconds apart, then shows error 94020
 (`e_qrnochallengeerror`: 90000 after login, 4000 QR2, 20 server).
 
@@ -259,6 +260,25 @@ which the server echoes. `statechanged` 2 means the game stops: no answer.
 | `03` heartbeat | `FE FD 01` challenge |
 | `01` challenge response | none (not checked) |
 | `08` keepalive | `FE FD 08 <key>` |
+
+### Sessions
+
+The server keeps each game's last heartbeat as its session, by the address
+it comes from: a new instance key there is a new game. Its answer to a
+challenge lists it, and it goes with `statechanged` 2 or after 90 seconds
+without a heartbeat or keepalive. A game looking for a match asks the server
+browser for these. A host's heartbeat once a friend reserved a place:
+
+```
+localip0=192.168.1.131 localport=51021 natneg=1 statechanged=1 gamename=mschargedwii
+publicip=-1408172031 publicport=44719 numplayers=0 maxplayers=1
+dwc_pid=1000000000 dwc_mtype=2 dwc_mresv=1000000001 dwc_mver=3 dwc_eval=1
+```
+
+`publicip` is the address from the challenge as a signed 32-bit number
+(`AC110001`, 172.17.0.1), `dwc_pid` the profile, `dwc_mtype` DWC's match type
+(2 hosting a group, 3 joining one), `dwc_mresv` the profile that reserved a
+place or that the game asks for, `dwc_mver` the matchmaking version.
 
 ## Not served yet
 

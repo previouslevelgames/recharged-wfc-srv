@@ -18,12 +18,14 @@ pub const REVISION: &str = env!("BUILD_REVISION");
 const GAME_NAME: &str = "mschargedwii";
 
 /// The server's services and what they share: the database, NAS's login
-/// tokens, which GPCM checks, and GPCM's logins, which `/admin` shows.
+/// tokens, which GPCM checks, GPCM's logins, which `/admin` shows, and the
+/// master server's sessions.
 #[derive(Clone)]
 pub struct App {
     pool: sqlx::PgPool,
     tickets: Arc<nas::Tickets>,
     gpcm: Arc<gpcm::Gpcm>,
+    master: Arc<master::Master>,
 }
 
 impl App {
@@ -31,6 +33,7 @@ impl App {
         let tickets = Arc::<nas::Tickets>::default();
         Self {
             gpcm: Arc::new(gpcm::Gpcm::new(pool.clone(), tickets.clone())),
+            master: Arc::default(),
             pool,
             tickets,
         }
@@ -57,7 +60,7 @@ impl App {
 
     /// The QR2 master server on `socket` (UDP 27900).
     pub async fn serve_master(&self, socket: UdpSocket) -> std::io::Result<()> {
-        master::serve(socket).await
+        self.master.clone().serve(socket).await
     }
 }
 
