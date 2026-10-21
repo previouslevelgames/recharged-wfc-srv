@@ -6,8 +6,9 @@
 //! Friends (docs/login.md): a request (`addbuddy`) is kept for the login. Two
 //! logins that asked for each other become mutual friends, get each other's
 //! status, and the offline one when either leaves or deletes the other
-//! (`delbuddy`). The CPU buddy accepts every request at once. The rest comes
-//! later: those commands are accepted and ignored.
+//! (`delbuddy`); their matchmaking messages (`\bm\1\`) pass between them.
+//! The CPU buddy accepts every request at once. The rest comes later: those
+//! commands are accepted and ignored.
 
 mod message;
 
@@ -44,7 +45,9 @@ const PARTNER_ID: u32 = 11;
 /// The game's friend roster holds 64 friend codes (`DWC_InitFriendsMatch` in
 /// `NetworkSession.cpp`).
 const MAX_FRIENDS: usize = 64;
-/// `\bm\` kinds the server sends: a friend request accepted, a friend's status.
+/// `\bm\` kinds: a message between friends, a friend request accepted, a
+/// friend's status.
+const BM_MESSAGE: u32 = 1;
 const BM_AUTH: u32 = 4;
 const BM_STATUS: u32 = 100;
 /// The CPU buddy's status: online (`|s|1`), with the status data the game
@@ -311,6 +314,10 @@ impl Gpcm {
                 self.delete_friend(connection, &message);
                 Ok(true)
             }
+            "bm" => {
+                self.relay_message(connection, &message);
+                Ok(true)
+            }
             command => {
                 debug!(target: "gpcm", command, "not implemented yet");
                 Ok(true)
@@ -462,6 +469,37 @@ impl Gpcm {
                 .outbox
                 .send(buddy_message(BM_STATUS, profile_id, OFFLINE_STATUS));
         }
+    }
+
+    /// `\bm\1\`: a message to the mutual friend `t`. DWC's matchmaking sends
+    /// its commands this way (`GPCM3vMAT`, a command byte and its values: a
+    /// reservation for a place in the friend's group and the answers). The
+    /// friend gets it from the player (`f`); anything else is dropped without
+    /// an error, which DWC would take as a network error.
+    fn relay_message(&self, connection: &Connection, message: &Message) {
+        let profile_id = connection.login.as_ref().unwrap().profile.profile_id;
+        let to = message.get("t").and_then(|to| to.parse::<i32>().ok());
+        let msg = message.get("msg").unwrap_or_default();
+        if message.get("bm") != Some("1") || !msg.starts_with("GPCM") {
+            debug!(target: "gpcm", profile_id, kind = message.get("bm"), "message dropped");
+            return;
+        }
+        let sessions = self.sessions.lock().unwrap();
+        let friend = sessions
+            .get(&profile_id)
+            .filter(|session| session.connection == connection.id)
+            .zip(to)
+            .filter(|(session, to)| session.mutual.contains(to))
+            .and_then(|(_, to)| sessions.get(&to).map(|friend| (to, friend)))
+            .filter(|(_, friend)| friend.mutual.contains(&profile_id));
+        let Some((to, friend)) = friend else {
+            debug!(target: "gpcm", profile_id, to, "message to no mutual friend dropped");
+            return;
+        };
+        let _ = friend
+            .outbox
+            .send(buddy_message(BM_MESSAGE, profile_id, msg));
+        debug!(target: "gpcm", profile_id, to, "message relayed");
     }
 
     /// `\status\`: what the game is doing, for mutual friends. The values go

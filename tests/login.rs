@@ -209,6 +209,37 @@ async fn a_deleted_friend_sees_the_player_offline(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn matchmaking_messages_pass_between_mutual_friends(pool: PgPool) {
+    let server = Server::start(pool).await;
+    let mut alice = Player::log_in(&server, 42).await;
+    let mut bob = Player::log_in(&server, 43).await;
+    alice.add(&bob.profile_id).await;
+    bob.add(&alice.profile_id).await;
+    assert_eq!(bob.client.receive().await["bm"], "4");
+    assert_eq!(alice.client.receive().await["bm"], "4");
+
+    // A reservation, as the port's DWC sent it: command byte 1, then the
+    // values.
+    let reservation = "GPCM3vMAT\u{1}3/16781740/33007";
+    for (to, msg) in [
+        ("1000000099", reservation),
+        (bob.profile_id.as_str(), "not DWC's"),
+        (bob.profile_id.as_str(), reservation),
+    ] {
+        let message = format!(r"\bm\1\sesskey\{}\t\{to}\msg\{msg}\final\", alice.sesskey);
+        alice.client.send(&message).await;
+    }
+    let relayed = bob.client.receive().await;
+    assert_eq!(relayed["bm"], "1");
+    assert_eq!(relayed["f"], alice.profile_id);
+    assert_eq!(relayed["msg"], reservation);
+
+    // Nothing comes back to the sender.
+    alice.client.send(r"\ka\\final\").await;
+    assert!(alice.client.receive().await.contains_key("ka"));
+}
+
+#[sqlx::test]
 async fn a_login_needs_the_token_and_its_proof(pool: PgPool) {
     let server = Server::start(pool).await;
     let (token, challenge) = server.nas_login(42).await;
