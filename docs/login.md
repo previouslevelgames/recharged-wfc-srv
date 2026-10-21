@@ -118,7 +118,8 @@ A login to a profile logged in elsewhere disconnects the other connection
 | `logout` | the server closes the connection |
 | `addbuddy` | none; `newprofileid` is kept for the login ([below](#friend-requests)). Both players of a [mutual](#mutual-friends) request, and the [CPU buddy](#the-cpu-buddy), get `\bm\4\` and a status |
 | `delbuddy` | none; the request ends, and a mutual friend gets the player's offline status ([below](#mutual-friends)) |
-| `authadd`, `bm`, … | none: not served yet |
+| `bm` | none; `\bm\1\` to a mutual friend is passed on ([below](#matchmaking-messages)) |
+| `authadd`, … | none: not served yet |
 
 Errors are `\error\\err\<n>\errmsg\<text>\fatal\\final\` (with the request's `\id\`
 when there is one), then the
@@ -182,6 +183,23 @@ friends in memory the same way.
 
 `status` is DWC's (1 online, 2 playing, 3 to 6 matchmaking), and `locstring`
 the game's own status data: `U0MyAQ**` (`SC2` and 1) in its menus.
+
+### Matchmaking messages
+
+DWC's matchmaking talks to a friend through GPCM: a friend who accepts an
+invitation (the host's status data names it) asks the host for a place.
+
+```
+\bm\1\sesskey\<n>\t\<friend>\msg\GPCM3vMAT<command byte><values, / between>\final\
+```
+
+`3` is DWC's matchmaking version, the command byte one of
+`DWC_MATCH_COMMAND_*` (`dwc_match.h`: 0x01 reservation, 0x02 OK, 0x03 deny,
+0x04 wait, 0x05 cancel, 0x06 the address, …) and the values its numbers. The
+port's first reservation was `\x01` and `3/16781740/33007`. The server passes
+the message to the friend as `\bm\1\f\<player>\msg\<msg>\final\`, only between
+mutual friends and only for messages that start with `GPCM`; it drops any
+other without an error.
 
 ### The CPU buddy
 
