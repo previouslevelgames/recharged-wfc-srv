@@ -68,7 +68,9 @@ async fn an_admin_signs_in_sees_every_section_and_signs_out(pool: PgPool) {
 
     for (api, check) in [
         ("overview", "/players/accounts"),
+        ("overview", "/matchmaking/sessions"),
         ("players", "/profiles/0/friend_code"),
+        ("matchmaking", "/totals/searching"),
         ("database", "/tables/0/name"),
         ("leaderboards", "/totals/entries"),
     ] {

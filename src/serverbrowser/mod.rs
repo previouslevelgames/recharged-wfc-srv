@@ -1,11 +1,13 @@
 //! The server browser (`<game>.ms11.gs.nintendowifi.net`, TCP 28910): lists
-//! the master server's sessions to a game looking for a match. A friend who
-//! got a place in a host's group asks for the host's session by profile
-//! (`dwc_pid = <pid>`) to learn its addresses, then sends the host messages
-//! through it, which the master server passes on (docs/login.md). Other
-//! requests come later: they are read and not answered.
+//! the master server's sessions that pass a game's filter. A friend who got a
+//! place in a host's group asks for the host's session by profile
+//! (`dwc_pid = <pid>`) to learn its addresses; a ranked search asks for every
+//! game searching like it (`filter.rs`). The game then sends the session
+//! messages through the server browser, which the master server passes on
+//! (docs/login.md). Other requests are read and not answered.
 
 mod crypt;
+mod filter;
 
 use std::{
     net::{Ipv4Addr, SocketAddr, SocketAddrV4},
@@ -18,8 +20,12 @@ use tokio::{
 };
 use tracing::{debug, info, trace};
 
-use crate::master::{Master, Session};
+use crate::{
+    activity::{Activity, Via},
+    master::{Master, Session},
+};
 use crypt::CHALLENGE_LEN;
+use filter::Filter;
 
 /// The game's secret key, which also keys its QR2 challenges.
 const SECRET_KEY: &[u8] = b"B4LdGW";
@@ -31,6 +37,11 @@ const LIST_REQUEST: u8 = 0x00;
 const SEND_MESSAGE_REQUEST: u8 = 0x02;
 /// Messages DWC sends are short; WiiLink allows 148 bytes.
 const MAX_MESSAGE: usize = 0x200;
+/// DWC's match commands start `SBCM`, then the version (4 bytes), the command
+/// and the sender's QR2 address and profile (`DWCSBMessageHeader`), in the
+/// port's little-endian order.
+const MATCH_COMMAND: &[u8; 4] = b"SBCM";
+const MATCH_COMMAND_HEADER: usize = 20;
 /// List request options.
 const NO_SERVER_LIST: u32 = 0x02;
 
@@ -46,12 +57,16 @@ const STRING_VALUE: u8 = 0xFF;
 /// The list ends with a server of no flags at 255.255.255.255.
 const LAST_SERVER: [u8; 5] = [0x00, 0xFF, 0xFF, 0xFF, 0xFF];
 
-pub async fn serve(master: Arc<Master>, listener: TcpListener) -> std::io::Result<()> {
+pub async fn serve(
+    master: Arc<Master>,
+    activity: Arc<Activity>,
+    listener: TcpListener,
+) -> std::io::Result<()> {
     loop {
         let (stream, peer) = listener.accept().await?;
-        let master = master.clone();
+        let (master, activity) = (master.clone(), activity.clone());
         tokio::spawn(async move {
-            if let Err(error) = connection(master, stream, peer).await {
+            if let Err(error) = connection(master, activity, stream, peer).await {
                 debug!(target: "serverbrowser", %peer, %error, "connection failed");
             }
         });
@@ -60,6 +75,7 @@ pub async fn serve(master: Arc<Master>, listener: TcpListener) -> std::io::Resul
 
 async fn connection(
     master: Arc<Master>,
+    activity: Arc<Activity>,
     mut stream: TcpStream,
     peer: SocketAddr,
 ) -> std::io::Result<()> {
@@ -83,7 +99,7 @@ async fn connection(
             }
             let request: Vec<u8> = buffer.drain(..len).collect();
             trace!(target: "raw::serverbrowser", %peer, ?request, "request");
-            if let Some(reply) = answer(&master, &request, peer) {
+            if let Some(reply) = answer(&master, &activity, &request, peer) {
                 stream.write_all(&reply).await?;
             }
         }
@@ -93,11 +109,19 @@ async fn connection(
     }
 }
 
-fn answer(master: &Arc<Master>, request: &[u8], peer: SocketAddr) -> Option<Vec<u8>> {
+fn answer(
+    master: &Arc<Master>,
+    activity: &Activity,
+    request: &[u8],
+    peer: SocketAddr,
+) -> Option<Vec<u8>> {
     match request[2] {
         LIST_REQUEST => {
             let list = ListRequest::parse(request)?;
-            let reply = list.reply(&master.sessions(), peer)?;
+            let (reply, found) = list.reply(&master.sessions(), peer)?;
+            if let Some(profile_id) = searcher(&list.filter) {
+                activity.search(profile_id, &list.filter, found);
+            }
             Some(crypt::encrypt(
                 SECRET_KEY,
                 &list.challenge,
@@ -106,7 +130,7 @@ fn answer(master: &Arc<Master>, request: &[u8], peer: SocketAddr) -> Option<Vec<
             ))
         }
         SEND_MESSAGE_REQUEST => {
-            send_message(master, request, peer);
+            send_message(master, activity, request, peer);
             None
         }
         kind => {
@@ -119,7 +143,7 @@ fn answer(master: &Arc<Master>, request: &[u8], peer: SocketAddr) -> Option<Vec<
 /// `SEND_MESSAGE_REQUEST`: a message, such as DWC's `SBCM` match commands
 /// and NAT negotiation's cookie, for the game of the session at the public
 /// address given. The master server delivers it; the client hears nothing.
-fn send_message(master: &Arc<Master>, request: &[u8], peer: SocketAddr) {
+fn send_message(master: &Arc<Master>, activity: &Activity, request: &[u8], peer: SocketAddr) {
     let (Some(ip), Some(port), Some(message)) = (
         request.get(3..7),
         request.get(7..9),
@@ -140,9 +164,41 @@ fn send_message(master: &Arc<Master>, request: &[u8], peer: SocketAddr) {
         _ => "other",
     };
     info!(target: "serverbrowser", %peer, %to, kind, "message");
+    if let Some((command, from)) = match_command(message) {
+        let to_profile = master
+            .session(to)
+            .and_then(|session| session.field("dwc_pid")?.parse().ok());
+        activity.command(from, to_profile, command, Via::ServerBrowser);
+    }
     let master = master.clone();
     let message = message.to_vec();
     tokio::spawn(async move { master.send_client_message(to, &message).await });
+}
+
+/// A DWC match command's command byte and sender's profile.
+fn match_command(message: &[u8]) -> Option<(u8, Option<i32>)> {
+    let header = message.get(..MATCH_COMMAND_HEADER)?;
+    if !header.starts_with(MATCH_COMMAND) {
+        return None;
+    }
+    let profile = i32::from_le_bytes(header[16..20].try_into().ok()?);
+    Some((header[8], (profile > 0).then_some(profile)))
+}
+
+/// The profile a search is by: the one its filter leaves out
+/// (`dwc_pid != <pid>`). A lookup of one profile (`dwc_pid = <pid>`) is no
+/// search: `None`.
+fn searcher(filter: &str) -> Option<Option<i32>> {
+    let filter = filter.trim();
+    if filter.starts_with("dwc_pid =") && !filter.contains(" and ") {
+        return None;
+    }
+    Some(filter.split_once("dwc_pid != ").and_then(|(_, rest)| {
+        let end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        rest[..end].parse().ok()
+    }))
 }
 
 /// `SERVER_LIST_REQUEST`: after the length and type, the protocol and
@@ -182,8 +238,13 @@ impl ListRequest {
     }
 
     /// The list, before encryption: the client's own address, the fields'
-    /// names, no popular values, the matching sessions, and the end.
-    fn reply(&self, sessions: &[(SocketAddr, Session)], peer: SocketAddr) -> Option<Vec<u8>> {
+    /// names, no popular values, the matching sessions, and the end; and how
+    /// many sessions it holds.
+    fn reply(
+        &self,
+        sessions: &[(SocketAddr, Session)],
+        peer: SocketAddr,
+    ) -> Option<(Vec<u8>, usize)> {
         if self.game != crate::GAME_NAME {
             debug!(target: "serverbrowser", %peer, game = self.game, "list of another game");
             return None;
@@ -194,7 +255,7 @@ impl ListRequest {
         let mut out = client.ip().octets().to_vec();
         out.extend_from_slice(&client.port().to_be_bytes());
         if self.options & NO_SERVER_LIST != 0 {
-            return Some(out);
+            return Some((out, 0));
         }
 
         // The addresses are in the server's own bytes, not fields.
@@ -217,30 +278,28 @@ impl ListRequest {
 
         let found = self.matches(sessions);
         info!(target: "serverbrowser", %peer, filter = self.filter, found = found.len(), "list");
+        let count = found.len();
         for (address, session) in found {
             if let Some(server) = server(address, session, &fields) {
                 out.extend_from_slice(&server);
             }
         }
         out.extend_from_slice(&LAST_SERVER);
-        Some(out)
+        Some((out, count))
     }
 
-    /// The sessions the filter asks for. Only a lookup by profile is served
-    /// yet; matchmaking with anybody comes later.
+    /// The game's sessions that pass the filter; none for a filter it does
+    /// not understand.
     fn matches<'a>(&self, sessions: &'a [(SocketAddr, Session)]) -> Vec<(SocketAddr, &'a Session)> {
-        let Some(pid) = self.filter.strip_prefix("dwc_pid").and_then(|rest| {
-            let rest = rest.trim_start().strip_prefix('=')?.trim();
-            rest.parse::<u32>().ok().map(|_| rest)
-        }) else {
-            debug!(target: "serverbrowser", filter = self.filter, "filter not served yet");
+        let Some(filter) = Filter::parse(&self.filter) else {
+            debug!(target: "serverbrowser", filter = self.filter, "filter not understood");
             return Vec::new();
         };
         sessions
             .iter()
             .filter(|(_, session)| {
                 session.field("gamename") == Some(crate::GAME_NAME)
-                    && session.field("dwc_pid") == Some(pid)
+                    && filter.matches(|name| session.field(name))
             })
             .map(|(address, session)| (*address, session))
             .collect()
@@ -287,6 +346,10 @@ mod tests {
 
     /// The port's request for its host's session, as the server received it.
     const LOOKUP: &[u8] = b"\x00\x8d\x00\x01\x03\x00\x00\x00\x00mschargedwii\x00mschargedwii\x00Y];98goldwc_pid = 1000000000\x00\\numplayers\\maxplayers\\dwc_pid\\dwc_mtype\\dwc_mresv\\dwc_mver\\dwc_eval\x00\x00\x00\x00\x80\x06\x00\x00\x00";
+    /// A ranked search, as player 1 sent it.
+    const RANKED: &str = "dwc_mver = 3 and dwc_pid != 1000000000 and maxplayers = 1 and numplayers < 1 and dwc_mtype = 0 and dwc_mresv != dwc_pid and (AP = 463715253 and GT = 0 and CO = 0)";
+    /// Player 2's heartbeat while it searched.
+    const SEARCHING: &[u8] = b"\x03\x5c\xd6s\x9flocalip0\x00192.168.1.131\x00localport\x0053103\x00natneg\x001\x00statechanged\x001\x00gamename\x00mschargedwii\x00publicip\x00-1062731389\x00publicport\x0053103\x00numplayers\x000\x00maxplayers\x001\x00dwc_pid\x001000000001\x00dwc_mtype\x000\x00dwc_mresv\x000\x00dwc_mver\x003\x00dwc_eval\x001\x00GT\x000\x00PI\x001000000001\x00AP\x00463715253\x00PT\x000\x00CO\x000\x00\x00\x00\x00\x00\x00\x00\x00";
     /// The host's heartbeat once its friend reserved a place.
     const HOSTING: &[u8] = b"\x03-\x1e\xa3\x05localip0\x00192.168.1.131\x00localport\x0051021\x00natneg\x001\x00statechanged\x001\x00gamename\x00mschargedwii\x00publicip\x00-1408172031\x00publicport\x0044719\x00numplayers\x000\x00maxplayers\x001\x00dwc_pid\x001000000000\x00dwc_mtype\x002\x00dwc_mresv\x001000000001\x00dwc_mver\x003\x00dwc_eval\x001\x00\x00\x00\x00\x00\x00\x00\x00";
 
@@ -323,10 +386,11 @@ mod tests {
     fn a_lookup_lists_the_hosts_session() {
         let master = Master::default();
         master.answer(HOSTING, host());
-        let reply = ListRequest::parse(LOOKUP)
+        let (reply, found) = ListRequest::parse(LOOKUP)
             .unwrap()
             .reply(&master.sessions(), client())
             .unwrap();
+        assert_eq!(found, 1);
 
         let mut expected = vec![172, 17, 0, 1, 0x92, 0x2A, 7];
         for field in [
@@ -357,16 +421,59 @@ mod tests {
     }
 
     #[test]
-    fn other_lookups_find_nothing() {
+    fn a_ranked_search_lists_the_other_searching_game() {
+        let master = Master::default();
+        let searching: SocketAddr = "192.168.1.131:53103".parse().unwrap();
+        master.answer(SEARCHING, searching);
+        master.answer(HOSTING, host());
+        let request = ListRequest {
+            filter: RANKED.to_owned(),
+            ..ListRequest::parse(LOOKUP).unwrap()
+        };
+        let sessions = master.sessions();
+        let found = request.matches(&sessions);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].0, searching);
+
+        // The same search from player 2 finds nothing: it skips itself.
+        let own = ListRequest {
+            filter: RANKED.replace("1000000000", "1000000001"),
+            ..request
+        };
+        assert_eq!(own.matches(&sessions).len(), 0);
+    }
+
+    #[test]
+    fn searches_are_by_the_profile_they_leave_out() {
+        assert_eq!(searcher(RANKED), Some(Some(1000000000)));
+        assert_eq!(searcher("dwc_pid = 1000000000"), None);
+        assert_eq!(searcher(" numplayers < 2 "), Some(None));
+    }
+
+    #[test]
+    fn match_commands_give_their_command_and_sender() {
+        // A TELL_ADDR from profile 1000000001, as the port sent it.
+        let message = b"SBCM\x03\x00\x00\x00\x06\x08\x5b\xa3\xac\x11\x00\x01\x01\xca\x9a\x3b\xc0\xa8\x01\x83\x2a\xdf\x00\x00";
+        assert_eq!(match_command(message), Some((0x06, Some(1000000001))));
+        assert_eq!(match_command(b"\xfd\xfc\x1e\x66\x6a\xb2\x03\x00"), None);
+        assert_eq!(match_command(b"SBCM\x03"), None);
+    }
+
+    #[test]
+    fn other_filters_find_nothing() {
         let master = Master::default();
         master.answer(HOSTING, host());
         let request = ListRequest::parse(LOOKUP).unwrap();
-        for filter in ["dwc_pid = 1000000001", "dwc_mver = 3 and dwc_pid != 1"] {
+        for filter in [
+            "dwc_pid = 1000000001",
+            "dwc_mver = 3 and dwc_mtype = 0",
+            "dwc_pid =",
+        ] {
             let request = ListRequest {
                 filter: filter.to_owned(),
                 ..ListRequest::parse(LOOKUP).unwrap()
             };
-            let reply = request.reply(&master.sessions(), client()).unwrap();
+            let (reply, _) = request.reply(&master.sessions(), client()).unwrap();
             assert!(reply.ends_with(&[0, 0, 0xFF, 0xFF, 0xFF, 0xFF]), "{filter}");
             assert_eq!(request.matches(&master.sessions()).len(), 0, "{filter}");
         }

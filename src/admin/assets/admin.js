@@ -28,6 +28,39 @@ const STATUSES = {
   5: ['Joining a group', 'warning'],
   6: ['Hosting a group', 'warning'],
 };
+// DWC's dwc_mtype in a session's heartbeat (dwc_match.h), with its badge
+// tone. A session without one is not matchmaking.
+const MATCH_TYPES = {
+  0: ['Ranked search', 'warning'],
+  1: ['Searching friends', 'warning'],
+  2: ['Hosting friends', 'accent'],
+  3: ['Joining a friend', 'accent'],
+};
+// DWC's match commands (dwc_match.h), with their badge tone.
+const MATCH_COMMANDS = {
+  0x01: ['Reservation', 'accent'],
+  0x02: ['Reservation accepted', 'good'],
+  0x03: ['Reservation declined', 'serious'],
+  0x04: ['Asked to wait', 'warning'],
+  0x05: ['Reservation cancelled', 'serious'],
+  0x06: ['Address sent', 'accent'],
+  0x07: ['New player', 'accent'],
+  0x08: ['Close requested', null],
+  0x09: ['Closed', null],
+  0x0a: ['Connection closed', null],
+  0x0b: ['Prior reservation', 'accent'],
+  0x0c: ['Cancel', 'serious'],
+  0x0d: ['Cancel sync', null],
+  0x0e: ['Cancel sync ack', null],
+  0x0f: ['Cancel ack', null],
+  0x10: ['Host closed a guest', null],
+  0x11: ['Poll timeout', 'warning'],
+  0x12: ['Poll timeout ack', null],
+  0x13: ['Host blocks guests', 'warning'],
+  0x20: ['Friend accepted', 'good'],
+  0x40: ['Guest waiting', null],
+  0x41: ['Host keepalive', null],
+};
 const SEVERITY = ['good', 'warning', 'serious', 'critical'];
 
 const ICONS = {
@@ -70,15 +103,9 @@ const SECTIONS = [
     group: 'Game',
     name: 'Matchmaking',
     icon: 'matchmaking',
-    intro: 'Who is looking for a match, and the matches they play.',
-    planned: {
-      items: [
-        'See who is looking for a match',
-        'See the open matches and who is in them',
-        'Spot players whose NAT negotiation fails',
-      ],
-      needs: 'the QR2 master server\'s sessions and NAT negotiation',
-    },
+    intro: 'The games online, and what each is doing in matchmaking.',
+    api: 'matchmaking',
+    render: renderMatchmaking,
   },
   {
     path: '/admin/leaderboards',
@@ -336,6 +363,19 @@ function renderOverview(data, now) {
         foot: `NAS and GPCM · ${count(players.accounts)} accounts`,
       });
     }
+    if (target.path === '/admin/matchmaking') {
+      const games = content.matchmaking;
+      return serviceCard(target, {
+        tone: 'good',
+        status: 'Live',
+        facts: [
+          ['Sessions', count(games.sessions)],
+          ['Ranked search', count(games.searching)],
+          ['With friends', count(games.with_friends)],
+        ],
+        foot: 'QR2, server browser and NAT negotiation',
+      });
+    }
     const boards = content.leaderboards;
     return serviceCard(target, {
       tone: 'good',
@@ -399,6 +439,135 @@ function renderPlayers(data, now) {
         ],
         profiles,
         'No players yet. A console appears here after its first sign-in.',
+      ),
+    ),
+  ];
+}
+
+// --- Matchmaking ---------------------------------------------------------
+
+function matchState(game) {
+  const [name, tone] = MATCH_TYPES[game.match_type] || ['Online', 'good'];
+  let sub;
+  if (game.match_type == null) sub = 'Not matchmaking';
+  else if (game.reserved_with) sub = `Reserved with ${game.reserved_with}`;
+  else sub = `${game.players ?? 0} of ${game.max_players ?? 0} found`;
+  return [badge(tone, name), h('span', { class: 'sub' }, sub)];
+}
+
+// GT: 1 tournament, 2 two players at one console; CO: the region group.
+function matchMode(game) {
+  if (game.mode == null) return '—';
+  const kinds = [];
+  if (game.mode & 1) kinds.push('Tournament');
+  if (game.mode & 2) kinds.push('Two players');
+  return [kinds.join(', ') || 'Normal', h('span', { class: 'sub' }, `Region group ${game.region_group ?? '—'}`)];
+}
+
+// A profile in an event: its Mii name and number.
+function party(profile, names) {
+  if (profile == null) return h('span', { class: 'sub' }, 'Unknown');
+  return [names[profile] || 'Unnamed', h('span', { class: 'sub' }, `Profile ${profile}`)];
+}
+
+function eventWhat(event) {
+  if (event.kind === 'search') {
+    const repeats = event.searches > 1 ? ` · ${integer.format(event.searches)} times` : '';
+    return [badge('warning', 'Search'), h('span', { class: 'sub' }, `Found ${event.found}${repeats}`)];
+  }
+  if (event.kind === 'command') {
+    const [name, tone] = MATCH_COMMANDS[event.command] || [`Command 0x${event.command.toString(16)}`, null];
+    const via = event.via === 'gpcm' ? 'between friends, GPCM' : 'server browser';
+    const repeats = event.count > 1 ? ` · ${integer.format(event.count)} times` : '';
+    return [badge(tone, name), h('span', { class: 'sub' }, `${via}${repeats}`)];
+  }
+  const failed = event.reports.some((report) => report.result !== 1);
+  const done = event.reports.length >= 2 && !failed;
+  let state;
+  if (failed) state = badge('critical', 'NAT negotiation failed');
+  else if (done) state = badge('good', 'NAT negotiation ok');
+  else state = badge('warning', event.connected ? 'NAT negotiation connecting' : 'NAT negotiation started');
+  return [state, h('span', { class: 'sub' }, `Cookie ${event.cookie} · ${event.reports.length} of 2 reports`)];
+}
+
+function eventWho(event, names) {
+  if (event.kind === 'search') return party(event.profile_id, names);
+  if (event.kind === 'command') {
+    return h('div', { class: 'pair' }, h('div', null, party(event.from, names)), h('span', { class: 'sub' }, '→'), h('div', null, party(event.to, names)));
+  }
+  if (!event.games.length) return '—';
+  return h(
+    'div',
+    { class: 'pair' },
+    event.games.flatMap((game, index) => [
+      index ? h('span', { class: 'sub' }, '↔') : null,
+      h('div', null, game.profile_id == null ? [game.address, h('span', { class: 'sub' }, 'No session')] : party(game.profile_id, names)),
+    ]),
+  );
+}
+
+// The game's own part of a search filter, in its parentheses.
+function eventDetail(event) {
+  if (event.kind !== 'search') return '—';
+  const own = event.filter.match(/\((.*)\)\s*$/);
+  return h('code', { title: event.filter }, own ? own[1] : event.filter);
+}
+
+function renderMatchmaking(data, now) {
+  const content = data.content;
+  if (!content) return [unreachable(data.error)];
+  const { totals, sessions, activity, names } = content;
+  const idle = totals.sessions - totals.searching - totals.with_friends;
+
+  return [
+    h(
+      'section',
+      { class: 'tiles', 'aria-label': 'Key figures' },
+      tile('Sessions', count(totals.sessions), 'Games sending heartbeats'),
+      tile('Ranked search', count(totals.searching), 'Looking for an opponent'),
+      tile('With friends', count(totals.with_friends), 'Hosting, joining or searching'),
+      tile('Not matchmaking', count(idle), 'Online in the menus'),
+    ),
+    card(
+      'Sessions',
+      'One per game, from its last heartbeat; matchmaking first',
+      table(
+        [
+          {
+            label: 'Player',
+            cell: (g) => (g.profile_id == null
+              ? ['—', h('span', { class: 'sub' }, 'No profile until matchmaking')]
+              : [g.mii_name || 'Unnamed', h('span', { class: 'sub' }, `Profile ${g.profile_id}`)]),
+          },
+          { label: 'Doing', cell: (g) => matchState(g) },
+          { label: 'Mode', cell: (g) => matchMode(g) },
+          { label: 'Points', num: true, cell: (g) => (g.points == null ? '—' : integer.format(g.points)) },
+          { label: 'Address', cell: (g) => [g.address, h('span', { class: 'sub' }, g.local_address ? `Local ${g.local_address}` : '')] },
+          { label: 'Heard', cell: (g) => [ago(g.heard_at, now), g.listed ? null : h('span', { class: 'sub' }, 'Unchallenged')] },
+        ],
+        sessions,
+        'No game is online. A game appears here with its first heartbeat after it signs in.',
+      ),
+    ),
+    card(
+      'Recent activity',
+      'The latest searches, match commands and NAT negotiations, kept in memory until the server restarts',
+      table(
+        [
+          {
+            label: 'When',
+            cell: (e) => {
+              const last = ago(e.last_at, now);
+              const first = ago(e.first_at, now);
+              return [last, first.textContent === last.textContent ? null : h('span', { class: 'sub' }, ['since ', first])];
+            },
+          },
+          { label: 'What', cell: (e) => eventWhat(e) },
+          { label: 'Who', cell: (e) => eventWho(e, names) },
+          { label: 'Filter', class: 'query', cell: (e) => eventDetail(e) },
+        ],
+        activity,
+        'Nothing yet. Searches, reservations and NAT negotiations appear here as games make them.',
       ),
     ),
   ];

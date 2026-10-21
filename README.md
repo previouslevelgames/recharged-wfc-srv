@@ -90,8 +90,9 @@ Cloudflare Tunnel. On its first login the game registers the console and keeps
 the userid in `data/shared2/DWC_AUTHDATA`.
 
 The game logs in and stays online, friend codes work (friends who add each
-other see each other online), and friends can battle each other. Matchmaking
-with anybody (ranked matches) is not served yet.
+other see each other online), friends can battle each other, and ranked
+matches (RANKED) pair players who search at the same time; their results go
+to the leaderboards.
 
 ## Admin dashboard
 
@@ -101,10 +102,13 @@ seconds:
 - **Overview**: every section in a few figures, with its status.
 - **Game**: **Players** (the accounts and profiles with their Mii names and
   friend codes, last sign-in and address, and who is online with their status
-  and friends) and **Leaderboards** (the gamestats2 boards by category and
-  region, and the top 10 of each with Mii names, wins and losses).
-  **Matchmaking** and **Moderation** are planned: their pages say which
-  services they need.
+  and friends), **Matchmaking** (the games sending QR2 heartbeats: who is in
+  a ranked search, hosting or joining a friend battle, with mode, region
+  group, points and addresses; and the latest 50 searches, reservations and
+  NAT negotiations with their results, kept in memory) and **Leaderboards**
+  (the gamestats2 boards by category and region, and the top 10 of each with
+  Mii names, wins and losses). **Moderation** is planned: its page says what
+  it needs.
 - **System**: **Database**, the health of PostgreSQL, its uptime, size,
   connections, cache hit ratio and transactions per second, the open
   connections and their queries, the tables, and the applied migrations.

@@ -918,6 +918,17 @@ td .sub {
   font-size: 12px;
 }
 
+/* The games of an activity event, side by side with an arrow between. */
+td .pair {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+td .pair > .sub {
+  font-size: 14px;
+}
+
 td.query {
   min-width: 260px;
   max-width: 520px;
