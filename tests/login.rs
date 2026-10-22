@@ -503,7 +503,13 @@ impl Server {
             gpcm: gpcm.local_addr().unwrap(),
         };
         let router = app.router(None);
-        tokio::spawn(async move { axum::serve(http, router).await });
+        tokio::spawn(async move {
+            axum::serve(
+                http,
+                router.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+        });
         tokio::spawn(async move { app.serve_gpcm(gpcm).await });
         server
     }

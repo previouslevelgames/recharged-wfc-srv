@@ -73,6 +73,9 @@ pub struct Gpcm {
 
 struct Session {
     connection: u64,
+    /// Where the console logged in from: gamestats2 takes its scores only
+    /// from there.
+    address: IpAddr,
     kick: Arc<Notify>,
     logged_in_at: OffsetDateTime,
     /// Messages to the connection from other logins: friends' answers and
@@ -101,9 +104,15 @@ pub struct Presence {
 }
 
 impl Session {
-    fn new(connection: u64, kick: Arc<Notify>, outbox: mpsc::UnboundedSender<Message>) -> Self {
+    fn new(
+        connection: u64,
+        address: IpAddr,
+        kick: Arc<Notify>,
+        outbox: mpsc::UnboundedSender<Message>,
+    ) -> Self {
         Self {
             connection,
+            address,
             kick,
             logged_in_at: OffsetDateTime::now_utc(),
             outbox,
@@ -149,6 +158,12 @@ impl Gpcm {
                 (profile_id, presence)
             })
             .collect()
+    }
+
+    /// Where `profile_id` is logged in from, if it is.
+    pub fn logged_in_from(&self, profile_id: i32) -> Option<IpAddr> {
+        let sessions = self.sessions.lock().unwrap();
+        sessions.get(&profile_id).map(|session| session.address)
     }
 
     pub async fn serve(self: Arc<Self>, listener: TcpListener) -> std::io::Result<()> {
@@ -379,7 +394,12 @@ impl Gpcm {
         let kick = Arc::new(Notify::new());
         let previous = self.sessions.lock().unwrap().insert(
             profile.profile_id,
-            Session::new(connection.id, kick.clone(), connection.outbox.clone()),
+            Session::new(
+                connection.id,
+                connection.peer,
+                kick.clone(),
+                connection.outbox.clone(),
+            ),
         );
         if let Some(previous) = previous.filter(|previous| previous.connection != connection.id) {
             previous.kick.notify_one();
@@ -719,6 +739,21 @@ fn uppercase(len: usize) -> String {
 }
 
 #[cfg(test)]
+impl Gpcm {
+    /// A login of `profile_id` from `address` with no connection behind it,
+    /// for other modules' tests.
+    pub(crate) fn fake_login(&self, profile_id: i32, address: IpAddr) {
+        let session = Session::new(
+            0,
+            address,
+            Arc::new(Notify::new()),
+            mpsc::unbounded_channel().0,
+        );
+        self.sessions.lock().unwrap().insert(profile_id, session);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -727,7 +762,12 @@ mod tests {
         let pool = sqlx::postgres::PgPoolOptions::new()
             .connect_lazy_with(sqlx::postgres::PgConnectOptions::new());
         let gpcm = Gpcm::new(pool, Arc::default(), Arc::default());
-        let mut session = Session::new(1, Arc::new(Notify::new()), mpsc::unbounded_channel().0);
+        let mut session = Session::new(
+            1,
+            IpAddr::from([10, 0, 0, 1]),
+            Arc::new(Notify::new()),
+            mpsc::unbounded_channel().0,
+        );
         session.add_friend(1_000_000_001);
         session.mutual.insert(1_000_000_001);
         session.dwc_status = Some(2);
@@ -738,11 +778,21 @@ mod tests {
         assert_eq!(online.status, Some(2));
         assert_eq!((online.friend_requests, online.mutual_friends), (1, 1));
         assert!(!presence.contains_key(&1_000_000_001));
+        assert_eq!(
+            gpcm.logged_in_from(1_000_000_000),
+            Some(IpAddr::from([10, 0, 0, 1]))
+        );
+        assert_eq!(gpcm.logged_in_from(1_000_000_001), None);
     }
 
     #[test]
     fn friend_requests_are_kept_once_up_to_the_roster_size() {
-        let mut session = Session::new(1, Arc::new(Notify::new()), mpsc::unbounded_channel().0);
+        let mut session = Session::new(
+            1,
+            IpAddr::from([10, 0, 0, 1]),
+            Arc::new(Notify::new()),
+            mpsc::unbounded_channel().0,
+        );
         assert!(session.add_friend(1_000_000_001));
         assert!(!session.add_friend(1_000_000_001));
         for friend in 1..MAX_FRIENDS as i32 {

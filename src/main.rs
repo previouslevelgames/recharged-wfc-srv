@@ -2,6 +2,7 @@ use std::{
     env,
     error::Error,
     io::{self, IsTerminal},
+    net::SocketAddr,
 };
 
 use recharged_wfc_srv::App;
@@ -65,7 +66,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let router = app.router(admin);
     // HTTP stops gracefully on a signal; the others stop with it.
     tokio::select! {
-        result = axum::serve(http, router).with_graceful_shutdown(shutdown()) => result?,
+        result = axum::serve(http, router.into_make_service_with_connect_info::<SocketAddr>())
+            .with_graceful_shutdown(shutdown()) => result?,
         result = app.serve_gpcm(gpcm) => result?,
         result = app.serve_master(master) => result?,
         result = app.serve_server_browser(browser) => result?,

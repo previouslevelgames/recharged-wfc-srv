@@ -8,6 +8,9 @@
 //! The client treats any 4xx/5xx as a global DWC error that drops the player
 //! offline, so every request for this game is answered with 200, failures
 //! included: an `error:<reason>` body fails only the ranking request.
+//!
+//! A put counts only from the address its pid is logged in to GPCM from
+//! (`docs/gamestats2.md`, "Trust"): the pid alone is anyone's to send.
 
 mod codec;
 mod leaderboard;
@@ -17,11 +20,15 @@ mod token;
 #[cfg(test)]
 mod fixtures;
 
-use std::{fmt, sync::Arc};
+use std::{
+    fmt,
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+};
 
 use axum::{
     Router,
-    extract::{Path, Query, RawQuery, State, rejection::QueryRejection},
+    extract::{ConnectInfo, Path, Query, RawQuery, State, rejection::QueryRejection},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::get,
@@ -29,7 +36,7 @@ use axum::{
 use serde::Deserialize;
 use tracing::{trace, warn};
 
-use crate::GAME_NAME;
+use crate::{GAME_NAME, gpcm::Gpcm};
 use leaderboard::Leaderboard;
 use token::TokenStore;
 
@@ -43,32 +50,43 @@ const GAMESTATS_KEY: &str = "DbfBialvJznkQWYuOrRa";
 pub struct GamestatsState {
     tokens: Arc<TokenStore>,
     leaderboard: Leaderboard,
+    /// Who is logged in where: the puts they may send.
+    gpcm: Arc<Gpcm>,
 }
 
 impl GamestatsState {
-    fn new(pool: sqlx::PgPool) -> Self {
+    fn new(pool: sqlx::PgPool, gpcm: Arc<Gpcm>) -> Self {
         Self {
             tokens: Arc::new(TokenStore::default()),
             leaderboard: Leaderboard::new(pool),
+            gpcm,
         }
     }
 }
 
 #[cfg(test)]
 impl GamestatsState {
+    /// With a GPCM of its own, which nobody is logged in to yet.
+    fn with_pool(pool: sqlx::PgPool) -> Self {
+        let gpcm = Gpcm::new(pool.clone(), Arc::default(), Arc::default());
+        Self::new(pool, Arc::new(gpcm))
+    }
+
     /// For tests that never touch the database: the pool connects on the first
     /// query, so none is needed until then.
     fn without_database() -> Self {
         use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 
-        Self::new(PgPoolOptions::new().connect_lazy_with(PgConnectOptions::new()))
+        Self::with_pool(PgPoolOptions::new().connect_lazy_with(PgConnectOptions::new()))
     }
 }
 
-pub fn router(pool: sqlx::Pool<sqlx::Postgres>) -> Router {
+/// The routes. They need the caller's address: serve them with
+/// `into_make_service_with_connect_info::<SocketAddr>()`.
+pub fn router(pool: sqlx::Pool<sqlx::Postgres>, gpcm: Arc<Gpcm>) -> Router {
     Router::new()
         .route("/{game}/web/client/{endpoint}", get(handle))
-        .with_state(GamestatsState::new(pool))
+        .with_state(GamestatsState::new(pool, gpcm))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -98,6 +116,7 @@ struct Params {
 
 async fn handle(
     State(state): State<GamestatsState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Path((game, endpoint)): Path<(String, String)>,
     RawQuery(raw): RawQuery,
     params: Result<Query<Params>, QueryRejection>,
@@ -109,7 +128,7 @@ async fn handle(
         return StatusCode::NOT_FOUND.into_response();
     };
 
-    match process(&state, op, params).await {
+    match process(&state, op, peer.ip(), params).await {
         Ok(body) => {
             trace!(target: "raw::gamestats", ?op, reply = %hex(&body), "reply");
             body.into_response()
@@ -121,6 +140,7 @@ async fn handle(
 async fn process(
     state: &GamestatsState,
     op: Op,
+    peer: IpAddr,
     params: Result<Query<Params>, QueryRejection>,
 ) -> Result<Vec<u8>, GamestatsError> {
     let Query(params) =
@@ -147,7 +167,14 @@ async fn process(
     }
 
     let payload = match op {
-        Op::Put => leaderboard::put(state, pid, &body).await?,
+        Op::Put => {
+            let logged_in_from = state.gpcm.logged_in_from(pid);
+            if logged_in_from != Some(peer) {
+                warn!(target: "gamestats", pid, %peer, ?logged_in_from, "put from elsewhere");
+                return Err(GamestatsError::NotLoggedIn);
+            }
+            leaderboard::put(state, pid, &body).await?
+        }
         Op::Get => leaderboard::get(state, pid, &body).await?,
     };
     Ok(codec::sign(payload))
@@ -165,6 +192,8 @@ pub enum GamestatsError {
     BadHash,
     /// The pid inside `data` differs from the one in the query.
     PidMismatch,
+    /// A put for a pid that is not logged in to GPCM from the same address.
+    NotLoggedIn,
     /// `data` Base64 is malformed or invalid,
     BadData,
     /// The database failed. The details go to the log, not to the client.
@@ -178,6 +207,7 @@ impl fmt::Display for GamestatsError {
             Self::NoToken => f.write_str("no token issued to this pid, or it expired"),
             Self::BadHash => f.write_str("bad hash"),
             Self::PidMismatch => f.write_str("pid in data differs from the query"),
+            Self::NotLoggedIn => f.write_str("pid not logged in from this address"),
             Self::BadData => f.write_str("bad data"),
             Self::Storage => f.write_str("storage"),
         }
