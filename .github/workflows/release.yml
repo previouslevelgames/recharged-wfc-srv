@@ -1,0 +1,52 @@
+name: Publish server release
+
+# Publishing a drafted release (build.yml drafts one when stable gets a new
+# version) tags that commit's image v<version>, stable and latest, so Unraid's
+# auto-update and Docker Compose deploy it. Nothing is built again.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  tag:
+    name: tag the release image
+    if: startsWith(github.event.release.tag_name, 'v') && !github.event.release.prerelease
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    env:
+      TAG: ${{ github.event.release.tag_name }}
+    steps:
+      - name: Check out the release
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag the image of the release commit
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          commit=$(git rev-parse HEAD)
+          if ! docker buildx imagetools inspect "$image:sha-$commit" >/dev/null; then
+            echo "::error::$image:sha-$commit does not exist; only a push to stable publishes release images."
+            exit 1
+          fi
+          docker buildx imagetools create --tag "$image:$TAG" --tag "$image:stable" --tag "$image:latest" \
+            "$image:sha-$commit"
+          echo "Tagged \`$image:sha-$commit\` as \`$TAG\`, \`stable\` and \`latest\`" >> "$GITHUB_STEP_SUMMARY"

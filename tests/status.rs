@@ -3,7 +3,8 @@ use tower::ServiceExt;
 
 #[tokio::test]
 async fn status_returns_the_embedded_revision_as_uncached_json() {
-    let response = recharged_wfc_srv::router()
+    let response = recharged_wfc_srv::App::new(lazy_pool())
+        .router(None)
         .oneshot(Request::get("/status").body(Body::empty()).unwrap())
         .await
         .unwrap();
@@ -21,4 +22,11 @@ async fn status_returns_the_embedded_revision_as_uncached_json() {
         serde_json::json!({"status": "ok", "revision": recharged_wfc_srv::REVISION})
     );
     assert!(!status["revision"].as_str().unwrap().is_empty());
+}
+
+/// A pool that connects on its first query: these requests never make one.
+fn lazy_pool() -> sqlx::PgPool {
+    use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+
+    PgPoolOptions::new().connect_lazy_with(PgConnectOptions::new())
 }

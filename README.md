@@ -1,90 +1,104 @@
-# recharged-wfc-srv
+# Recharged WFC
 
-Rust backend for a reimplementation of [WiiLink WFC](https://github.com/WiiLink24/wfc-server/).
-One container runs the API and PostgreSQL 18. Currently, `GET /status` returns
-`{"status":"ok","revision":"<Git commit SHA>"}`. Game APIs are future work.
+The online server for [**Recharged**](https://github.com/previouslevelgames/recharged),
+the native PC port of **Mario Strikers Charged**.
 
-## Unraid setup
+Mario Strikers Charged played online through the Nintendo Wi-Fi Connection
+(WFC), which Nintendo shut down in 2014. This server brings those online modes
+back for Recharged: going online with your Mii, friends, friend battles, ranked
+matches and the leaderboards. It is written in Rust, with
+[WiiLink's wfc-server](https://github.com/WiiLink24/wfc-server) as its
+reference, and runs as a single Docker container with its own database.
 
-In **Docker → Add Container**, enable **Advanced View** and use these settings:
+## What works
 
-| Setting | Value |
-|---|---|
-| Name | `recharged-wfc-srv` |
-| Repository | `ghcr.io/previouslevelgames/recharged-wfc-srv:stable` |
-| Network | `bridge` |
-| Port | Config Type **Port**: Container Port `8080`, Host Port `8080` (any free port), TCP |
-| Path (SQL data) | Config Type **Path**: Container Path `/var/lib/postgresql`, Host Path `/mnt/user/appdata/recharged-wfc-srv/postgres`, Access Mode **Read/Write** |
-| WebUI | `http://[IP]:[PORT:8080]/status` |
-| Extra Parameters (Advanced) | `--stop-timeout=30` |
-| Autostart | Enabled |
+- **Going online.** The first time a console connects, the server registers it.
+  Each Mii gets its own profile and friend code.
+- **Friends.** Add each other by friend code. Once both have added each other,
+  you see when your friends are online and what they are doing. Removing a
+  friend works too. The server has a friend of its own, **CPU**, who accepts
+  every request: friend code `1770-9365-9135` (US) or `0009-9999-9999` (EU).
+- **Friend battles.** Host a match and invite a friend, or join one.
+- **Ranked matches.** **RANKED** in WFC Central pairs players who search at the
+  same time, and helps the two games reach each other through home routers.
+- **Leaderboards.** Ranked results count towards the season and *Striker of the
+  day* boards, plus the boards only the European release has. A score is only
+  accepted from the player who is signed in.
+- **Admin dashboard.** A web page for whoever runs the server, see below.
 
-## Environment variables
+Not there yet: moderation tools (banning a player, kicking one from a match,
+removing a score). The server is made for Recharged; real Wii consoles are not
+supported.
 
-Configure these directly in the Unraid container editor; no `.env` file is needed.
-Choose **Add another Path, Port, Variable, Label or Device → Config Type: Variable**,
-enter the **Key** and **Value** from the table, and set **Password Mask: Yes** for
-`POSTGRES_PASSWORD`. Optional variables already have defaults in the image.
+## Admin dashboard
 
-| Variable (Key) | Required | Value |
-|---|---|---|
-| `POSTGRES_PASSWORD` | yes | Generate a password in the Unraid terminal with `openssl rand -hex 32` and paste the output. Keep it across container updates. |
-| `POSTGRES_DB` | no | Database name. Default: `recharged_wfc`. |
-| `POSTGRES_USER` | no | Database user. Default: `recharged_wfc`. |
-| `PGDATA` | no | SQL data directory inside the container. Default: `/var/lib/postgresql/18/docker`, beneath the mapped `/var/lib/postgresql` path. Leave unset to use this default. |
-| `PORT` | no | API port inside the container. Default: `8080`; use the Host Port mapping to choose the external port. |
+Whoever runs the server can sign in at `/admin` with a Google account and watch
+it live: who is online, who is searching for a match, the leaderboards and the
+health of the database. The page follows your system's light or dark mode.
 
-With the mapping above, the **SQL data lives on your Unraid server at**
-`/mnt/user/appdata/recharged-wfc-srv/postgres/18/docker`.
-To store it elsewhere on the server, choose another **Host Path** for
-**Path (SQL data)**. Keep this mapping when updating or replacing the container
-so the database persists. `PGDATA` refers to a path inside the container;
-keep it at its default for this setup.
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/admin-overview-dark.png">
+    <img src="docs/screenshots/admin-overview-light.png" width="840" alt="The dashboard's overview: players online, matchmaking, leaderboards and the database, each in a few figures">
+  </picture>
+</p>
 
-`POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD` initialize an empty data
-folder; changing them later does not update an existing database or its credentials.
+<table>
+<tr>
+<td width="50%">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/admin-players-dark.png">
+    <img src="docs/screenshots/admin-players-light.png" alt="Players: every profile with its Mii name, friend code, status and friends">
+  </picture>
+  <p align="center"><b>Players</b>: every Mii with its friend code, who is online and what they are doing</p>
+</td>
+<td width="50%">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/admin-matchmaking-dark.png">
+    <img src="docs/screenshots/admin-matchmaking-light.png" alt="Matchmaking: the games online and the latest searches, reservations and connections">
+  </picture>
+  <p align="center"><b>Matchmaking</b>: who is searching, hosting or joining, and how their matches came together</p>
+</td>
+</tr>
+<tr>
+<td width="50%">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/admin-leaderboards-dark.png">
+    <img src="docs/screenshots/admin-leaderboards-light.png" alt="Leaderboards: the top 10 of a board with wins and losses">
+  </picture>
+  <p align="center"><b>Leaderboards</b>: the top 10 of every board, with wins and losses</p>
+</td>
+<td width="50%">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/admin-database-dark.png">
+    <img src="docs/screenshots/admin-database-light.png" alt="Database: health, size, connections, tables and migrations">
+  </picture>
+  <p align="center"><b>Database</b>: health, load, tables and schema updates</p>
+</td>
+</tr>
+</table>
 
-If replacing the earlier two-container setup, stop its PostgreSQL container before
-reusing the same host folder.
+<sub>The screenshots show made-up players and addresses.</sub>
 
-Click **Apply**. The container starts PostgreSQL on internal `127.0.0.1:5432`, then
-the API. Open `http://<unraid-ip>:8080/status` (using your Host Port) to check the
-running revision. The container health check checks both services.
+## Running a server
 
-## Updates
+The server ships as one container image,
+`ghcr.io/previouslevelgames/recharged-wfc-srv`, with its PostgreSQL database
+inside. It needs five ports reachable from the players' games, and the game is
+pointed at it with one line in its `recharged.ini`:
 
-Enable **CA Auto Update Applications** for this container to deploy new `stable`
-images automatically. Develop on `master` and open a pull request into `stable`,
-the default branch. GitHub Actions checks Rust and verifies the container before
-merging; only the repository owner's merge team may merge into `stable`.
-Successful builds on `stable` publish both `stable` and `latest`; development
-pushes and pull requests never publish images. For rollback, use
-`sha-<full-commit>` from a stable build.
-Make the [GHCR package public](https://github.com/orgs/previouslevelgames/packages/container/recharged-wfc-srv/settings)
-for pulls without credentials, or run `docker login ghcr.io` on Unraid.
-
-## Docker Compose
-
-```bash
-cp .env.example .env
-# Set POSTGRES_PASSWORD and POSTGRES_DATA_DIR in .env.
-docker compose pull
-docker compose up -d --no-build --wait
+```ini
+[online]
+server = 203.0.113.10
 ```
 
-For Compose, `POSTGRES_DATA_DIR` sets the **host** folder and `HTTP_PORT` sets the
-host HTTP port. In Unraid, use the **Path** and **Port** mappings above.
-Repeat the last two commands to update. To build locally instead, run
-`./scripts/build.sh` before `docker compose up -d --no-build --wait`.
+**[docs/install.md](docs/install.md)** walks through the setup on Unraid or
+with Docker Compose, the settings, the admin dashboard's Google sign-in and
+updates.
 
-## Development
+## More
 
-Rust 1.95+: `cargo run --locked`. Check with `cargo fmt --check`,
-`cargo clippy --locked --all-targets -- -D warnings`, and `cargo test --locked`.
-The standalone Rust process serves status without starting PostgreSQL; the image
-entrypoint manages the database. Database APIs and a Rust driver are still to be added.
-The container supplies `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, and `PGDATABASE`
-to the Rust process for future connections. Routes live in `src/lib.rs`.
-
-The Git revision is embedded at build time, automatically by the image workflow
-and build helper. Native builds use Git HEAD, or `unknown` without Git metadata.
+- [docs/install.md](docs/install.md): installing, configuring and updating the server
+- [docs/development.md](docs/development.md): building and testing it, and how releases work
+- [docs/login.md](docs/login.md) and [docs/gamestats2.md](docs/gamestats2.md):
+  what the game sends and what the server answers, for going online and for the leaderboards

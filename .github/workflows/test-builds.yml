@@ -1,0 +1,39 @@
+name: Remove test images
+
+# A release pull request's test images (test-pr<N> and test-pr<N>-<commit>,
+# published by build.yml) end with the pull request: merged into a release or
+# closed. Deleting them needs the Admin role for this repository under the
+# package's "Manage Actions access".
+on:
+  pull_request:
+    types: [closed]
+    branches: [stable]
+
+permissions:
+  contents: read
+
+jobs:
+  remove:
+    name: remove test images
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      packages: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      OWNER: ${{ github.repository_owner }}
+      PACKAGE: ${{ github.event.repository.name }}
+    steps:
+      - name: Delete the pull request's image versions
+        run: |
+          # Only versions whose every tag is a test tag of this pull request.
+          gh api --paginate "orgs/$OWNER/packages/container/$PACKAGE/versions" \
+            | jq -r --arg tags "^test-pr$PR_NUMBER(-[0-9a-f]{12})?$" \
+                '.[] | select((.metadata.container.tags | length) > 0
+                              and all(.metadata.container.tags[]; test($tags))) | .id' \
+            | while read -r id; do
+                echo "Removing image version $id"
+                gh api --method DELETE "orgs/$OWNER/packages/container/$PACKAGE/versions/$id"
+              done

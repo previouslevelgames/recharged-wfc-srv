@@ -1,0 +1,97 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT CASE WHEN schemaname = 'public' THEN relname::text\n                       ELSE schemaname || '.' || relname END AS \"name!\",\n                  n_live_tup AS \"rows!\",\n                  n_dead_tup AS \"dead_rows!\",\n                  pg_total_relation_size(relid) AS \"total_bytes!\",\n                  pg_indexes_size(relid) AS \"index_bytes!\",\n                  seq_scan AS \"seq_scans!\",\n                  idx_scan AS index_scans,\n                  greatest(last_vacuum, last_autovacuum) AS last_vacuum,\n                  greatest(last_analyze, last_autoanalyze) AS last_analyze\n           FROM pg_stat_user_tables\n           ORDER BY pg_total_relation_size(relid) DESC, relname",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "rows!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "pg_stat_user_tables",
+            "name": "n_live_tup"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "dead_rows!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "pg_stat_user_tables",
+            "name": "n_dead_tup"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "total_bytes!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "index_bytes!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "seq_scans!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "pg_stat_user_tables",
+            "name": "seq_scan"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "index_scans",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "pg_stat_user_tables",
+            "name": "idx_scan"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "last_vacuum",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 8,
+        "name": "last_analyze",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null,
+      true,
+      true,
+      null,
+      null,
+      true,
+      true,
+      null,
+      null
+    ]
+  },
+  "hash": "e53282aaec9d063567b6712f6927b309328a22d0c970c936572a64207b697ccd"
+}

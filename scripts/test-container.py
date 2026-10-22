@@ -2,11 +2,20 @@
 """Exercise the built image using a temporary Docker volume and containers."""
 
 import json
+import socket
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 import uuid
+
+ADMIN = (
+    "-e", "PUBLIC_URL=https://wfc.example.com",
+    "-e", "GOOGLE_CLIENT_ID=container-test.apps.googleusercontent.com",
+    "-e", "GOOGLE_CLIENT_SECRET=container-test-only",
+    "-e", "ADMIN_GOOGLE_EMAILS=admin@example.com",
+)
 
 
 def docker(*args):
@@ -52,6 +61,20 @@ def sql(container, query):
     )
 
 
+def gpcm_greeting(address):
+    host, port = address.rsplit(":", 1)
+    with socket.create_connection((host, int(port)), timeout=5) as connection:
+        return connection.recv(256).decode()
+
+
+def http_status(url):
+    try:
+        with urllib.request.urlopen(url, timeout=5) as response:
+            return response.status, response.read().decode()
+    except urllib.error.HTTPError as error:
+        return error.code, ""
+
+
 def main():
     image, revision = sys.argv[1:]
     volume = "recharged-wfc-test-" + uuid.uuid4().hex
@@ -60,7 +83,7 @@ def main():
 
     def start(*extra):
         container = docker(
-            "run", "-d", "-p", "127.0.0.1::8080",
+            "run", "-d", "-p", "127.0.0.1::8080", "-p", "127.0.0.1::29900",
             "--health-interval=1s", "--health-start-period=0s",
             "--mount", f"type=volume,source={volume},target=/var/lib/postgresql",
             "-e", "POSTGRES_DB=integration_db", "-e", "POSTGRES_USER=integration_user",
@@ -76,6 +99,9 @@ def main():
         address = docker("port", container, "8080/tcp")
         with urllib.request.urlopen(f"http://{address}/status", timeout=5) as response:
             assert json.load(response) == {"status": "ok", "revision": revision}
+        assert http_status(f"http://{address}/admin")[0] == 404
+        greeting = gpcm_greeting(docker("port", container, "29900/tcp"))
+        assert greeting.startswith("\\lc\\1\\challenge\\"), greeting
         assert sql(container, "SHOW listen_addresses") == "127.0.0.1"
         sql(container, "CREATE TABLE persistence_probe (value text)")
         sql(container, "INSERT INTO persistence_probe VALUES ('persisted')")
@@ -89,10 +115,14 @@ def main():
         containers.remove(container)
         print("API revision, database credentials, and clean shutdown verified.", flush=True)
 
-        container = start()
+        container = start(*ADMIN)
         wait_healthy(container)
         assert sql(container, "SELECT value FROM persistence_probe") == "persisted"
         print("Database data survived container replacement.", flush=True)
+        address = docker("port", container, "8080/tcp")
+        status, page = http_status(f"http://{address}/admin")
+        assert status == 200 and "Sign in with Google" in page
+        print("The admin dashboard asks for a sign-in.", flush=True)
         # The supervisor may stop the container before docker exec returns.
         stopped = subprocess.run(
             ["docker", "exec", "--user", "postgres", container,
@@ -111,6 +141,11 @@ def main():
         assert wait_exit(container) != 0
         assert "database system is shut down" in docker("logs", container)
         print("API startup failure shuts down PostgreSQL cleanly.", flush=True)
+
+        container = start(*ADMIN[:2])
+        assert wait_exit(container) != 0
+        assert "GOOGLE_CLIENT_ID" in docker("logs", container)
+        print("A partial admin configuration is rejected.", flush=True)
 
         container = start("-e", "POSTGRES_PASSWORD=")
         assert wait_exit(container) != 0

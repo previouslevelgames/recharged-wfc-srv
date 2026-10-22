@@ -1,0 +1,123 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT current_database() AS \"name!\",\n                  current_setting('server_version') AS \"version!\",\n                  pg_postmaster_start_time() AS \"started_at!\",\n                  pg_database_size(current_database()) AS \"size_bytes!\",\n                  current_setting('max_connections')::integer AS \"max_connections!\",\n                  (SELECT count(*) FROM pg_stat_activity\n                   WHERE backend_type = 'client backend') AS \"open_connections!\",\n                  (SELECT count(*) FROM pg_stat_activity\n                   WHERE backend_type = 'client backend' AND state = 'active'\n                     AND pid <> pg_backend_pid()) AS \"active_connections!\",\n                  xact_commit AS \"commits!\",\n                  xact_rollback AS \"rollbacks!\",\n                  blks_hit AS \"blocks_hit!\",\n                  blks_read AS \"blocks_read!\",\n                  deadlocks AS \"deadlocks!\"\n           FROM pg_stat_database\n           WHERE datname = current_database()",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name!",
+        "type_info": "Name",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "version!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "started_at!",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "size_bytes!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "max_connections!",
+        "type_info": "Int4",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "open_connections!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "active_connections!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "commits!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "pg_stat_database",
+            "name": "xact_commit"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "rollbacks!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "pg_stat_database",
+            "name": "xact_rollback"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "blocks_hit!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "pg_stat_database",
+            "name": "blks_hit"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "blocks_read!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "pg_stat_database",
+            "name": "blks_read"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "deadlocks!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "pg_stat_database",
+            "name": "deadlocks"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "ec76012a1beda740a13fb3ea789809858d2d058a0bfd6aa9e8533e7493e0c85b"
+}

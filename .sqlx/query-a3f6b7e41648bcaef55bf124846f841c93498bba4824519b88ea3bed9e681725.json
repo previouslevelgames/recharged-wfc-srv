@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT profile_id, ingamesn FROM profiles WHERE profile_id = ANY($1)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "profile_id",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "profiles",
+            "name": "profile_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "ingamesn",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "profiles",
+            "name": "ingamesn"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4Array"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "a3f6b7e41648bcaef55bf124846f841c93498bba4824519b88ea3bed9e681725"
+}
