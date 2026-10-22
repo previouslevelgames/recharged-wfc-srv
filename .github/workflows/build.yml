@@ -4,9 +4,9 @@ name: Build server image
 # A pull request into stable (a release) also publishes its test image
 # test-pr<N>, which test-builds.yml removes when the pull request closes, and
 # moves the tag test to it for test servers that follow every release. A push
-# to stable (the merged release) publishes the image sha-<commit> once and
-# drafts the release of its version; release.yml tags that image v<version>,
-# stable and latest when the draft is published.
+# to stable (the merged release) publishes the image sha-<commit> once, tags it
+# v<version>, stable and latest, and publishes the release of its version with
+# the title and description of the release pull request.
 on:
   pull_request:
     branches: [main, stable]
@@ -139,16 +139,20 @@ jobs:
             echo "Published \`$tag\`" >> "$GITHUB_STEP_SUMMARY"
           done
 
-  release:
-    # Drafts the GitHub release of a stable build whose version is not yet
-    # released (tag v<version> on that commit); publish it after a review.
-    name: draft release
+  version:
+    # The version a stable build releases, unless it has a tag v<version> or a
+    # (draft) release already.
+    name: find version
     if: github.event_name == 'push' && github.ref == 'refs/heads/stable'
     needs: publish
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
+      # Draft releases are only listed to writers.
       contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      release: ${{ steps.version.outputs.release }}
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -164,28 +168,76 @@ jobs:
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)
           test -n "$version"
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          # A version already tagged or with a (draft) release is not drafted again.
           if git ls-remote --exit-code --tags "https://github.com/$GITHUB_REPOSITORY.git" "refs/tags/v$version" >/dev/null ||
              gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName --jq '.[].tagName' | grep -qx "v$version"; then
             echo "::notice::Version $version is already released or drafted; raise it in Cargo.toml for a new release."
-            echo "draft=false" >> "$GITHUB_OUTPUT"
+            echo "release=false" >> "$GITHUB_OUTPUT"
           else
-            echo "draft=true" >> "$GITHUB_OUTPUT"
+            echo "release=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Draft the release
-        if: steps.version.outputs.draft == 'true'
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
+  release:
+    # Publishes the release right away, named and described like the release
+    # pull request this push merged. A release made with the workflow's token
+    # starts no workflow, so this job tags the image itself, not release.yml.
+    name: publish release
+    if: needs.version.outputs.release == 'true'
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      packages: write
+      pull-requests: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - name: Take the title and notes from the release pull request
+        id: notes
         run: |
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
-          gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" -f tag_name="v$VERSION" \
-            -f target_commitish="$GITHUB_SHA" --jq .body > notes.md
+          gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA/pulls" \
+            --jq '[.[] | select(.base.ref == "stable" and .merged_at != null)][0] // empty' > pull.json
+          if [ -s pull.json ]; then
+            title=$(jq -r .title pull.json)
+            jq -r '.body // ""' pull.json | tr -d '\r' > notes.md
+          else
+            echo "::warning::No merged pull request into stable has $GITHUB_SHA; the release gets generated notes."
+            title="${GITHUB_REPOSITORY#*/} $VERSION"
+            gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" -f tag_name="v$VERSION" \
+              -f target_commitish="$GITHUB_SHA" --jq .body > notes.md
+          fi
           cat >> notes.md <<EOF
 
           ---
 
           Image: \`$image:v$VERSION\`, also \`stable\` and \`latest\` while this is the newest release. Unraid's auto-update follows \`stable\`.
           EOF
-          gh release create "v$VERSION" --repo "$GITHUB_REPOSITORY" --draft --target "$GITHUB_SHA" \
-            --title "${GITHUB_REPOSITORY#*/} $VERSION" --notes-file notes.md
+          echo "title=$title" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Before the release, so the image its notes name is there when it
+      # appears; a rerun after a failed release tags the same image again.
+      - name: Tag the release image
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          docker buildx imagetools create --tag "$image:v$VERSION" --tag "$image:stable" --tag "$image:latest" \
+            "$image:sha-$GITHUB_SHA"
+          echo "Tagged \`$image:sha-$GITHUB_SHA\` as \`v$VERSION\`, \`stable\` and \`latest\`" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish the release
+        env:
+          TITLE: ${{ steps.notes.outputs.title }}
+        run: |
+          gh release create "v$VERSION" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "$TITLE" --notes-file notes.md
