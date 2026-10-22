@@ -23,7 +23,8 @@ reference, and runs as a single Docker container with its own database.
   same time, and helps the two games reach each other through home routers.
 - **Leaderboards.** Ranked results count towards the season and *Striker of the
   day* boards, plus the boards only the European release has. A score is only
-  accepted from the player who is signed in.
+  accepted from the player who is signed in. As in the original game, seasons
+  restart every week; the dashboard keeps how the last one ended.
 - **Admin dashboard.** A web page for whoever runs the server, see below.
 
 Not there yet: moderation tools (banning a player, kicking one from a match,

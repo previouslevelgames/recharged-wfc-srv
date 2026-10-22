@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO past_scores\n                     (profile_id, category, first_day, region, score, userdata, updated_at)\n                 VALUES ($1, $2, $3, $4, $5, $6, $7)\n                 ON CONFLICT (category, first_day, profile_id) DO UPDATE\n                 SET region = EXCLUDED.region,\n                     score = EXCLUDED.score,\n                     userdata = EXCLUDED.userdata,\n                     updated_at = EXCLUDED.updated_at",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int4",
+        "Date",
+        "Int4",
+        "Int4",
+        "Bytea",
+        "Timestamptz"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "64f00665c4dae31a111f2bf03dd7c5e5d06949ffe24361858a16fc6acbf77311"
+}

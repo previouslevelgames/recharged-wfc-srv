@@ -1,5 +1,8 @@
 //! The `NetworkRankingSubmission` the game puts as userdata
-//! (`docs/gamestats2.md`, "put2.asp"), as far as `/admin` shows it.
+//! (`docs/gamestats2.md`, "put2.asp"), as far as `/admin` shows it and its
+//! date tells the season.
+
+use time::{Date, Month};
 
 /// The game clamps wins and losses to this.
 const MAX_RECORD: i32 = 9999;
@@ -8,6 +11,8 @@ const MAX_RECORD: i32 = 9999;
 /// bytes hold no plausible value: the server stores userdata unchecked.
 #[derive(Debug, PartialEq)]
 pub struct Submission {
+    /// The game's date when it put the row, by its own clock.
+    pub date: Option<Date>,
     /// The Mii name.
     pub name: Option<String>,
     pub wins: Option<i32>,
@@ -33,7 +38,13 @@ impl Submission {
                 .ok()
                 .filter(|name| !name.is_empty() && !name.chars().any(char::is_control))
         });
+        // Day, month, then the year as a little-endian u16.
+        let date = userdata.get(0..4).and_then(|bytes| {
+            let year = u16::from_le_bytes([bytes[2], bytes[3]]);
+            Date::from_calendar_date(year.into(), Month::try_from(bytes[1]).ok()?, bytes[0]).ok()
+        });
         Self {
+            date,
             name,
             wins: record(0x04),
             losses: record(0x08),
@@ -48,6 +59,7 @@ mod tests {
     #[test]
     fn garbage_parses_to_nothing() {
         let nothing = Submission {
+            date: None,
             name: None,
             wins: None,
             losses: None,

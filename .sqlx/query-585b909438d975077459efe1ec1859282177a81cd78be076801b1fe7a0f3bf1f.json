@@ -1,0 +1,50 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT category, first_day, score FROM past_scores\n             WHERE profile_id = 7 ORDER BY category",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "category",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "past_scores",
+            "name": "category"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "first_day",
+        "type_info": "Date",
+        "origin": {
+          "Table": {
+            "table": "past_scores",
+            "name": "first_day"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "score",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "past_scores",
+            "name": "score"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "585b909438d975077459efe1ec1859282177a81cd78be076801b1fe7a0f3bf1f"
+}

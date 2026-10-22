@@ -185,6 +185,30 @@ So **a put replaces the stored row**: the server keeps the last value per
 `(pid, category)`. Adding puts up would count every past game again on each
 match and could never reset.
 
+### Seasons
+
+The game resets its scores itself; the server only stores what it puts.
+
+- Seasons (season, alternate season, EU friends) are weekly, on the fixed
+  dates of `sNetworkSeasonDates` (`NetworkSeasonCalendar.cpp`): 1 January,
+  8 January, … 24 December, then 1 January again.
+- Striker of the day restarts every day.
+- The game's clock is the NAS `datetime` (UTC), shifted by `g_nAddHoursTime`
+  (`NetworkUpdateTask.cpp`): -8 hours for the US version, +9 for JP and KR,
+  none for EU. A US day starts at 08:00 UTC.
+
+At login the game asks for its own rows (NEAR) with `since` set to the
+minutes since the start of the season or the day. A reset follows in two
+cases:
+
+- no row of its own comes back;
+- the row's date (`day`, `month`, `year` in the userdata) lies in an earlier
+  season (`IsNewNetworkSeason`) or day (`IsNewNetworkDay`).
+
+The reset is a put of score 0 (`PostResetMyPlayerStats`). Rows from earlier
+seasons stay in `scores` until such a put replaces them; gets leave them out,
+since they are older than `since`.
+
 ### Categories
 
 `NetworkStatsManager.h`, set up in the `NetworkStatsManager` constructor:

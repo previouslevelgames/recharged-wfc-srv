@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT region, score, userdata, updated_at FROM scores\n             WHERE profile_id = $1 AND category = $2\n             FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "region",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "scores",
+            "name": "region"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "score",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "scores",
+            "name": "score"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "userdata",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "scores",
+            "name": "userdata"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "scores",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "59fba4569ce2d5d95d66834d75322e9cc3a176a185ca82fae8cfcd4d716729bd"
+}
