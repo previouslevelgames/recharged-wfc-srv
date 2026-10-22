@@ -23,7 +23,8 @@ reference, and runs as a single Docker container with its own database.
   same time, and helps the two games reach each other through home routers.
 - **Leaderboards.** Ranked results count towards the season and *Striker of the
   day* boards, plus the boards only the European release has. A score is only
-  accepted from the player who is signed in.
+  accepted from the player who is signed in. As in the original game, seasons
+  restart every week; the dashboard keeps how the last one ended.
 - **Admin dashboard.** A web page for whoever runs the server, see below.
 
 Not there yet: moderation tools (banning a player, kicking one from a match,
@@ -37,42 +38,42 @@ it live: who is online, who is searching for a match, the leaderboards and the
 health of the database. The page follows your system's light or dark mode.
 
 <p align="center">
-  <picture>
+  <a href="docs/screenshots/admin-overview-light.png"><picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/admin-overview-dark.png">
     <img src="docs/screenshots/admin-overview-light.png" width="840" alt="The dashboard's overview: players online, matchmaking, leaderboards and the database, each in a few figures">
-  </picture>
+  </picture></a>
 </p>
 
 <table>
 <tr>
 <td width="50%">
-  <picture>
+  <a href="docs/screenshots/admin-players-light.png"><picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/admin-players-dark.png">
     <img src="docs/screenshots/admin-players-light.png" alt="Players: every profile with its Mii name, friend code, status and friends">
-  </picture>
+  </picture></a>
   <p align="center"><b>Players</b>: every Mii with its friend code, who is online and what they are doing</p>
 </td>
 <td width="50%">
-  <picture>
+  <a href="docs/screenshots/admin-matchmaking-light.png"><picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/admin-matchmaking-dark.png">
     <img src="docs/screenshots/admin-matchmaking-light.png" alt="Matchmaking: the games online and the latest searches, reservations and connections">
-  </picture>
+  </picture></a>
   <p align="center"><b>Matchmaking</b>: who is searching, hosting or joining, and how their matches came together</p>
 </td>
 </tr>
 <tr>
 <td width="50%">
-  <picture>
+  <a href="docs/screenshots/admin-leaderboards-light.png"><picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/admin-leaderboards-dark.png">
     <img src="docs/screenshots/admin-leaderboards-light.png" alt="Leaderboards: the top 10 of a board with wins and losses">
-  </picture>
+  </picture></a>
   <p align="center"><b>Leaderboards</b>: the top 10 of every board, with wins and losses</p>
 </td>
 <td width="50%">
-  <picture>
+  <a href="docs/screenshots/admin-database-light.png"><picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/admin-database-dark.png">
     <img src="docs/screenshots/admin-database-light.png" alt="Database: health, size, connections, tables and migrations">
-  </picture>
+  </picture></a>
   <p align="center"><b>Database</b>: health, load, tables and schema updates</p>
 </td>
 </tr>

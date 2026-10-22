@@ -1,0 +1,38 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT DISTINCT category AS \"category!\", first_day AS \"first_day!\" FROM past_scores",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "category!",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "past_scores",
+            "name": "category"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "first_day!",
+        "type_info": "Date",
+        "origin": {
+          "Table": {
+            "table": "past_scores",
+            "name": "first_day"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "7b53467393d5df256dce7b3a27508b1d9261cf8dadf5b353669a03ba66ef61bf"
+}

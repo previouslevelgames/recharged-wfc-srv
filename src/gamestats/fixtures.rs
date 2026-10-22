@@ -5,6 +5,7 @@
 use std::net::IpAddr;
 
 use axum::extract::Query;
+use time::{Date, Month};
 
 use super::{
     GamestatsError, GamestatsState, Op, Params, codec::decode_data, leaderboard, process,
@@ -82,6 +83,7 @@ fn decodes_the_captured_puts() {
         assert_eq!(
             Submission::parse(userdata),
             Submission {
+                date: Date::from_calendar_date(2026, Month::October, 17).ok(),
                 name: Some(player.to_owned()),
                 wins: Some(wins),
                 losses: Some(losses),

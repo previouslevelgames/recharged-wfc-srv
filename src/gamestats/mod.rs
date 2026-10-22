@@ -14,6 +14,7 @@
 
 mod codec;
 mod leaderboard;
+pub(crate) mod season;
 pub(crate) mod submission;
 mod token;
 
