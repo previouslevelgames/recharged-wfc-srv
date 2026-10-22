@@ -16,6 +16,8 @@ mod natneg;
 mod serverbrowser;
 
 pub const REVISION: &str = env!("BUILD_REVISION");
+/// The release, from `Cargo.toml`.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// The one game this server serves, as GameSpy names it.
 const GAME_NAME: &str = "mschargedwii";

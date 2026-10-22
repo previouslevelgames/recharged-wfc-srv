@@ -28,6 +28,7 @@ pub struct PageData<T> {
 
 #[derive(Serialize)]
 struct Server {
+    version: &'static str,
     revision: &'static str,
     #[serde(with = "time::serde::rfc3339")]
     started_at: OffsetDateTime,
@@ -66,6 +67,7 @@ impl<T> PageData<T> {
             viewer,
             now: OffsetDateTime::now_utc(),
             server: Server {
+                version: crate::VERSION,
                 revision: crate::REVISION,
                 started_at,
                 pool: Pool {
