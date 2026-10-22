@@ -38,42 +38,42 @@ it live: who is online, who is searching for a match, the leaderboards and the
 health of the database. The page follows your system's light or dark mode.
 
 <p align="center">
-  <picture>
+  <a href="docs/screenshots/admin-overview-light.png"><picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/admin-overview-dark.png">
     <img src="docs/screenshots/admin-overview-light.png" width="840" alt="The dashboard's overview: players online, matchmaking, leaderboards and the database, each in a few figures">
-  </picture>
+  </picture></a>
 </p>
 
 <table>
 <tr>
 <td width="50%">
-  <picture>
+  <a href="docs/screenshots/admin-players-light.png"><picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/admin-players-dark.png">
     <img src="docs/screenshots/admin-players-light.png" alt="Players: every profile with its Mii name, friend code, status and friends">
-  </picture>
+  </picture></a>
   <p align="center"><b>Players</b>: every Mii with its friend code, who is online and what they are doing</p>
 </td>
 <td width="50%">
-  <picture>
+  <a href="docs/screenshots/admin-matchmaking-light.png"><picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/admin-matchmaking-dark.png">
     <img src="docs/screenshots/admin-matchmaking-light.png" alt="Matchmaking: the games online and the latest searches, reservations and connections">
-  </picture>
+  </picture></a>
   <p align="center"><b>Matchmaking</b>: who is searching, hosting or joining, and how their matches came together</p>
 </td>
 </tr>
 <tr>
 <td width="50%">
-  <picture>
+  <a href="docs/screenshots/admin-leaderboards-light.png"><picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/admin-leaderboards-dark.png">
     <img src="docs/screenshots/admin-leaderboards-light.png" alt="Leaderboards: the top 10 of a board with wins and losses">
-  </picture>
+  </picture></a>
   <p align="center"><b>Leaderboards</b>: the top 10 of every board, with wins and losses</p>
 </td>
 <td width="50%">
-  <picture>
+  <a href="docs/screenshots/admin-database-light.png"><picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/admin-database-dark.png">
     <img src="docs/screenshots/admin-database-light.png" alt="Database: health, size, connections, tables and migrations">
-  </picture>
+  </picture></a>
   <p align="center"><b>Database</b>: health, load, tables and schema updates</p>
 </td>
 </tr>
