@@ -580,7 +580,7 @@ mod tests {
 
     #[sqlx::test]
     async fn a_put_replaces_the_row_and_a_get_returns_it(pool: PgPool) {
-        let state = GamestatsState::new(pool);
+        let state = GamestatsState::with_pool(pool);
         assert_eq!(
             put(&state, 7, &put_body(1, 100, 0xaa)).await.unwrap(),
             PUT_REPLY

@@ -2,7 +2,14 @@
 //! dev stack (2026-10-17, game 2 of the series), replayed through decoding and
 //! the leaderboard.
 
-use super::{GamestatsState, codec::decode_data, leaderboard, submission::Submission};
+use std::net::IpAddr;
+
+use axum::extract::Query;
+
+use super::{
+    GamestatsError, GamestatsState, Op, Params, codec::decode_data, leaderboard, process,
+    submission::Submission, token::token_hash,
+};
 
 /// put2 from pid 1000000004 ("Gold€nP2☆☆"): season (category 0), score 28,
 /// 2 wins, 0 losses.
@@ -85,7 +92,7 @@ fn decodes_the_captured_puts() {
 
 #[sqlx::test]
 async fn replays_the_match(pool: sqlx::PgPool) {
-    let state = GamestatsState::new(pool);
+    let state = GamestatsState::with_pool(pool);
     let mut userdata = Vec::new();
     for data in [PUT_P4_SEASON, PUT_P3_SEASON] {
         let (pid, body) = decode_data(data).unwrap();
@@ -107,4 +114,42 @@ async fn replays_the_match(pool: sqlx::PgPool) {
         );
         assert_eq!(rows(&reply), expected);
     }
+}
+
+#[sqlx::test]
+async fn a_put_counts_only_from_where_its_pid_is_logged_in(pool: sqlx::PgPool) {
+    let state = GamestatsState::with_pool(pool);
+    let (home, elsewhere) = (
+        IpAddr::from([203, 0, 113, 4]),
+        IpAddr::from([198, 51, 100, 7]),
+    );
+    let put = |from: IpAddr| {
+        let params = Params {
+            pid: Some(P4.to_string()),
+            hash: Some(token_hash(&state.tokens.issue(P4))),
+            data: Some(PUT_P4_SEASON.to_owned()),
+        };
+        process(&state, Op::Put, from, Ok(Query(params)))
+    };
+
+    assert!(matches!(put(home).await, Err(GamestatsError::NotLoggedIn)));
+    state.gpcm.fake_login(P4, home);
+    assert!(matches!(
+        put(elsewhere).await,
+        Err(GamestatsError::NotLoggedIn)
+    ));
+    assert_eq!(season_top(&state).await, []);
+
+    assert!(put(home).await.is_ok());
+    assert_eq!(season_top(&state).await, [(1, P4, 28)]);
+}
+
+/// `(order, pid, score)` of each row of the season's top list.
+async fn season_top(state: &GamestatsState) -> Vec<(u32, i32, i32)> {
+    let (pid, body) = decode_data(GET_P3_SEASON_TOP).unwrap();
+    let reply = leaderboard::get(state, pid, &body).await.unwrap();
+    rows(&reply)
+        .into_iter()
+        .map(|(order, pid, score, _)| (order, pid, score))
+        .collect()
 }

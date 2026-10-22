@@ -70,7 +70,7 @@ impl TokenStore {
 }
 
 /// What the client sends for `token`: lowercase hex of SHA1(key || token).
-fn token_hash(token: &str) -> String {
+pub(super) fn token_hash(token: &str) -> String {
     let digest = Sha1::new()
         .chain_update(GAMESTATS_KEY)
         .chain_update(token)

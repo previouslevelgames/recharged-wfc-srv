@@ -21,8 +21,8 @@ pub const REVISION: &str = env!("BUILD_REVISION");
 const GAME_NAME: &str = "mschargedwii";
 
 /// The server's services and what they share: the database, NAS's login
-/// tokens, which GPCM checks, GPCM's logins, which `/admin` shows, and the
-/// master server's sessions.
+/// tokens, which GPCM checks, GPCM's logins, which gamestats2 checks and
+/// `/admin` shows, and the master server's sessions.
 #[derive(Clone)]
 pub struct App {
     pool: sqlx::PgPool,
@@ -51,12 +51,13 @@ impl App {
     }
 
     /// The HTTP routes: status, NAS, gamestats2, and `/admin` with its
-    /// configuration.
+    /// configuration. gamestats2 needs the caller's address: serve them with
+    /// `into_make_service_with_connect_info::<SocketAddr>()`.
     pub fn router(&self, admin: Option<admin::Config>) -> Router {
         let mut router = Router::new()
             .route("/status", get(status))
             .merge(nas::router(self.pool.clone(), self.tickets.clone()))
-            .merge(gamestats::router(self.pool.clone()));
+            .merge(gamestats::router(self.pool.clone(), self.gpcm.clone()));
         if let Some(config) = admin {
             router = router.merge(admin::router(
                 self.pool.clone(),

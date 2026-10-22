@@ -330,5 +330,11 @@ the userdata. The keys that make a request "valid" are in every binary. See
   valid;
 - score, wins and losses within the game's clamps.
 
-Real trust comes later: tie the pid to a logged-in GPCM session, and work
-scores out from match results reported by both players.
+A put also has to come from the address the pid is logged in to GPCM from
+(`error:pid not logged in from this address` otherwise): the game sends its
+puts while it is logged in, and a pid is easy to learn, from a friend code or
+the server browser. Gets stay open: the leaderboards are public.
+
+Real trust comes later: work scores out from match results reported by both
+players. Until then a modified game can still put any score for its own
+profile.
