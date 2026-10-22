@@ -5,7 +5,8 @@
 //! little-endian words, then the userdata (put) or the parameters (get).
 //!
 //! Scores live in the `scores` table (`migrations/`), one leaderboard for
-//! every region. A get is two steps: [`Leaderboard::ranked`] has the database
+//! every region; a player's row of a season that has ended moves to
+//! `past_scores` when the game starts the next one. A get is two steps: [`Leaderboard::ranked`] has the database
 //! sort and rank a whole category; [`answer`] picks the rows the
 //! request wants and encodes them, without I/O.
 
@@ -13,7 +14,7 @@ use std::collections::HashSet;
 
 use sqlx::PgPool;
 
-use super::{GamestatsError, GamestatsState};
+use super::{GamestatsError, GamestatsState, season, submission::Submission};
 
 /// Highest category the game uses
 /// (`NETWORK_PERSISTENT_ALTERNATE_STRIKER_OF_DAY`).
@@ -115,7 +116,8 @@ impl Leaderboard {
     }
 
     /// Replaces the row of `(pid, category)`, stamped with the database's
-    /// clock.
+    /// clock. A row from an earlier season (or day), by the dates in the
+    /// userdata, is kept in `past_scores` first.
     async fn store(
         &self,
         category: u32,
@@ -125,6 +127,45 @@ impl Leaderboard {
         userdata: &[u8],
     ) -> Result<(), GamestatsError> {
         // `put` has checked category and region: both fit an INTEGER.
+        let category = category as i32;
+        let first_day = |userdata: &[u8]| {
+            let date = Submission::parse(userdata).date?;
+            Some(season::first_day(category, date))
+        };
+        let mut tx = self.pool.begin().await?;
+        let previous = sqlx::query!(
+            "SELECT region, score, userdata, updated_at FROM scores
+             WHERE profile_id = $1 AND category = $2
+             FOR UPDATE",
+            pid,
+            category,
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        if let Some(previous) = previous
+            && let Some(ended) = first_day(&previous.userdata)
+            && first_day(userdata) != Some(ended)
+        {
+            sqlx::query!(
+                "INSERT INTO past_scores
+                     (profile_id, category, first_day, region, score, userdata, updated_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7)
+                 ON CONFLICT (category, first_day, profile_id) DO UPDATE
+                 SET region = EXCLUDED.region,
+                     score = EXCLUDED.score,
+                     userdata = EXCLUDED.userdata,
+                     updated_at = EXCLUDED.updated_at",
+                pid,
+                category,
+                ended,
+                previous.region,
+                previous.score,
+                previous.userdata,
+                previous.updated_at,
+            )
+            .execute(&mut *tx)
+            .await?;
+        }
         sqlx::query!(
             "INSERT INTO scores (profile_id, category, region, score, userdata)
              VALUES ($1, $2, $3, $4, $5)
@@ -134,13 +175,14 @@ impl Leaderboard {
                  userdata = EXCLUDED.userdata,
                  updated_at = now()",
             pid,
-            category as i32,
+            category,
             region as i32,
             score,
             userdata,
         )
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
+        tx.commit().await?;
         Ok(())
     }
 
@@ -377,6 +419,13 @@ mod tests {
         body
     }
 
+    /// A put of `score` whose userdata the game dated `day` October 2026.
+    fn dated_put(category: u32, score: u32, day: u8) -> Vec<u8> {
+        let mut body = put_body(category, score, 0);
+        body[16..20].copy_from_slice(&[day, 10, 0xEA, 0x07]);
+        body
+    }
+
     fn friends_params(limit: u32, friends: &[i32]) -> Vec<u32> {
         let mut params = vec![DESCENDING, limit, 0];
         params.extend((0..FRIEND_SLOTS).map(|slot| friends.get(slot).map_or(0, |&pid| pid as u32)));
@@ -596,5 +645,53 @@ mod tests {
         let (_, total, rows) = read_list(&reply);
         assert_eq!((total, rows), (1, vec![(1, 7, 130)]));
         assert_eq!(reply[12 + 24..], [0xbb; 128]);
+    }
+
+    #[sqlx::test]
+    async fn a_new_season_keeps_the_last_row_of_the_old_one(pool: PgPool) {
+        let state = GamestatsState::with_pool(pool.clone());
+        // Season of 15 October: two puts, the second one counts.
+        for (category, score, day) in [(0, 10, 20), (0, 22, 21), (1, 5, 21), (1, 6, 21)] {
+            put(&state, 7, &dated_put(category, score, day))
+                .await
+                .unwrap();
+        }
+        // 22 October: a new season and a new day; the game puts 0.
+        for category in [0, 1] {
+            put(&state, 7, &dated_put(category, 0, 22)).await.unwrap();
+        }
+        // Later the same season: nothing more is kept.
+        put(&state, 7, &dated_put(0, 3, 23)).await.unwrap();
+
+        let past = sqlx::query!(
+            "SELECT category, first_day, score FROM past_scores
+             WHERE profile_id = 7 ORDER BY category"
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        let past: Vec<_> = past
+            .into_iter()
+            .map(|row| (row.category, row.first_day.to_string(), row.score))
+            .collect();
+        assert_eq!(
+            past,
+            [
+                (0, "2026-10-15".to_owned(), 22),
+                (1, "2026-10-21".to_owned(), 6)
+            ]
+        );
+    }
+
+    #[sqlx::test]
+    async fn rows_without_a_date_are_only_replaced(pool: PgPool) {
+        let state = GamestatsState::with_pool(pool.clone());
+        put(&state, 7, &put_body(0, 10, 0xaa)).await.unwrap();
+        put(&state, 7, &dated_put(0, 0, 22)).await.unwrap();
+        let kept = sqlx::query_scalar!(r#"SELECT count(*) AS "kept!" FROM past_scores"#)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(kept, 0);
     }
 }

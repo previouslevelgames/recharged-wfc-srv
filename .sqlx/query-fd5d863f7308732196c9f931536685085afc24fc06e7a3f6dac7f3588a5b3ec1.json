@@ -1,0 +1,86 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT category, profile_id, region, score, userdata, updated_at FROM scores",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "category",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "scores",
+            "name": "category"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "profile_id",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "scores",
+            "name": "profile_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "region",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "scores",
+            "name": "region"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "score",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "scores",
+            "name": "score"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "userdata",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "scores",
+            "name": "userdata"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "scores",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "fd5d863f7308732196c9f931536685085afc24fc06e7a3f6dac7f3588a5b3ec1"
+}

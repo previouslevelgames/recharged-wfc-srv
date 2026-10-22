@@ -15,6 +15,9 @@ const CATEGORIES = [
   'Alternate season (EU)',
   'Alternate striker of the day (EU)',
 ];
+// The boards that start every day; the others start a season every week
+// (docs/gamestats2.md, "Seasons").
+const DAILY_BOARDS = new Set([1, 4]);
 // DWCRnkRegion.
 const REGIONS = { 1: 'JP', 2: 'US', 4: 'EU', 8: 'KR' };
 // DWC's status in GPCM's \status\ (docs/login.md, "Mutual friends"), with
@@ -149,6 +152,8 @@ const count = (value) => (value < 10000 ? integer : compact).format(value);
 const percent = new Intl.NumberFormat(undefined, { style: 'percent', maximumFractionDigits: 1 });
 const clock = new Intl.DateTimeFormat(undefined, { timeStyle: 'medium' });
 const dateTime = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+// Calendar days, as the server sends them ("2026-10-15"): no time zone to shift them.
+const calendarDay = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeZone: 'UTC' });
 
 const section = SECTIONS.find((candidate) => candidate.path === window.location.pathname) || SECTIONS[0];
 
@@ -599,6 +604,19 @@ function renderLeaderboards(data, now) {
     ),
   );
   const leaders = top.filter((entry) => entry.category === category);
+  const past = (content.past || []).find((board) => board.category === category);
+  const standings = [
+    { label: 'Rank', num: true, cell: (e) => `${e.rank}` },
+    { label: 'Player', cell: (e) => [e.name || 'Unknown', h('span', { class: 'sub' }, `Profile ${e.profile_id}`)] },
+    { label: 'Region', cell: (e) => REGIONS[e.region] || `${e.region}` },
+    { label: 'Score', num: true, cell: (e) => integer.format(e.score) },
+    { label: 'Wins', num: true, cell: (e) => (e.wins == null ? '—' : integer.format(e.wins)) },
+    { label: 'Losses', num: true, cell: (e) => (e.losses == null ? '—' : integer.format(e.losses)) },
+  ];
+  const daily = DAILY_BOARDS.has(category);
+  const pastNote = past
+    ? `${calendarDay.formatRange(new Date(past.first_day), new Date(past.last_day))} · ${count(past.players)} ${past.players === 1 ? 'player' : 'players'} · kept when the game started the next one`
+    : `The final standings, once a ${daily ? 'day' : 'season'} with scores has ended`;
 
   return [
     h(
@@ -613,19 +631,20 @@ function renderLeaderboards(data, now) {
       'Leaders',
       'The first 10 of a board, ranked as the game ranks them',
       table(
-        [
-          { label: 'Rank', num: true, cell: (e) => `${e.rank}` },
-          { label: 'Player', cell: (e) => [e.name || 'Unknown', h('span', { class: 'sub' }, `Profile ${e.profile_id}`)] },
-          { label: 'Region', cell: (e) => REGIONS[e.region] || `${e.region}` },
-          { label: 'Score', num: true, cell: (e) => integer.format(e.score) },
-          { label: 'Wins', num: true, cell: (e) => (e.wins == null ? '—' : integer.format(e.wins)) },
-          { label: 'Losses', num: true, cell: (e) => (e.losses == null ? '—' : integer.format(e.losses)) },
-          { label: 'Updated', cell: (e) => ago(e.updated_at, now) },
-        ],
+        [...standings, { label: 'Updated', cell: (e) => ago(e.updated_at, now) }],
         leaders,
         `No scores on ${CATEGORIES[category]} yet.`,
       ),
       choices,
+    ),
+    card(
+      daily ? 'Last day' : 'Last season',
+      pastNote,
+      table(
+        [...standings, { label: 'Last played', cell: (e) => dateTime.format(new Date(e.updated_at)) }],
+        past ? past.top : [],
+        `No ${daily ? 'day' : 'season'} of ${CATEGORIES[category]} has ended with scores yet.`,
+      ),
     ),
     card(
       'Boards',
