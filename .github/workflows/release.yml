@@ -1,8 +1,10 @@
 name: Publish server release
 
-# Publishing a drafted release (build.yml drafts one when stable gets a new
-# version) tags that commit's image v<version>, stable and latest, so Unraid's
-# auto-update and Docker Compose deploy it. Nothing is built again.
+# A release published by hand, e.g. an older draft, tags that commit's image
+# v<version>, stable and latest, so Unraid's auto-update and Docker Compose
+# deploy it. Nothing is built again. The releases build.yml publishes on a
+# push to stable tag their image there: a release made with the workflow's
+# token starts no workflow.
 on:
   release:
     types: [published]

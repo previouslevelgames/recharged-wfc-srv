@@ -38,14 +38,15 @@ Releases follow the same process as Recharged:
    test container with the repository
    `ghcr.io/previouslevelgames/recharged-wfc-srv:test` follows every release
    pull request. Only the repository owner's merge team may merge into `stable`.
-3. Merging publishes the image `sha-<full-commit>` and drafts the GitHub release
-   `v<version>` with the version in `Cargo.toml`. Raise it before the release
-   pull request: edit `version`, then run `cargo update --workspace` for
-   `Cargo.lock`. A version that is already released or drafted is not drafted
-   again.
-4. Publishing the draft tags its image `v<version>`, `stable` and `latest`, and
-   the auto-update deploys it. For rollback, use an earlier `v<version>` or
-   `sha-<full-commit>`.
+3. Merging publishes the image `sha-<full-commit>`, tags it `v<version>`,
+   `stable` and `latest`, and publishes the GitHub release `v<version>` with
+   the version in `Cargo.toml`. The release takes the pull request's title and
+   description, so write them as the release notes. The auto-update deploys
+   it. Raise the version before the release pull request: edit `version`,
+   then run `cargo update --workspace` for `Cargo.lock`. A version that is
+   already released or drafted is not released again.
+4. For rollback, use an earlier `v<version>` or `sha-<full-commit>`. A release
+   published by hand, such as an older draft, tags its image the same way.
 
 Removing test images needs this repository's **Admin** role under the GHCR
 package's **Manage Actions access**.

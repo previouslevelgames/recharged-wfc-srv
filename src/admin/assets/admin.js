@@ -888,7 +888,7 @@ function renderViewer(viewer) {
 
 function renderFooter(data, now) {
   document.getElementById('footer').replaceChildren(
-    'Revision ',
+    `Version ${data.server.version} · Revision `,
     h('code', { title: data.server.revision }, data.server.revision.slice(0, 12)),
     ` · Server up ${duration(since(data.server.started_at, now))}`,
   );

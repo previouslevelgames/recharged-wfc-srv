@@ -78,6 +78,7 @@ async fn an_admin_signs_in_sees_every_section_and_signs_out(pool: PgPool) {
         assert_eq!(status, 200, "{api}");
         let data: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(data["viewer"]["email"], "admin@example.com", "{api}");
+        assert_eq!(data["server"]["version"], recharged_wfc_srv::VERSION);
         assert_eq!(data["server"]["revision"], recharged_wfc_srv::REVISION);
         assert!(data["error"].is_null(), "{body}");
         assert!(data["content"].pointer(check).is_some(), "{body}");
