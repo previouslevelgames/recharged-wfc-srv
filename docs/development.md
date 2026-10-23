@@ -1,6 +1,7 @@
 # Development
 
-Rust 1.95+: `cargo run --locked`. Logs go to stderr, filtered by `RUST_LOG`
+Rust 1.95+: `cargo run --locked`. Logs go to stderr and, with `LOG_DIR` set, to
+one file per day in that folder (the image sets it). `RUST_LOG` filters them
 (default `info`): `RUST_LOG=info,tower_http=debug` adds one line per HTTP request,
 `RUST_LOG=info,raw=trace` adds raw protocol dumps. Check with `cargo fmt --check`,
 `cargo clippy --locked --all-targets -- -D warnings`, and `cargo test --locked`

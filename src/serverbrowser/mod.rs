@@ -5,6 +5,10 @@
 //! game searching like it (`filter.rs`). The game then sends the session
 //! messages through the server browser, which the master server passes on
 //! (docs/login.md). Other requests are read and not answered.
+//!
+//! Games kept for a Recharged match ([`crate::pairing`]) change what a ranked
+//! search lists: a kept game's search lists only its opponent's game, and
+//! nobody else's lists a kept game (docs/profiles.md, "Meeting in RANKED").
 
 mod crypt;
 mod filter;
@@ -23,6 +27,7 @@ use tracing::{debug, info, trace};
 use crate::{
     activity::{Activity, Via},
     master::{Master, Session},
+    pairing::{Pairings, Visible},
 };
 use crypt::CHALLENGE_LEN;
 use filter::Filter;
@@ -60,13 +65,14 @@ const LAST_SERVER: [u8; 5] = [0x00, 0xFF, 0xFF, 0xFF, 0xFF];
 pub async fn serve(
     master: Arc<Master>,
     activity: Arc<Activity>,
+    pairings: Arc<Pairings>,
     listener: TcpListener,
 ) -> std::io::Result<()> {
     loop {
         let (stream, peer) = listener.accept().await?;
-        let (master, activity) = (master.clone(), activity.clone());
+        let (master, activity, pairings) = (master.clone(), activity.clone(), pairings.clone());
         tokio::spawn(async move {
-            if let Err(error) = connection(master, activity, stream, peer).await {
+            if let Err(error) = connection(master, activity, pairings, stream, peer).await {
                 debug!(target: "serverbrowser", %peer, %error, "connection failed");
             }
         });
@@ -76,6 +82,7 @@ pub async fn serve(
 async fn connection(
     master: Arc<Master>,
     activity: Arc<Activity>,
+    pairings: Arc<Pairings>,
     mut stream: TcpStream,
     peer: SocketAddr,
 ) -> std::io::Result<()> {
@@ -99,7 +106,7 @@ async fn connection(
             }
             let request: Vec<u8> = buffer.drain(..len).collect();
             trace!(target: "raw::serverbrowser", %peer, ?request, "request");
-            if let Some(reply) = answer(&master, &activity, &request, peer) {
+            if let Some(reply) = answer(&master, &activity, &pairings, &request, peer) {
                 stream.write_all(&reply).await?;
             }
         }
@@ -112,14 +119,22 @@ async fn connection(
 fn answer(
     master: &Arc<Master>,
     activity: &Activity,
+    pairings: &Pairings,
     request: &[u8],
     peer: SocketAddr,
 ) -> Option<Vec<u8>> {
     match request[2] {
         LIST_REQUEST => {
             let list = ListRequest::parse(request)?;
-            let (reply, found) = list.reply(&master.sessions(), peer)?;
-            if let Some(profile_id) = searcher(&list.filter) {
+            let searcher = searcher(&list.filter);
+            let sessions = master.sessions();
+            let steering = match searcher {
+                // A lookup of one host: a friend's, kept or not.
+                None => Steering::None,
+                Some(profile_id) => Steering::search(pairings, profile_id, &sessions),
+            };
+            let (reply, found) = list.reply(&sessions, peer, &steering)?;
+            if let Some(profile_id) = searcher {
                 activity.search(profile_id, &list.filter, found);
             }
             Some(crypt::encrypt(
@@ -201,6 +216,51 @@ fn searcher(filter: &str) -> Option<Option<i32>> {
     }))
 }
 
+/// What a list holds besides what its filter says.
+enum Steering {
+    /// The filter alone: a lookup of one host.
+    None,
+    /// A search by a game in no match: no game kept for one.
+    Unkept(Vec<i32>),
+    /// A search by a kept game whose opponent is ready: that game alone,
+    /// which may be in another region group (`CO`) of the release.
+    Only {
+        opponent: i32,
+        region: Option<String>,
+    },
+    /// A search by a kept game whose opponent is not ready: nothing.
+    Nothing,
+}
+
+impl Steering {
+    fn search(
+        pairings: &Pairings,
+        searcher: Option<i32>,
+        sessions: &[(SocketAddr, Session)],
+    ) -> Self {
+        let profile = |session: &Session| session.field("dwc_pid")?.parse::<i32>().ok();
+        match searcher.map(|profile_id| pairings.visible_to(profile_id)) {
+            Some(Visible::Only(opponent)) => Self::Only {
+                opponent,
+                // The searcher's own region group, from its heartbeat.
+                region: sessions
+                    .iter()
+                    .find(|(_, session)| profile(session) == searcher)
+                    .and_then(|(_, session)| session.field("CO"))
+                    .map(str::to_owned),
+            },
+            Some(Visible::Nobody) => Self::Nothing,
+            Some(Visible::Everyone) | None => Self::Unkept(
+                sessions
+                    .iter()
+                    .filter_map(|(_, session)| profile(session))
+                    .filter(|&profile_id| pairings.kept(profile_id))
+                    .collect(),
+            ),
+        }
+    }
+}
+
 /// `SERVER_LIST_REQUEST`: after the length and type, the protocol and
 /// encoding versions and the game's version, then NUL-terminated the game
 /// listed and the game asking, the client's challenge, the filter and the
@@ -244,6 +304,7 @@ impl ListRequest {
         &self,
         sessions: &[(SocketAddr, Session)],
         peer: SocketAddr,
+        steering: &Steering,
     ) -> Option<(Vec<u8>, usize)> {
         if self.game != crate::GAME_NAME {
             debug!(target: "serverbrowser", %peer, game = self.game, "list of another game");
@@ -276,7 +337,7 @@ impl ListRequest {
         }
         out.push(0); // No popular values.
 
-        let found = self.matches(sessions);
+        let found = self.matches(sessions, steering);
         info!(target: "serverbrowser", %peer, filter = self.filter, found = found.len(), "list");
         let count = found.len();
         for (address, session) in found {
@@ -288,18 +349,39 @@ impl ListRequest {
         Some((out, count))
     }
 
-    /// The game's sessions that pass the filter; none for a filter it does
-    /// not understand.
-    fn matches<'a>(&self, sessions: &'a [(SocketAddr, Session)]) -> Vec<(SocketAddr, &'a Session)> {
+    /// The game's sessions that pass the filter and the steering; none for a
+    /// filter it does not understand.
+    fn matches<'a>(
+        &self,
+        sessions: &'a [(SocketAddr, Session)],
+        steering: &Steering,
+    ) -> Vec<(SocketAddr, &'a Session)> {
         let Some(filter) = Filter::parse(&self.filter) else {
             debug!(target: "serverbrowser", filter = self.filter, "filter not understood");
             return Vec::new();
         };
+        let profile = |session: &Session| session.field("dwc_pid")?.parse::<i32>().ok();
         sessions
             .iter()
             .filter(|(_, session)| {
-                session.field("gamename") == Some(crate::GAME_NAME)
-                    && filter.matches(|name| session.field(name))
+                if session.field("gamename") != Some(crate::GAME_NAME) {
+                    return false;
+                }
+                match steering {
+                    Steering::None => filter.matches(|name| session.field(name)),
+                    Steering::Unkept(kept) => {
+                        profile(session).is_none_or(|profile_id| !kept.contains(&profile_id))
+                            && filter.matches(|name| session.field(name))
+                    }
+                    Steering::Only { opponent, region } => {
+                        profile(session) == Some(*opponent)
+                            && filter.matches(|name| match (name, region) {
+                                ("CO", Some(region)) => Some(region.as_str()),
+                                _ => session.field(name),
+                            })
+                    }
+                    Steering::Nothing => false,
+                }
             })
             .map(|(address, session)| (*address, session))
             .collect()
@@ -388,7 +470,7 @@ mod tests {
         master.answer(HOSTING, host());
         let (reply, found) = ListRequest::parse(LOOKUP)
             .unwrap()
-            .reply(&master.sessions(), client())
+            .reply(&master.sessions(), client(), &Steering::None)
             .unwrap();
         assert_eq!(found, 1);
 
@@ -431,7 +513,7 @@ mod tests {
             ..ListRequest::parse(LOOKUP).unwrap()
         };
         let sessions = master.sessions();
-        let found = request.matches(&sessions);
+        let found = request.matches(&sessions, &Steering::None);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].0, searching);
 
@@ -440,7 +522,82 @@ mod tests {
             filter: RANKED.replace("1000000000", "1000000001"),
             ..request
         };
-        assert_eq!(own.matches(&sessions).len(), 0);
+        assert_eq!(own.matches(&sessions, &Steering::None).len(), 0);
+    }
+
+    /// `bytes` with each `from` replaced by `to`, of the same length.
+    fn replace(bytes: &[u8], from: &[u8], to: &[u8]) -> Vec<u8> {
+        let mut out = bytes.to_vec();
+        let mut at = 0;
+        while let Some(found) = out[at..]
+            .windows(from.len())
+            .position(|window| window == from)
+        {
+            out[at + found..at + found + to.len()].copy_from_slice(to);
+            at += found + to.len();
+        }
+        out
+    }
+
+    #[test]
+    fn games_kept_for_a_match_see_only_each_other() {
+        let master = Master::default();
+        // Player 2 searching, as captured; player 3 searching in the same
+        // region group; player 1 searching in another one.
+        let player_2: SocketAddr = "192.168.1.131:53103".parse().unwrap();
+        master.answer(SEARCHING, player_2);
+        let player_3: SocketAddr = "192.168.1.133:53105".parse().unwrap();
+        master.answer(&replace(SEARCHING, b"1000000001", b"1000000002"), player_3);
+        let player_1: SocketAddr = "192.168.1.132:53104".parse().unwrap();
+        let own = replace(
+            &replace(SEARCHING, b"1000000001", b"1000000000"),
+            b"CO\x000",
+            b"CO\x002",
+        );
+        master.answer(&own, player_1);
+        let sessions = master.sessions();
+        let found = |profile_id: i32, pairings: &Pairings| -> Vec<SocketAddr> {
+            let region = if profile_id == 1000000000 {
+                "CO = 2"
+            } else {
+                "CO = 0"
+            };
+            let request = ListRequest {
+                filter: RANKED
+                    .replace("1000000000", &profile_id.to_string())
+                    .replace("CO = 0", region),
+                ..ListRequest::parse(LOOKUP).unwrap()
+            };
+            let steering = Steering::search(pairings, Some(profile_id), &sessions);
+            let mut found: Vec<SocketAddr> = request
+                .matches(&sessions, &steering)
+                .into_iter()
+                .map(|(address, _)| address)
+                .collect();
+            found.sort();
+            found
+        };
+
+        // Without matches, the region groups keep them apart.
+        let pairings = Pairings::default();
+        assert!(found(1000000000, &pairings).is_empty());
+        assert_eq!(found(1000000002, &pairings), [player_2]);
+
+        // Player 2 is ready for a match whose other game is not: nobody
+        // finds it, and it finds nobody.
+        pairings.ready(7, 0, 1000000001, "R4QE");
+        assert!(found(1000000002, &pairings).is_empty());
+        assert!(found(1000000001, &pairings).is_empty());
+
+        // Player 1, its opponent, is ready too: they find each other across
+        // the region groups, and player 3 still finds neither.
+        pairings.ready(7, 1, 1000000000, "R4QE");
+        assert_eq!(found(1000000000, &pairings), [player_2]);
+        assert_eq!(found(1000000001, &pairings), [player_1]);
+        assert!(found(1000000002, &pairings).is_empty());
+
+        pairings.end(7);
+        assert_eq!(found(1000000002, &pairings), [player_2]);
     }
 
     #[test]
@@ -473,14 +630,23 @@ mod tests {
                 filter: filter.to_owned(),
                 ..ListRequest::parse(LOOKUP).unwrap()
             };
-            let (reply, _) = request.reply(&master.sessions(), client()).unwrap();
+            let (reply, _) = request
+                .reply(&master.sessions(), client(), &Steering::None)
+                .unwrap();
             assert!(reply.ends_with(&[0, 0, 0xFF, 0xFF, 0xFF, 0xFF]), "{filter}");
-            assert_eq!(request.matches(&master.sessions()).len(), 0, "{filter}");
+            assert_eq!(
+                request.matches(&master.sessions(), &Steering::None).len(),
+                0,
+                "{filter}"
+            );
         }
         let other_game = ListRequest {
             game: "othergame".to_owned(),
             ..request
         };
-        assert_eq!(other_game.reply(&master.sessions(), client()), None);
+        assert_eq!(
+            other_game.reply(&master.sessions(), client(), &Steering::None),
+            None
+        );
     }
 }

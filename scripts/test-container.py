@@ -78,14 +78,17 @@ def http_status(url):
 def main():
     image, revision = sys.argv[1:]
     volume = "recharged-wfc-test-" + uuid.uuid4().hex
+    logs_volume = volume + "-logs"
     containers = []
     docker("volume", "create", volume)
+    docker("volume", "create", logs_volume)
 
     def start(*extra):
         container = docker(
             "run", "-d", "-p", "127.0.0.1::8080", "-p", "127.0.0.1::29900",
             "--health-interval=1s", "--health-start-period=0s",
             "--mount", f"type=volume,source={volume},target=/var/lib/postgresql",
+            "--mount", f"type=volume,source={logs_volume},target=/var/log/recharged-wfc-srv",
             "-e", "POSTGRES_DB=integration_db", "-e", "POSTGRES_USER=integration_user",
             "-e", "POSTGRES_PASSWORD=container-test-only",
             "-e", "GIT_COMMIT=runtime-override", *extra, image,
@@ -119,6 +122,10 @@ def main():
         wait_healthy(container)
         assert sql(container, "SELECT value FROM persistence_probe") == "persisted"
         print("Database data survived container replacement.", flush=True)
+        files = docker("exec", container, "sh", "-c",
+                       "cat /var/log/recharged-wfc-srv/recharged-wfc-srv.*.log")
+        assert files.count("recharged-wfc-srv listening") == 2, files
+        print("Log files survived container replacement.", flush=True)
         address = docker("port", container, "8080/tcp")
         status, page = http_status(f"http://{address}/admin")
         assert status == 200 and "Sign in with Google" in page
@@ -142,9 +149,10 @@ def main():
         assert "database system is shut down" in docker("logs", container)
         print("API startup failure shuts down PostgreSQL cleanly.", flush=True)
 
-        container = start(*ADMIN[:2])
+        # PUBLIC_URL alone serves profiles: a Google client makes it /admin.
+        container = start(*ADMIN[:4])
         assert wait_exit(container) != 0
-        assert "GOOGLE_CLIENT_ID" in docker("logs", container)
+        assert "GOOGLE_CLIENT_SECRET" in docker("logs", container)
         print("A partial admin configuration is rejected.", flush=True)
 
         container = start("-e", "POSTGRES_PASSWORD=")
@@ -159,7 +167,7 @@ def main():
         for container in containers:
             subprocess.run(["docker", "rm", "-fv", container], check=False,
                            stdout=subprocess.DEVNULL)
-        docker("volume", "rm", volume)
+        docker("volume", "rm", volume, logs_volume)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO rule_sets (name, rules) VALUES ($1, $2)\n                 ON CONFLICT (name) DO NOTHING\n                 RETURNING rule_set_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "rule_set_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rule_sets",
+            "name": "rule_set_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f8ade8ad0349d49bc0c8e50fdb80aa267def7ed335b6c1403a1638dfa9ea6b74"
+}

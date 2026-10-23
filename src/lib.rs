@@ -10,9 +10,12 @@ mod activity;
 pub mod admin;
 mod gamestats;
 mod gpcm;
+mod html;
 mod master;
 mod nas;
 mod natneg;
+mod pairing;
+pub mod profiles;
 mod serverbrowser;
 
 pub const REVISION: &str = env!("BUILD_REVISION");
@@ -33,6 +36,9 @@ pub struct App {
     master: Arc<master::Master>,
     /// What happened in matchmaking lately, which `/admin` shows.
     activity: Arc<activity::Activity>,
+    /// Matches' games kept for RANKED: the profile service sets them, the
+    /// server browser lists by them.
+    pairings: Arc<pairing::Pairings>,
 }
 
 impl App {
@@ -47,15 +53,21 @@ impl App {
             )),
             master: Arc::default(),
             activity,
+            pairings: Arc::default(),
             pool,
             tickets,
         }
     }
 
-    /// The HTTP routes: status, NAS, gamestats2, and `/admin` with its
-    /// configuration. gamestats2 needs the caller's address: serve them with
+    /// The HTTP routes: status, NAS, gamestats2, and `/admin` and the
+    /// profile service with their configurations. gamestats2 needs the
+    /// caller's address: serve them with
     /// `into_make_service_with_connect_info::<SocketAddr>()`.
-    pub fn router(&self, admin: Option<admin::Config>) -> Router {
+    pub fn router(
+        &self,
+        admin: Option<admin::Config>,
+        profiles: Option<profiles::Config>,
+    ) -> Router {
         let mut router = Router::new()
             .route("/status", get(status))
             .merge(nas::router(self.pool.clone(), self.tickets.clone()))
@@ -66,6 +78,14 @@ impl App {
                 self.gpcm.clone(),
                 self.master.clone(),
                 self.activity.clone(),
+                config,
+            ));
+        }
+        if let Some(config) = profiles {
+            router = router.merge(profiles::router(
+                self.pool.clone(),
+                self.gpcm.clone(),
+                self.pairings.clone(),
                 config,
             ));
         }
@@ -81,7 +101,13 @@ impl App {
     /// The server browser, which lists the master server's sessions, on
     /// `listener` (TCP 28910).
     pub async fn serve_server_browser(&self, listener: TcpListener) -> std::io::Result<()> {
-        serverbrowser::serve(self.master.clone(), self.activity.clone(), listener).await
+        serverbrowser::serve(
+            self.master.clone(),
+            self.activity.clone(),
+            self.pairings.clone(),
+            listener,
+        )
+        .await
     }
 
     /// NAT negotiation on `socket` (UDP 27901).

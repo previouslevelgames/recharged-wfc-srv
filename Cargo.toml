@@ -1,6 +1,6 @@
 [package]
 name = "recharged-wfc-srv"
-version = "1.0.3"
+version = "1.0.4"
 edition = "2024"
 rust-version = "1.95"
 publish = false
@@ -25,6 +25,7 @@ time = { version = "0.3.55", features = ["serde-well-known"] }
 tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "time"] }
 tower-http = { version = "0.6", features = ["trace"] }
 tracing = "0.1"
+tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "ansi", "env-filter", "std"] }
 
 [dev-dependencies]

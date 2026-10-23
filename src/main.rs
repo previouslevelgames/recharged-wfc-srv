@@ -3,28 +3,74 @@ use std::{
     error::Error,
     io::{self, IsTerminal},
     net::SocketAddr,
+    num::NonZeroUsize,
 };
 
 use recharged_wfc_srv::App;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use tokio::net::{TcpListener, UdpSocket};
 use tracing::info;
-use tracing_subscriber::EnvFilter;
+use tracing_appender::{
+    non_blocking::WorkerGuard,
+    rolling::{RollingFileAppender, Rotation},
+};
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
-fn init_tracing() {
+/// Logs to stderr and, with `LOG_DIR`, to one file per day (UTC) there. The
+/// guard flushes the file when dropped.
+fn init_tracing() -> Result<Option<WorkerGuard>, Box<dyn Error>> {
     let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-    tracing_subscriber::fmt()
-        .with_env_filter(filter)
+    let stderr = fmt::layer()
         .with_writer(io::stderr)
-        .with_ansi(io::stderr().is_terminal())
+        .with_ansi(io::stderr().is_terminal());
+
+    let (file, guard) = match var("LOG_DIR") {
+        Some(dir) => {
+            let appender = RollingFileAppender::builder()
+                .rotation(Rotation::DAILY)
+                .filename_prefix("recharged-wfc-srv")
+                .filename_suffix("log")
+                .max_log_files(retention_days()?.get())
+                .build(&dir)
+                .map_err(|error| format!("LOG_DIR {dir}: {error}"))?;
+            let (writer, guard) = tracing_appender::non_blocking(appender);
+            (
+                Some(fmt::layer().with_writer(writer).with_ansi(false)),
+                Some(guard),
+            )
+        }
+        None => (None, None),
+    };
+
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(stderr)
+        .with(file)
         .init();
+    Ok(guard)
+}
+
+/// How many daily files `LOG_DIR` keeps: `LOG_RETENTION_DAYS`, or 14.
+fn retention_days() -> Result<NonZeroUsize, Box<dyn Error>> {
+    match var("LOG_RETENTION_DAYS") {
+        Some(days) => days
+            .parse()
+            .map_err(|error| format!("LOG_RETENTION_DAYS: {error}").into()),
+        None => Ok(NonZeroUsize::new(14).unwrap()),
+    }
+}
+
+/// The variable `name`, unless it is unset or empty.
+fn var(name: &str) -> Option<String> {
+    env::var(name).ok().filter(|value| !value.is_empty())
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    init_tracing();
+    let _logs = init_tracing()?;
 
     let admin = recharged_wfc_srv::admin::Config::from_env()?;
+    let profiles = recharged_wfc_srv::profiles::Config::from_env()?;
 
     // DATABASE_URL in local development; the container provides PG* instead.
     let database = match env::var("DATABASE_URL") {
@@ -62,8 +108,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
         ),
     }
 
+    match &profiles {
+        Some(config) => info!(
+            "Profiles at {}/api/v1 (sign-in: {})",
+            config.public_url,
+            match (config.discord.is_some(), config.test_sign_in) {
+                (true, true) => "Discord and test names",
+                (true, false) => "Discord",
+                _ => "test names only",
+            }
+        ),
+        None => info!(
+            "Profiles disabled: set {} to enable them",
+            recharged_wfc_srv::profiles::VARIABLES.join(", ")
+        ),
+    }
+
     let app = App::new(pool);
-    let router = app.router(admin);
+    let router = app.router(admin, profiles);
     // HTTP stops gracefully on a signal; the others stop with it.
     tokio::select! {
         result = axum::serve(http, router.into_make_service_with_connect_info::<SocketAddr>())

@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE rule_sets SET name = $2, rules = $3, updated_at = now()\n                 WHERE rule_set_id = $1\n                 RETURNING rule_set_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "rule_set_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rule_sets",
+            "name": "rule_set_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "59c84a37f0eccd61152cbed1f55b2e043d5be244891b0dcea611239de8a24f3e"
+}

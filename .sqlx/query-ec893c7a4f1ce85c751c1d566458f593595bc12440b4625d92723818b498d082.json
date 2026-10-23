@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT rule_set_id, name, rules FROM rule_sets WHERE rule_set_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "rule_set_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "rule_sets",
+            "name": "rule_set_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rule_sets",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "rules",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "rule_sets",
+            "name": "rules"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "ec893c7a4f1ce85c751c1d566458f593595bc12440b4625d92723818b498d082"
+}
