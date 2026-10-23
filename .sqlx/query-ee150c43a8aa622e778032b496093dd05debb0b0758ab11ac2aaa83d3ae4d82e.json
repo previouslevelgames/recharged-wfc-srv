@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT count(*) AS \"busy!\" FROM matches\n         WHERE state IN ('challenged', 'accepted') AND (home IN ($1, $2) OR away IN ($1, $2))",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "busy!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "ee150c43a8aa622e778032b496093dd05debb0b0758ab11ac2aaa83d3ae4d82e"
+}

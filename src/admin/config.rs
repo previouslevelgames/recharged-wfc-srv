@@ -4,8 +4,9 @@ use std::{env, fmt};
 
 use reqwest::Url;
 
-/// Every variable `/admin` reads. Set all of them, or none to run the server
-/// without `/admin`.
+/// Every variable `/admin` reads. Set all of them, or none of the Google
+/// ones to run the server without `/admin`: `PUBLIC_URL` serves the profile
+/// service too.
 pub const VARIABLES: [&str; 4] = [
     "PUBLIC_URL",
     "GOOGLE_CLIENT_ID",
@@ -52,7 +53,7 @@ impl Config {
 
     fn from_vars(var: impl Fn(&str) -> Option<String>) -> Result<Option<Self>, String> {
         let values = VARIABLES.map(|name| var(name).filter(|value| !value.trim().is_empty()));
-        if values.iter().all(Option::is_none) {
+        if values[1..].iter().all(Option::is_none) {
             return Ok(None);
         }
         let missing: Vec<&str> = VARIABLES
@@ -65,7 +66,7 @@ impl Config {
             return Err(format!(
                 "/admin needs {} as well (or unset {} to run without it)",
                 missing.join(", "),
-                VARIABLES.join(", "),
+                VARIABLES[1..].join(", "),
             ));
         }
         let [public_url, client_id, client_secret, admins] = values.map(Option::unwrap);
@@ -166,6 +167,12 @@ mod tests {
     fn no_variables_disable_admin() {
         assert!(from(&[]).unwrap().is_none());
         assert!(from(&[("PUBLIC_URL", " ")]).unwrap().is_none());
+        // The profile service's address alone.
+        assert!(
+            from(&[("PUBLIC_URL", "https://wfc.example.com")])
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

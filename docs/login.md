@@ -316,6 +316,10 @@ It is encrypted as the client decrypts it (`sb_crypt.c`, `InitCryptKey`): a
 6 `0D ^ EA`, the rest random), then the reply under GOACrypt, keyed with the
 client's challenge mixed with the secret key `B4LdGW` and header bytes 7 to 19.
 
+Games kept for a Recharged match change what a ranked search lists
+([profiles.md](profiles.md), "Meeting in RANKED"): a kept game's search lists
+only its opponent's game, and nobody else's search lists a kept game.
+
 ### Filters
 
 A list holds the game's sessions whose fields pass the request's filter,

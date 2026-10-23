@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO player_identities (provider, external_id, player_id, username, avatar_url)\n             VALUES ($1, $2, $3, $4, $5)\n             ON CONFLICT DO NOTHING\n             RETURNING player_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "player_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "player_identities",
+            "name": "player_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int8",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "bb3d008b36308301a9357a9d02df301f7f8f72ecd1d7b68cd5f7c048108cc142"
+}

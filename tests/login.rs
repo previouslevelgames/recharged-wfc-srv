@@ -502,7 +502,7 @@ impl Server {
             http: http.local_addr().unwrap(),
             gpcm: gpcm.local_addr().unwrap(),
         };
-        let router = app.router(None);
+        let router = app.router(None, None);
         tokio::spawn(async move {
             axum::serve(
                 http,

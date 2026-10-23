@@ -1,0 +1,191 @@
+# Profiles: players who sign in from the launcher
+
+Recharged's launcher signs players in to a **Recharged profile** for
+competitive play. A profile is a player, not a console: it is made the first
+time someone signs in with Discord, and it is no part of WFC. The game's own
+logins stay NAS and GPCM's ([login.md](login.md)). Signed in, a player
+challenges another to a test match by a rule set the server's admins keep; the
+port proves which friend code its game plays as, the two games find only each
+other in RANKED, and both report the result.
+
+The service is off unless it is configured, and the routes below then answer
+404.
+
+| Variable | Value |
+|---|---|
+| `PUBLIC_URL` | The address launchers and browsers use, without a path, e.g. `https://wfc.example.com`, shared with `/admin`. Plain `http://` works only on a local network, for a test server. |
+| `DISCORD_CLIENT_ID` | The Discord app's client ID (Discord Developer Portal → the app → **OAuth2**). |
+| `DISCORD_CLIENT_SECRET` | Its client secret, from the same page. Set **Password Mask: Yes**. |
+| `PROFILES_TEST_SIGN_IN` | `true` lets anyone sign in with a name alone, so a second game on one PC has a player of its own. **Only on a local or test server.** |
+
+Discord, test sign-in, or both turn the service on, and then `PUBLIC_URL` is
+needed too. In the Discord app, add the redirect
+`<PUBLIC_URL>/sign-in/discord/callback` under **OAuth2 → Redirects**, e.g.
+`https://wfc.example.com/sign-in/discord/callback`, or
+`http://127.0.0.1:8080/sign-in/discord/callback` for a server on your own
+computer. The sign-in asks only for `identify`: the Discord user's id,
+username, display name and avatar.
+
+## Signing in
+
+The launcher never sees a password or a Discord token, and needs no local web
+server: it opens a page in the browser and asks the server until the
+sign-in ends.
+
+1. `POST /api/v1/sign-in` starts a sign-in:
+
+   ```json
+   {"id": "<43 letters and digits>", "code": "ABCD-EFGH",
+    "url": "https://wfc.example.com/sign-in?id=<id>",
+    "expires_in": 600, "poll_interval": 2}
+   ```
+
+   The launcher shows the code and opens `url`; a Steam Deck can show it as a
+   QR code instead. 503 when too many sign-ins are waiting (1000).
+2. The page shows the same code, so that someone who got a sign-in link from
+   somebody else can tell that it isn't theirs, and **Continue with
+   Discord**: `/sign-in/discord` sends the browser to Discord (authorization
+   code with PKCE, `state` names the sign-in). On a test server the page also
+   takes a test name.
+3. Discord returns to `/sign-in/discord/callback`. The server trades the code
+   for the user, finds the player by its Discord id or makes one, opens a
+   session, and the page says the player is signed in. A refusal (e.g.
+   **Cancel** on Discord's page) ends the sign-in with the reason.
+4. `GET /api/v1/sign-in/<id>`, every `poll_interval` seconds, answers
+   `{"status": "waiting"}` until the sign-in ends, then once:
+
+   ```json
+   {"status": "signed_in", "token": "<43 characters>",
+    "player": {"id": 7, "name": "Nelly", "avatar_url": "https://cdn.discordapp.com/…",
+               "discord": "nelly", "test": false}}
+   ```
+
+   or `{"status": "refused", "message": "Sign-in was cancelled."}`. After
+   that, or 10 minutes after it began, it is 404.
+
+Sign-ins wait in the server's memory; a restart drops them, and the launcher
+starts again.
+
+On a test server, `POST /api/v1/sign-in/test` with `{"name": "Mario"}`
+signs in at once and answers like a sign-in that ended. A test name has 1 to
+16 letters, digits, `-` or `_`; the same name in other letters is the same
+player. 403 without `PROFILES_TEST_SIGN_IN`.
+
+## Sessions
+
+The launcher sends the token as `Authorization: Bearer <token>`; a missing,
+expired or closed one is 401 `{"error": "signed out"}`. A session lasts 90
+days. The database keeps only the token's SHA-256.
+
+| Route | Answer |
+|---|---|
+| `GET /api/v1/server` | `{"version", "revision", "sign_in": {"discord": true, "test": false}}`, without a session: what the launcher can offer |
+| `GET /api/v1/me` | the player, as in a sign-in |
+| `POST /api/v1/sign-out` | 204; the session is closed |
+
+Errors are JSON, `{"error": "<what went wrong>"}`. Every response is
+`no-store`; the pages allow no scripts and no framing.
+
+## Players
+
+`players` has one row per player, with the name to show: the Discord display
+name (or the username) at the last sign-in. `player_identities` holds the
+accounts a player signs in with, one per provider (`discord`, `test`), with
+the username other players look them up by and the avatar.
+`player_sessions` holds the sessions, `player_wfc_profiles` the friend codes
+proven theirs, `rule_sets` the rules, `matches` and `match_reports` the
+matches and what each game reported.
+
+## Friend codes
+
+`POST /api/v1/wfc` with `{"profile_id": 1000000000, "login_ticket": "<lt>"}`:
+the port's proof that its game is logged in to WFC as that profile. The ticket
+is GPCM's `lt`, which the server hands out at every login and the game keeps
+(GameSpy's `gpGetLoginTicket`); an address can't prove it, as the launcher may
+reach the server through a proxy or over IPv6 while the game uses IPv4. The
+profile is then the player's, until another player proves it, and the answer
+is `{"profile_id", "game": "R4QE", "friend_code": "0868-9934-5920", "mii"}`.
+403 for a profile not logged in with that ticket. `GET /api/v1/me` lists the
+player's profiles as `wfc`, the latest first.
+
+## Rules
+
+A rule set is what a match is played by, and the server's admins keep them on
+`/admin/competitive`. `GET /api/v1/rules`, without a session, lists them:
+`{"rule_sets": [{"id", "name", "rules", "hash"}]}`.
+
+| Rule | Values |
+|---|---|
+| `tweaks` | The port's gameplay tweaks for both teams: `fast_terrain`, `no_mega_strikes`, `thunder_island_walls`. The others stay off; fair ball contests are always on online. |
+| `skill` | `training`, `rookie`, `professional`, `superstar`, `legend` |
+| `limit` | `time` or `goals`: what ends a game |
+| `time` | A game's length in seconds, 60 to 900 in steps of 30 |
+| `goals` | The goals that end a game, 1 to 10 |
+| `games` | Games in the series: 1, 3, 5 or 7 |
+| `stadium` | `random` (the host picks, as in the game) or one stadium: `battle_dome`, `bowser_stadium`, `crater_field`, `crystal_canyon`, `the_dump`, `galactic_stadium`, `konga_coliseum`, `lava_pit`, `pipeline_central`, `storm_ship`, `the_palace`, `thunder_island`, `the_underground`, `the_vice`, `the_wastelands`, `sand_tomb` |
+
+The hash is the SHA-256 of the rules' canonical JSON: the fields in this
+order, the tweaks sorted, no spaces, e.g.
+`{"tweaks":["no_mega_strikes"],"skill":"rookie","limit":"time","time":180,"goals":5,"games":3,"stadium":"random"}`.
+Both games must play by the very same rules or the match goes out of sync, so
+the server pairs them only once both confirmed it. A match keeps the rules it
+was made with when its rule set changes.
+
+The server starts with two: **Retail ranked** (the game's own ranked rules:
+Rookie, 3 minutes, best of 3, random stadium) and **Competitive** (the same
+with no Mega Strikes, fast terrain and Thunder Island walls).
+
+## Matches
+
+| Route | |
+|---|---|
+| `POST /api/v1/matches` | `{"opponent": "<Discord username>", "rule_set": <id>}`: a challenge, 201. 404 for nobody of that name, 409 when either already has a match to play. |
+| `GET /api/v1/matches/current` | `{"match": …}`: the match still to be played, or the last one that ended within the hour, or `null` |
+| `POST /api/v1/matches/<id>/accept`, `…/decline` | The challenged player's answer |
+| `POST /api/v1/matches/<id>/cancel` | Either player, before the result |
+| `POST /api/v1/matches/<id>/ready` | `{"profile_id", "rules_hash"}`, see below |
+| `POST /api/v1/matches/<id>/report` | `{"games": [...]}`, see below |
+
+A match as the player sees it:
+
+```json
+{"id": 12, "state": "accepted", "side": "challenger",
+ "opponent": {"id": 8, "name": "Sam", "avatar_url": "…", "discord": "sam",
+              "wfc": [{"profile_id": 1000000001, "game": "R4QE", "friend_code": "…", "mii": "Sam"}]},
+ "rule_set": "Competitive", "rules": {…}, "rules_hash": "…",
+ "paired": false, "reported": false, "winner": null, "games": [], "created_at": 1792771200}
+```
+
+`state` is `challenged`, `accepted`, `declined`, `cancelled`, `expired` (a
+challenge unanswered for 10 minutes, or an accepted match without a result
+for 2 hours), `finished` or `disputed`. Each player has one match to play at a
+time.
+
+### Meeting in RANKED
+
+Once the match is accepted, the port says every few seconds that its game is
+ready: logged in to WFC as `profile_id`, one of the player's profiles, and
+applying the rules with `rules_hash`. Readiness lasts 30 seconds without being
+said again, so a game that went away stops being kept. The answer is
+`{"paired", "other_release"}`: `paired` once both games are ready.
+
+While a game is ready, RANKED in WFC Central works differently for it
+([login.md](login.md), "Server browser"): its search lists only its
+opponent's game once that one is ready too (whatever region group the game
+puts it in), and nobody else's search lists either of them. A US and a
+European game are never paired: their releases can't play each other.
+
+### Results
+
+After the series, each game reports what it saw, game by game:
+
+```json
+{"games": [{"my_score": 3, "opponent_score": 1, "my_captain": "mario",
+            "opponent_captain": "bowser", "stadium": "the_palace"}]}
+```
+
+A report holds 1 to `games` games; captains and stadiums are lowercase names.
+The second report settles the match: `finished` with the series' winner (more
+games won; `winner` is `you`, `opponent` or `draw`) when both saw the same
+games, `disputed` otherwise. A player reports once. The view then shows the
+player's own report as `games`.

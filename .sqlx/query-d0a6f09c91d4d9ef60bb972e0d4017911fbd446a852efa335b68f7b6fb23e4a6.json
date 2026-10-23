@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE player_sessions SET last_used_at = now() WHERE token_hash = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d0a6f09c91d4d9ef60bb972e0d4017911fbd446a852efa335b68f7b6fb23e4a6"
+}

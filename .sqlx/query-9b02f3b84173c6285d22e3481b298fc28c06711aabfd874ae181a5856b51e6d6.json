@@ -1,0 +1,112 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT matches.match_id AS id, matches.state, matches.rule_set,\n                  home.display_name AS challenger, away.display_name AS challenged,\n                  winner.display_name AS \"winner?\", matches.created_at, matches.updated_at\n           FROM matches\n           JOIN players home ON home.player_id = matches.home\n           JOIN players away ON away.player_id = matches.away\n           LEFT JOIN players winner ON winner.player_id = matches.winner\n           ORDER BY matches.created_at DESC\n           LIMIT $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "match_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "state",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "rule_set",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "rule_set"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "challenger",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "challenged",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "winner?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "9b02f3b84173c6285d22e3481b298fc28c06711aabfd874ae181a5856b51e6d6"
+}

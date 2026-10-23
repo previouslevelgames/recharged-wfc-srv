@@ -4,9 +4,11 @@
 //! Sessions live in memory ([`session`]). Every page in [`PAGES`] is the same
 //! static page; its script shows the section for its path and polls that
 //! section's JSON under `/admin/api/` ([`page`]): [`overview`], [`players`],
-//! [`matchmaking`], [`leaderboards`] and [`database`]. The other sections are
-//! planned with the services they need.
+//! [`matchmaking`], [`leaderboards`], [`competitive`] and [`database`]. The
+//! other sections are planned with the services they need. The Competitive
+//! page also edits the rule sets matches are played by.
 
+mod competitive;
 mod config;
 mod database;
 mod google;
@@ -21,11 +23,11 @@ use std::{future::Future, sync::Arc, time::Duration};
 
 use axum::{
     Json, Router,
-    extract::{Query, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, Uri, header},
     middleware,
     response::{Html, IntoResponse, Redirect, Response},
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use serde::{Deserialize, Serialize};
@@ -33,7 +35,13 @@ use sqlx::PgPool;
 use time::OffsetDateTime;
 use tracing::{info, warn};
 
-use crate::{activity::Activity, gpcm::Gpcm, master::Master};
+use crate::{
+    activity::Activity,
+    gpcm::Gpcm,
+    html::escape,
+    master::Master,
+    profiles::rules::{self, Rules, SaveError},
+};
 pub use config::{Config, GoogleEndpoints, VARIABLES};
 use google::{Account, Login, SignInError};
 use page::PageData;
@@ -41,11 +49,12 @@ use session::{SESSION_TTL, Sessions};
 
 /// The dashboard's pages, Overview first. The script in `assets/admin.js`
 /// knows the same list.
-const PAGES: [&str; 6] = [
+const PAGES: [&str; 7] = [
     "/admin",
     "/admin/players",
     "/admin/matchmaking",
     "/admin/leaderboards",
+    "/admin/competitive",
     "/admin/moderation",
     "/admin/database",
 ];
@@ -115,6 +124,12 @@ pub(crate) fn router(
         .route("/admin/api/matchmaking", get(api_matchmaking))
         .route("/admin/api/database", get(api_database))
         .route("/admin/api/leaderboards", get(api_leaderboards))
+        .route("/admin/api/competitive", get(api_competitive))
+        .route("/admin/api/rules", post(create_rule_set))
+        .route(
+            "/admin/api/rules/{id}",
+            put(update_rule_set).delete(delete_rule_set),
+        )
         .route("/admin/admin.css", get(stylesheet))
         .route("/admin/admin.js", get(script))
         .layer(middleware::map_response(security_headers))
@@ -314,6 +329,104 @@ async fn api_leaderboards(State(state): State<Arc<AdminState>>, jar: CookieJar) 
     state.page_data(&jar, leaderboards::read(&state.pool)).await
 }
 
+async fn api_competitive(State(state): State<Arc<AdminState>>, jar: CookieJar) -> Response {
+    state.page_data(&jar, competitive::read(&state.pool)).await
+}
+
+/// A rule set as the Competitive page sends it.
+#[derive(Deserialize)]
+struct RuleSetForm {
+    name: String,
+    rules: Rules,
+}
+
+impl AdminState {
+    /// Who may change things: a signed-in admin, from this server's own
+    /// pages. Otherwise 403, or 401 when signed out.
+    fn editor(&self, jar: &CookieJar, headers: &HeaderMap) -> Result<Account, StatusCode> {
+        let origin = headers.get(header::ORIGIN);
+        if origin.is_none_or(|origin| origin != self.config.public_url.as_str()) {
+            return Err(StatusCode::FORBIDDEN);
+        }
+        self.signed_in(jar).ok_or(StatusCode::UNAUTHORIZED)
+    }
+
+    async fn save_rule_set(
+        &self,
+        jar: &CookieJar,
+        headers: &HeaderMap,
+        id: Option<i64>,
+        form: RuleSetForm,
+    ) -> Response {
+        let error = |status: StatusCode, message: &str| {
+            (status, Json(serde_json::json!({ "error": message }))).into_response()
+        };
+        let editor = match self.editor(jar, headers) {
+            Ok(editor) => editor,
+            Err(StatusCode::UNAUTHORIZED) => return error(StatusCode::UNAUTHORIZED, "signed out"),
+            Err(status) => return status.into_response(),
+        };
+        match rules::save(&self.pool, id, &form.name, form.rules).await {
+            Ok(Ok(saved)) => {
+                info!(target: "admin", email = %editor.email, rule_set = saved.name, "rule set saved");
+                Json(saved).into_response()
+            }
+            Ok(Err(SaveError::Invalid(problem))) => error(StatusCode::BAD_REQUEST, &problem),
+            Ok(Err(SaveError::NameTaken)) => {
+                error(StatusCode::CONFLICT, "another rule set has this name")
+            }
+            Ok(Err(SaveError::NotFound)) => error(StatusCode::NOT_FOUND, "no such rule set"),
+            Err(failure) => {
+                warn!(target: "admin", error = %failure, "database error");
+                error(StatusCode::INTERNAL_SERVER_ERROR, "the database failed")
+            }
+        }
+    }
+}
+
+async fn create_rule_set(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Json(form): Json<RuleSetForm>,
+) -> Response {
+    state.save_rule_set(&jar, &headers, None, form).await
+}
+
+async fn update_rule_set(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    Json(form): Json<RuleSetForm>,
+) -> Response {
+    state.save_rule_set(&jar, &headers, Some(id), form).await
+}
+
+/// Matches made with the rule set keep their copy of it.
+async fn delete_rule_set(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+) -> Response {
+    let editor = match state.editor(&jar, &headers) {
+        Ok(editor) => editor,
+        Err(status) => return status.into_response(),
+    };
+    match rules::delete(&state.pool, id).await {
+        Ok(true) => {
+            info!(target: "admin", email = %editor.email, id, "rule set deleted");
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Ok(false) => StatusCode::NOT_FOUND.into_response(),
+        Err(error) => {
+            warn!(target: "admin", %error, "database error");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
 async fn stylesheet() -> impl IntoResponse {
     (
         [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
@@ -342,33 +455,4 @@ async fn security_headers(mut response: Response) -> Response {
         headers.insert(name, HeaderValue::from_static(value));
     }
     response
-}
-
-/// Escapes text for HTML content and quoted attributes.
-fn escape(text: &str) -> String {
-    let mut escaped = String::with_capacity(text.len());
-    for c in text.chars() {
-        match c {
-            '&' => escaped.push_str("&amp;"),
-            '<' => escaped.push_str("&lt;"),
-            '>' => escaped.push_str("&gt;"),
-            '"' => escaped.push_str("&quot;"),
-            '\'' => escaped.push_str("&#39;"),
-            _ => escaped.push(c),
-        }
-    }
-    escaped
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn escape_neutralizes_markup() {
-        assert_eq!(
-            escape(r#"<a href="x">'&'</a>"#),
-            "&lt;a href=&quot;x&quot;&gt;&#39;&amp;&#39;&lt;/a&gt;"
-        );
-    }
 }

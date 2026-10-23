@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO player_wfc_profiles (profile_id, player_id) VALUES ($1, $2)\n         ON CONFLICT (profile_id) DO UPDATE SET player_id = $2, bound_at = now()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "36a9dec747dd5d465df0e9f83231736eaac261d5bccfe7bb9083f10b9080a1a1"
+}

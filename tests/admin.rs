@@ -24,11 +24,12 @@ const CLIENT_ID: &str = "client.apps.googleusercontent.com";
 const CLIENT_SECRET: &str = "client-secret";
 const CODE: &str = "the-code";
 
-const PAGES: [&str; 6] = [
+const PAGES: [&str; 7] = [
     "/admin",
     "/admin/players",
     "/admin/matchmaking",
     "/admin/leaderboards",
+    "/admin/competitive",
     "/admin/moderation",
     "/admin/database",
 ];
@@ -36,7 +37,7 @@ const PAGES: [&str; 6] = [
 #[sqlx::test]
 async fn an_admin_signs_in_sees_every_section_and_signs_out(pool: PgPool) {
     let (config, google) = fake_google().await;
-    let mut browser = Browser::new(recharged_wfc_srv::App::new(pool).router(Some(config)));
+    let mut browser = Browser::new(recharged_wfc_srv::App::new(pool).router(Some(config), None));
 
     let (status, _, page) = browser.get("/admin").await;
     assert_eq!(status, 200);
@@ -73,6 +74,7 @@ async fn an_admin_signs_in_sees_every_section_and_signs_out(pool: PgPool) {
         ("matchmaking", "/totals/searching"),
         ("database", "/tables/0/name"),
         ("leaderboards", "/totals/entries"),
+        ("competitive", "/rule_sets/0/rules/tweaks"),
     ] {
         let (status, _, body) = browser.get(&format!("/admin/api/{api}")).await;
         assert_eq!(status, 200, "{api}");
@@ -95,7 +97,8 @@ async fn an_admin_signs_in_sees_every_section_and_signs_out(pool: PgPool) {
 #[tokio::test]
 async fn other_google_accounts_are_refused() {
     let (config, google) = fake_google().await;
-    let mut browser = Browser::new(recharged_wfc_srv::App::new(lazy_pool()).router(Some(config)));
+    let mut browser =
+        Browser::new(recharged_wfc_srv::App::new(lazy_pool()).router(Some(config), None));
 
     let params = start_sign_in(&mut browser, "/admin/login").await;
     google.approve(&params, "someone@example.com");
@@ -109,7 +112,8 @@ async fn other_google_accounts_are_refused() {
 #[tokio::test]
 async fn a_callback_must_belong_to_a_sign_in_in_this_browser() {
     let (config, google) = fake_google().await;
-    let mut browser = Browser::new(recharged_wfc_srv::App::new(lazy_pool()).router(Some(config)));
+    let mut browser =
+        Browser::new(recharged_wfc_srv::App::new(lazy_pool()).router(Some(config), None));
 
     // No sign-in cookie.
     let (status, _, page) = browser.callback(CODE, "state").await;
@@ -135,7 +139,8 @@ async fn a_callback_must_belong_to_a_sign_in_in_this_browser() {
 #[tokio::test]
 async fn sign_in_returns_to_the_page_it_began_on() {
     let (config, google) = fake_google().await;
-    let mut browser = Browser::new(recharged_wfc_srv::App::new(lazy_pool()).router(Some(config)));
+    let mut browser =
+        Browser::new(recharged_wfc_srv::App::new(lazy_pool()).router(Some(config), None));
 
     let (status, _, page) = browser.get("/admin/database").await;
     assert_eq!(status, 200);
@@ -156,7 +161,8 @@ async fn sign_in_returns_to_the_page_it_began_on() {
 #[tokio::test]
 async fn admin_pages_are_locked_down() {
     let (config, _) = fake_google().await;
-    let mut browser = Browser::new(recharged_wfc_srv::App::new(lazy_pool()).router(Some(config)));
+    let mut browser =
+        Browser::new(recharged_wfc_srv::App::new(lazy_pool()).router(Some(config), None));
 
     for uri in ["/admin", "/admin/admin.js", "/admin/api/database"] {
         let (_, headers, _) = browser.get(uri).await;
@@ -174,7 +180,7 @@ async fn admin_pages_are_locked_down() {
 
 #[tokio::test]
 async fn admin_is_not_served_without_its_configuration() {
-    let mut browser = Browser::new(recharged_wfc_srv::App::new(lazy_pool()).router(None));
+    let mut browser = Browser::new(recharged_wfc_srv::App::new(lazy_pool()).router(None, None));
     for uri in ["/admin", "/admin/login", "/admin/api/overview"] {
         assert_eq!(browser.get(uri).await.0, 404, "{uri}");
     }

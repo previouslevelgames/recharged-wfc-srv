@@ -65,12 +65,56 @@ const MATCH_COMMANDS = {
   0x41: ['Host keepalive', null],
 };
 const SEVERITY = ['good', 'warning', 'serious', 'critical'];
+// What a rule set can hold (src/profiles/rules.rs), with the names players
+// know.
+const TWEAK_NAMES = {
+  fast_terrain: 'Fast terrain',
+  no_mega_strikes: 'No Mega Strikes',
+  thunder_island_walls: 'Thunder Island walls',
+};
+const SKILL_NAMES = {
+  training: 'Training',
+  rookie: 'Rookie',
+  professional: 'Professional',
+  superstar: 'Superstar',
+  legend: 'Legend',
+};
+const STADIUM_NAMES = {
+  random: 'Random (the host picks)',
+  battle_dome: 'The Battle Dome',
+  bowser_stadium: 'Bowser Stadium',
+  crater_field: 'Crater Field',
+  crystal_canyon: 'Crystal Canyon',
+  the_dump: 'The Dump',
+  galactic_stadium: 'Galactic Stadium',
+  konga_coliseum: 'Konga Coliseum',
+  lava_pit: 'Lava Pit',
+  pipeline_central: 'Pipeline Central',
+  storm_ship: 'Storm Ship',
+  the_palace: 'The Palace',
+  thunder_island: 'Thunder Island',
+  the_underground: 'The Underground',
+  the_vice: 'The Vice',
+  the_wastelands: 'The Wastelands',
+  sand_tomb: 'Sand Tomb',
+};
+// A match's state (docs/profiles.md, "Matches"), with its badge tone.
+const MATCH_STATES = {
+  challenged: ['Challenged', 'warning'],
+  accepted: ['Accepted', 'accent'],
+  finished: ['Finished', 'good'],
+  disputed: ['Disputed', 'serious'],
+  declined: ['Declined', null],
+  cancelled: ['Cancelled', null],
+  expired: ['Expired', null],
+};
 
 const ICONS = {
   overview: 'M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z',
   players: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75',
   matchmaking: 'M5 12.55a11 11 0 0 1 14.08 0M1.42 9a16 16 0 0 1 21.16 0M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01',
   leaderboards: 'M6 9H4.5a2.5 2.5 0 0 1 0-5H6M18 9h1.5a2.5 2.5 0 0 0 0-5H18M4 22h16M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22M18 2H6v7a6 6 0 0 0 12 0V2z',
+  competitive: 'M4 22v-7M4 15V3h13l-3 6 3 6H4',
   moderation: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z',
   database: 'M12 8c4.97 0 9-1.34 9-3s-4.03-3-9-3-9 1.34-9 3 4.03 3 9 3zM21 12c0 1.66-4 3-9 3s-9-1.34-9-3M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5',
   good: 'M20 6 9 17l-5-5',
@@ -118,6 +162,16 @@ const SECTIONS = [
     intro: 'gamestats2: the scores players put, and who leads each board.',
     api: 'leaderboards',
     render: renderLeaderboards,
+  },
+  {
+    path: '/admin/competitive',
+    group: 'Game',
+    name: 'Competitive',
+    icon: 'competitive',
+    intro: 'Recharged profiles: the rules matches are played by, the players who signed in from the launcher, and their matches.',
+    api: 'competitive',
+    render: renderCompetitive,
+    editor: true,
   },
   {
     path: '/admin/moderation',
@@ -829,6 +883,208 @@ function renderDatabase(data, now) {
     ),
   ];
 }
+
+// --- Competitive ---------------------------------------------------------
+
+function gameLength(seconds) {
+  const minutes = Math.floor(seconds / 60);
+  return seconds % 60 ? `${minutes} min ${seconds % 60} s` : `${minutes} min`;
+}
+
+function rulesSummary(rules) {
+  const end = rules.limit === 'time' ? `${gameLength(rules.time)} games` : `First to ${rules.goals} goals`;
+  return [
+    `${end}, best of ${rules.games}`,
+    `${SKILL_NAMES[rules.skill] || rules.skill}`,
+    STADIUM_NAMES[rules.stadium] || rules.stadium,
+  ].join(' · ');
+}
+
+function renderCompetitive(data, now) {
+  if (!data.content) return [unreachable(data.error)];
+  const { rule_sets: ruleSets, totals, matches } = data.content;
+  editor.load(data.content.choices);
+  const sets = card(
+    'Rule sets',
+    'What a match is played by. A challenge picks one; a match keeps the rules it was made with.',
+    table(
+      [
+        { label: 'Name', cell: (set) => h('strong', null, set.name) },
+        { label: 'Tweaks', class: 'wrap', cell: (set) => (set.rules.tweaks.length ? set.rules.tweaks.map((tweak) => TWEAK_NAMES[tweak] || tweak).join(', ') : h('span', { class: 'sub' }, 'none')) },
+        { label: 'Rules', class: 'wrap', cell: (set) => rulesSummary(set.rules) },
+        { label: '', class: 'actions', cell: (set) => h('button', { class: 'button', type: 'button', onclick: () => editor.edit(set) }, 'Edit') },
+      ],
+      ruleSets,
+      'No rule sets yet: add one below.',
+    ),
+  );
+  const played = card(
+    'Matches',
+    'The latest test matches between players who signed in.',
+    table(
+      [
+        { label: 'Made', cell: (match) => ago(match.created_at, now) },
+        { label: 'Challenger', cell: (match) => match.challenger },
+        { label: 'Challenged', cell: (match) => match.challenged },
+        { label: 'Rules', cell: (match) => match.rule_set },
+        {
+          label: 'State',
+          cell: (match) => {
+            const [text, tone] = MATCH_STATES[match.state] || [match.state, null];
+            return badge(tone, text);
+          },
+        },
+        { label: 'Winner', cell: (match) => match.winner || (match.state === 'finished' ? 'Draw' : h('span', { class: 'sub' }, '–')) },
+      ],
+      matches,
+      'No matches yet.',
+    ),
+  );
+  return [
+    h(
+      'div',
+      { class: 'tiles' },
+      tile('Players', count(totals.players), `${count(totals.discord)} with Discord · ${count(totals.test)} test`),
+      tile('Matches', count(totals.matches), `${count(totals.finished)} finished`),
+      tile('Rule sets', count(ruleSets.length), 'for challenges'),
+    ),
+    sets,
+    played,
+  ];
+}
+
+/** The rule set editor. It stays out of the polled page, so typing survives
+ * each refresh. */
+const editor = {
+  node: null,
+  choices: null,
+  editing: null, // The rule set's id, or null for a new one.
+
+  load(choices) {
+    if (this.choices) return;
+    this.choices = choices;
+    this.render(null);
+  },
+
+  edit(set) {
+    this.render(set);
+    this.node.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  },
+
+  field(label, control) {
+    return h('label', { class: 'editor-field' }, h('span', null, label), control);
+  },
+
+  select(id, values, names, selected) {
+    return h(
+      'select',
+      { id },
+      values.map((value) => h('option', { value, selected: String(value) === String(selected) }, names ? names[value] || value : String(value))),
+    );
+  },
+
+  render(set) {
+    const rules = set
+      ? set.rules
+      : { tweaks: [], skill: 'rookie', limit: 'time', time: 180, goals: 5, games: 3, stadium: 'random' };
+    this.editing = set ? set.id : null;
+    const choices = this.choices;
+    const body = h(
+      'form',
+      { class: 'editor', onsubmit: (event) => { event.preventDefault(); this.save(); } },
+      this.field('Name', h('input', { id: 'rule-name', value: set ? set.name : '', maxlength: '48', required: true })),
+      h(
+        'fieldset',
+        { class: 'editor-field' },
+        h('legend', null, 'Gameplay tweaks for both teams'),
+        choices.tweaks.map((tweak) =>
+          h('label', { class: 'editor-check' }, h('input', { type: 'checkbox', name: 'tweak', value: tweak, checked: rules.tweaks.includes(tweak) }), TWEAK_NAMES[tweak] || tweak),
+        ),
+      ),
+      h(
+        'div',
+        { class: 'editor-row' },
+        this.field('Skill level', this.select('rule-skill', choices.skills, SKILL_NAMES, rules.skill)),
+        this.field('A game ends', this.select('rule-limit', ['time', 'goals'], { time: 'On time', goals: 'On goals' }, rules.limit)),
+        this.field('Seconds', h('input', { id: 'rule-time', type: 'number', min: '60', max: '900', step: '30', value: rules.time })),
+        this.field('Goals', h('input', { id: 'rule-goals', type: 'number', min: '1', max: '10', value: rules.goals })),
+      ),
+      h(
+        'div',
+        { class: 'editor-row' },
+        this.field('Games in the series', this.select('rule-games', choices.series, null, rules.games)),
+        this.field('Stadium', this.select('rule-stadium', ['random', ...choices.stadiums], STADIUM_NAMES, rules.stadium)),
+      ),
+      h(
+        'div',
+        { class: 'editor-actions' },
+        h('button', { class: 'button primary', type: 'submit' }, set ? 'Save changes' : 'Add rule set'),
+        set && h('button', { class: 'button', type: 'button', onclick: () => this.render(null) }, 'New rule set'),
+        set && h('button', { class: 'button danger', type: 'button', onclick: () => this.remove() }, 'Delete'),
+        h('span', { class: 'editor-status', id: 'rule-status', role: 'status' }),
+      ),
+    );
+    const node = h('section', { class: 'card' }, h('header', { class: 'card-head' }, h('h2', null, set ? `Edit ${set.name}` : 'New rule set'), h('p', null, 'Both games apply these rules; the server pairs two games only once both confirmed them.')), body);
+    if (this.node) this.node.replaceWith(node);
+    else document.getElementById('content').append(node);
+    this.node = node;
+  },
+
+  status(text, tone) {
+    const status = document.getElementById('rule-status');
+    status.textContent = text;
+    status.dataset.tone = tone || '';
+  },
+
+  async send(method, path, body) {
+    const response = await fetch(path, {
+      method,
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: body && JSON.stringify(body),
+    });
+    if (response.status === 401) window.location.reload();
+    const answer = response.status === 204 ? null : await response.json().catch(() => null);
+    if (!response.ok) throw new Error((answer && answer.error) || `HTTP ${response.status}`);
+    return answer;
+  },
+
+  async save() {
+    const value = (id) => document.getElementById(id).value;
+    const form = {
+      name: value('rule-name'),
+      rules: {
+        tweaks: [...this.node.querySelectorAll('input[name=tweak]:checked')].map((box) => box.value),
+        skill: value('rule-skill'),
+        limit: value('rule-limit'),
+        time: Number(value('rule-time')),
+        goals: Number(value('rule-goals')),
+        games: Number(value('rule-games')),
+        stadium: value('rule-stadium'),
+      },
+    };
+    try {
+      const path = this.editing ? `/admin/api/rules/${this.editing}` : '/admin/api/rules';
+      const saved = await this.send(this.editing ? 'PUT' : 'POST', path, form);
+      this.render(saved);
+      this.status('Saved', 'good');
+      poll();
+    } catch (error) {
+      this.status(error.message, 'critical');
+    }
+  },
+
+  async remove() {
+    if (!window.confirm('Delete this rule set? Matches made with it keep their rules.')) return;
+    try {
+      await this.send('DELETE', `/admin/api/rules/${this.editing}`);
+      this.render(null);
+      this.status('Deleted', 'good');
+      poll();
+    } catch (error) {
+      this.status(error.message, 'critical');
+    }
+  },
+};
 
 // --- Planned sections ----------------------------------------------------
 

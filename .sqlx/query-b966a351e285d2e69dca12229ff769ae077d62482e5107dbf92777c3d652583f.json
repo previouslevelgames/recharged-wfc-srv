@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT player_id FROM player_identities\n         WHERE lower(username) = lower($1)\n         ORDER BY provider = 'discord' DESC\n         LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "player_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "player_identities",
+            "name": "player_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "b966a351e285d2e69dca12229ff769ae077d62482e5107dbf92777c3d652583f"
+}

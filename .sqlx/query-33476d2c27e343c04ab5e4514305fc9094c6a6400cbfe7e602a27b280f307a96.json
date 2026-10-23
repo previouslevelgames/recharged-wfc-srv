@@ -1,0 +1,49 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT\n             (SELECT count(*) FROM players) AS \"players!\",\n             (SELECT count(*) FROM player_identities WHERE provider = 'discord') AS \"discord!\",\n             (SELECT count(*) FROM player_identities WHERE provider = 'test') AS \"test!\",\n             (SELECT count(*) FROM matches) AS \"matches!\",\n             (SELECT count(*) FROM matches WHERE state = 'finished') AS \"finished!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "players!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "discord!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "test!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "matches!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "finished!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "33476d2c27e343c04ab5e4514305fc9094c6a6400cbfe7e602a27b280f307a96"
+}
