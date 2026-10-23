@@ -149,9 +149,10 @@ def main():
         assert "database system is shut down" in docker("logs", container)
         print("API startup failure shuts down PostgreSQL cleanly.", flush=True)
 
-        container = start(*ADMIN[:2])
+        # PUBLIC_URL alone serves profiles: a Google client makes it /admin.
+        container = start(*ADMIN[:4])
         assert wait_exit(container) != 0
-        assert "GOOGLE_CLIENT_ID" in docker("logs", container)
+        assert "GOOGLE_CLIENT_SECRET" in docker("logs", container)
         print("A partial admin configuration is rejected.", flush=True)
 
         container = start("-e", "POSTGRES_PASSWORD=")
