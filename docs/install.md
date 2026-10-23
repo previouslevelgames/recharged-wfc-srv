@@ -29,6 +29,7 @@ In **Docker → Add Container**, enable **Advanced View** and use these settings
 | Port (server browser) | Config Type **Port**: Container Port `28910`, Host Port `28910`, TCP |
 | Port (NAT negotiation) | Config Type **Port**: Container Port `27901`, Host Port `27901`, UDP |
 | Path (SQL data) | Config Type **Path**: Container Path `/var/lib/postgresql`, Host Path `/mnt/user/appdata/recharged-wfc-srv/postgres`, Access Mode **Read/Write** |
+| Path (logs) | Config Type **Path**: Container Path `/var/log/recharged-wfc-srv`, Host Path `/mnt/user/appdata/recharged-wfc-srv/logs`, Access Mode **Read/Write** |
 | WebUI | `http://[IP]:[PORT:8080]/status` |
 | Extra Parameters (Advanced) | `--stop-timeout=30` |
 | Autostart | Enabled |
@@ -63,6 +64,9 @@ enter the **Key** and **Value** from the table, and set **Password Mask: Yes** f
 | `DISCORD_CLIENT_ID` | for profiles | Client ID of the Discord app players sign in with. See [profiles.md](profiles.md). |
 | `DISCORD_CLIENT_SECRET` | for profiles | Its client secret. Set **Password Mask: Yes**. |
 | `PROFILES_TEST_SIGN_IN` | no | `true` lets anyone sign in to a profile with a name alone, for tests with two games on one PC. Never on a public server. |
+| `LOG_DIR` | no | Log folder inside the container. Default: `/var/log/recharged-wfc-srv`, the mapped **Path (logs)**. Leave unset to use this default. |
+| `LOG_RETENTION_DAYS` | no | Days of log files to keep. Default: `14`. |
+| `RUST_LOG` | no | Which messages to log. Default: `info`. `info,tower_http=debug` adds one line per HTTP request. |
 
 With the mapping above, the **SQL data lives on your Unraid server at**
 `/mnt/user/appdata/recharged-wfc-srv/postgres/18/docker`.
@@ -80,6 +84,15 @@ reusing the same host folder.
 Click **Apply**. The container starts PostgreSQL on internal `127.0.0.1:5432`, then
 the server. Open `http://<unraid-ip>/status` to check the running revision. The
 container health check checks both.
+
+## Logs
+
+The server writes one log file per day (UTC) to **Path (logs)**, e.g.
+`/mnt/user/appdata/recharged-wfc-srv/logs/recharged-wfc-srv.2026-10-23.log`,
+and deletes the oldest once there are more than `LOG_RETENTION_DAYS`. The files
+survive container updates. The container log (**Docker → container icon →
+Logs**) shows the same lines plus PostgreSQL's, but Docker deletes it whenever
+Unraid recreates the container, e.g. on an update.
 
 ## Connecting the game
 
@@ -158,8 +171,8 @@ docker compose pull
 docker compose up -d --no-build --wait
 ```
 
-For Compose, `POSTGRES_DATA_DIR` sets the **host** folder and `HTTP_PORT` sets the
-host HTTP port (default 80, which the game needs); GPCM, the master server, the
+For Compose, `POSTGRES_DATA_DIR` and `LOG_DATA_DIR` set the **host** folders for
+the SQL data and the logs, and `HTTP_PORT` sets the host HTTP port (default 80, which the game needs); GPCM, the master server, the
 server browser and NAT negotiation use 29900, 27900/udp, 28910 and 27901/udp.
 In Unraid, use the **Path** and **Port** mappings above.
 Repeat the last two commands to update. To build locally instead, run
