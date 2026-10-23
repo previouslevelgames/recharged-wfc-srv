@@ -32,7 +32,8 @@ ENV PORT=8080 \
     NATNEG_PORT=27901 \
     POSTGRES_DB=recharged_wfc \
     POSTGRES_USER=recharged_wfc \
-    POSTGRES_INITDB_ARGS="--auth-host=scram-sha-256"
+    POSTGRES_INITDB_ARGS="--auth-host=scram-sha-256" \
+    LOG_DIR=/var/log/recharged-wfc-srv
 # PostgreSQL's base image provides PGDATA and the /var/lib/postgresql volume.
 # HTTP (NAS, gamestats2, /admin), GPCM, the QR2 master server, the server
 # browser and NAT negotiation.

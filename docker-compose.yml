@@ -26,5 +26,7 @@ services:
       DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID:-}
       DISCORD_CLIENT_SECRET: ${DISCORD_CLIENT_SECRET:-}
       PROFILES_TEST_SIGN_IN: ${PROFILES_TEST_SIGN_IN:-}
+      LOG_RETENTION_DAYS: ${LOG_RETENTION_DAYS:-}
     volumes:
       - ${POSTGRES_DATA_DIR:-./data/postgres}:/var/lib/postgresql
+      - ${LOG_DATA_DIR:-./data/logs}:/var/log/recharged-wfc-srv

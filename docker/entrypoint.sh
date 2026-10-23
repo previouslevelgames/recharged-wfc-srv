@@ -48,6 +48,13 @@ done
 # Check the supplied credentials against the persisted database before serving.
 psql -X --no-password -v ON_ERROR_STOP=1 -c 'SELECT 1' >/dev/null
 
+# The server writes its daily log files as 10001; a newly mapped folder belongs
+# to root.
+if [[ -n "${LOG_DIR:-}" ]]; then
+    mkdir -p "$LOG_DIR"
+    chown 10001:10001 "$LOG_DIR"
+fi
+
 gosu 10001:10001 /usr/local/bin/recharged-wfc-srv &
 server_pid=$!
 
