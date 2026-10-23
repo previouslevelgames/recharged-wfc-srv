@@ -17,9 +17,10 @@ use super::{GAMESTATS_KEY, GamestatsError, hex};
 
 /// The client accepts exactly 32 bytes (`DWCi_EncSessionCompleteCallback`).
 const TOKEN_LEN: usize = 32;
-/// Request 2 follows request 1 right away; this only bounds memory and
-/// replays.
-const TOKEN_TTL: Duration = Duration::from_secs(60);
+/// Request 2 usually follows request 1 at once, but the client sends it from
+/// its next ranking update and has no limit of its own; a token that expired
+/// meanwhile costs the player the result. This only bounds memory and replays.
+const TOKEN_TTL: Duration = Duration::from_secs(10 * 60);
 
 /// Tokens issued and not used yet, one per pid. A plain `std` mutex: it is
 /// never held across an `.await`.
@@ -50,22 +51,27 @@ impl TokenStore {
         token
     }
 
-    /// Checks `hash` against the token issued to `pid`. The token is consumed
-    /// either way.
-    pub fn redeem(&self, pid: i32, hash: &str) -> Result<(), GamestatsError> {
+    /// Checks `hash` against the token issued to `pid` and returns its age.
+    /// The token is consumed either way.
+    pub fn redeem(&self, pid: i32, hash: &str) -> Result<Duration, GamestatsError> {
+        self.redeem_at(pid, hash, Instant::now())
+    }
+
+    fn redeem_at(&self, pid: i32, hash: &str, now: Instant) -> Result<Duration, GamestatsError> {
         let issued = self
             .issued
             .lock()
             .unwrap()
             .remove(&pid)
             .ok_or(GamestatsError::NoToken)?;
-        if issued.at.elapsed() >= TOKEN_TTL {
-            return Err(GamestatsError::NoToken);
+        let age = now.duration_since(issued.at);
+        if age >= TOKEN_TTL {
+            return Err(GamestatsError::TokenExpired(age));
         }
         if hash != token_hash(&issued.token) {
             return Err(GamestatsError::BadHash);
         }
-        Ok(())
+        Ok(age)
     }
 }
 
@@ -106,6 +112,16 @@ mod tests {
         assert!(matches!(
             store.redeem(1, &hash),
             Err(GamestatsError::NoToken)
+        ));
+    }
+
+    #[test]
+    fn a_token_expires() {
+        let store = TokenStore::default();
+        let hash = token_hash(&store.issue(1));
+        assert!(matches!(
+            store.redeem_at(1, &hash, Instant::now() + TOKEN_TTL),
+            Err(GamestatsError::TokenExpired(age)) if age >= TOKEN_TTL
         ));
     }
 
