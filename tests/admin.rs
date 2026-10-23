@@ -24,11 +24,12 @@ const CLIENT_ID: &str = "client.apps.googleusercontent.com";
 const CLIENT_SECRET: &str = "client-secret";
 const CODE: &str = "the-code";
 
-const PAGES: [&str; 6] = [
+const PAGES: [&str; 7] = [
     "/admin",
     "/admin/players",
     "/admin/matchmaking",
     "/admin/leaderboards",
+    "/admin/competitive",
     "/admin/moderation",
     "/admin/database",
 ];
@@ -73,6 +74,7 @@ async fn an_admin_signs_in_sees_every_section_and_signs_out(pool: PgPool) {
         ("matchmaking", "/totals/searching"),
         ("database", "/tables/0/name"),
         ("leaderboards", "/totals/entries"),
+        ("competitive", "/rule_sets/0/rules/tweaks"),
     ] {
         let (status, _, body) = browser.get(&format!("/admin/api/{api}")).await;
         assert_eq!(status, 200, "{api}");

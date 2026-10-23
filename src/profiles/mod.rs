@@ -7,10 +7,21 @@
 //! launcher's code and goes on to Discord ([`discord`]), or, on test servers,
 //! takes a name. Players, their accounts and sessions are in the database
 //! ([`players`]); the launcher sends its session as a bearer token.
+//!
+//! Signed in, a player challenges another to a test match ([`matches`]) by
+//! a rule set the server's admins keep ([`rules`]). The port proves which
+//! WFC profile its game is logged in as, says when the game is ready, and
+//! reports the games it played ([`play`]); two ready games find only each
+//! other in RANKED ([`crate::pairing`]).
 
 mod config;
 mod discord;
+#[cfg(test)]
+mod flow_tests;
+mod matches;
+mod play;
 mod players;
+pub(crate) mod rules;
 mod sign_in;
 
 use std::{sync::Arc, time::Duration};
@@ -28,7 +39,7 @@ use serde_json::json;
 use sqlx::PgPool;
 use tracing::{info, warn};
 
-use crate::html::escape;
+use crate::{gpcm::Gpcm, html::escape, pairing::Pairings};
 
 pub use config::{Config, DiscordClient, DiscordEndpoints, VARIABLES};
 use discord::SignInError;
@@ -54,9 +65,18 @@ struct ProfilesState {
     /// For Discord's token and user endpoints.
     http: reqwest::Client,
     sign_ins: SignIns,
+    /// Who is logged in to WFC with which login ticket.
+    gpcm: Arc<Gpcm>,
+    /// Matches' games kept for RANKED, which the server browser reads.
+    pairings: Arc<Pairings>,
 }
 
-pub(crate) fn router(pool: PgPool, config: Config) -> Router {
+pub(crate) fn router(
+    pool: PgPool,
+    gpcm: Arc<Gpcm>,
+    pairings: Arc<Pairings>,
+    config: Config,
+) -> Router {
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .build()
@@ -67,6 +87,8 @@ pub(crate) fn router(pool: PgPool, config: Config) -> Router {
         pool,
         http,
         sign_ins: SignIns::default(),
+        gpcm,
+        pairings,
     });
     let mut router = Router::new()
         .route("/api/v1/server", get(server))
@@ -75,6 +97,15 @@ pub(crate) fn router(pool: PgPool, config: Config) -> Router {
         .route("/api/v1/sign-in/{id}", get(poll_sign_in))
         .route("/api/v1/sign-out", post(sign_out))
         .route("/api/v1/me", get(me))
+        .route("/api/v1/rules", get(play::rule_sets))
+        .route("/api/v1/wfc", post(play::bind))
+        .route("/api/v1/matches", post(play::challenge))
+        .route("/api/v1/matches/current", get(play::current))
+        .route("/api/v1/matches/{id}/accept", post(play::accept))
+        .route("/api/v1/matches/{id}/decline", post(play::decline))
+        .route("/api/v1/matches/{id}/cancel", post(play::cancel))
+        .route("/api/v1/matches/{id}/ready", post(play::ready))
+        .route("/api/v1/matches/{id}/report", post(play::report))
         .route("/sign-in", get(sign_in_page))
         .route("/sign-in/test", post(page_test_sign_in))
         .route("/sign-in/sign-in.css", get(stylesheet));
@@ -304,10 +335,19 @@ async fn sign_out(State(state): State<Arc<ProfilesState>>, headers: HeaderMap) -
     }
 }
 
+/// The player, with the WFC profiles proven theirs.
 async fn me(State(state): State<Arc<ProfilesState>>, headers: HeaderMap) -> Response {
-    match state.signed_in(&headers).await {
-        Ok(player) => Json(player).into_response(),
-        Err(response) => response,
+    let player = match state.signed_in(&headers).await {
+        Ok(player) => player,
+        Err(response) => return response,
+    };
+    match players::wfc_profiles(&state.pool, player.id).await {
+        Ok(wfc) => {
+            let mut me = serde_json::to_value(&player).expect("a player serializes");
+            me["wfc"] = json!(wfc);
+            Json(me).into_response()
+        }
+        Err(error) => database_error(error),
     }
 }
 

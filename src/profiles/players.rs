@@ -117,6 +117,70 @@ pub async fn player(pool: &PgPool, player_id: i64) -> Result<Option<Player>, sql
     }))
 }
 
+/// The player who signs in with `name`: a Discord username, or on a test
+/// server a test name.
+pub async fn find(pool: &PgPool, name: &str) -> Result<Option<i64>, sqlx::Error> {
+    sqlx::query_scalar!(
+        "SELECT player_id FROM player_identities
+         WHERE lower(username) = lower($1)
+         ORDER BY provider = 'discord' DESC
+         LIMIT 1",
+        name.trim(),
+    )
+    .fetch_optional(pool)
+    .await
+}
+
+/// A WFC profile of a player's (docs/profiles.md, "Friend codes").
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct WfcProfile {
+    pub profile_id: i32,
+    /// The release: `R4QE` or `R4QP`, from the profile's `gsbrcd`.
+    pub game: String,
+    pub friend_code: String,
+    /// The Mii name of its last login.
+    pub mii: Option<String>,
+}
+
+/// Makes `profile_id` `player_id`'s, whoever's it was.
+pub async fn bind_wfc(pool: &PgPool, player_id: i64, profile_id: i32) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "INSERT INTO player_wfc_profiles (profile_id, player_id) VALUES ($1, $2)
+         ON CONFLICT (profile_id) DO UPDATE SET player_id = $2, bound_at = now()",
+        profile_id,
+        player_id,
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// `player_id`'s WFC profiles, the latest bound first.
+pub async fn wfc_profiles(pool: &PgPool, player_id: i64) -> Result<Vec<WfcProfile>, sqlx::Error> {
+    let rows = sqlx::query!(
+        "SELECT profiles.profile_id, profiles.gsbrcd, profiles.ingamesn
+         FROM player_wfc_profiles
+         JOIN profiles USING (profile_id)
+         WHERE player_wfc_profiles.player_id = $1
+         ORDER BY player_wfc_profiles.bound_at DESC",
+        player_id,
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let game: String = row.gsbrcd.chars().take(4).collect();
+            WfcProfile {
+                friend_code: crate::accounts::friend_code(row.profile_id, &game),
+                profile_id: row.profile_id,
+                game,
+                mii: row.ingamesn,
+            }
+        })
+        .collect())
+}
+
 /// Opens a launcher session for `player_id`. Returns its token, which only
 /// the launcher keeps.
 pub async fn open_session(pool: &PgPool, player_id: i64) -> Result<String, sqlx::Error> {
@@ -214,6 +278,43 @@ mod tests {
         assert_eq!(player.name, "Nelly 2");
         assert_eq!(player.discord.as_deref(), Some("nelly2"));
         assert!(!player.test);
+    }
+
+    #[sqlx::test]
+    async fn players_are_found_by_their_username(pool: PgPool) {
+        let nelly = sign_in(&pool, &discord("1", "nelly", "Nelly"))
+            .await
+            .unwrap();
+        assert_eq!(find(&pool, " Nelly ").await.unwrap(), Some(nelly));
+        assert_eq!(find(&pool, "nobody").await.unwrap(), None);
+    }
+
+    #[sqlx::test]
+    async fn a_wfc_profile_is_its_last_players(pool: PgPool) {
+        crate::accounts::log_in(&pool, 42).await.unwrap();
+        let profile =
+            crate::accounts::profile_login(&pool, 42, "R4QEabcdefg", Some("Nelly"), "10.0.0.1")
+                .await
+                .unwrap();
+        let nelly = sign_in(&pool, &discord("1", "nelly", "Nelly"))
+            .await
+            .unwrap();
+        let sam = sign_in(&pool, &discord("2", "sam", "Sam")).await.unwrap();
+
+        bind_wfc(&pool, nelly, profile.profile_id).await.unwrap();
+        let bound = wfc_profiles(&pool, nelly).await.unwrap();
+        assert_eq!(
+            bound,
+            [WfcProfile {
+                profile_id: profile.profile_id,
+                game: "R4QE".into(),
+                friend_code: "0868-9934-5920".into(),
+                mii: Some("Nelly".into()),
+            }]
+        );
+        bind_wfc(&pool, sam, profile.profile_id).await.unwrap();
+        assert!(wfc_profiles(&pool, nelly).await.unwrap().is_empty());
+        assert_eq!(wfc_profiles(&pool, sam).await.unwrap().len(), 1);
     }
 
     #[sqlx::test]

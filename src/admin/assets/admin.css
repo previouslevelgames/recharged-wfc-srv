@@ -1024,3 +1024,88 @@ td.query code {
     font-size: 24px;
   }
 }
+
+/* Rule set editor (Competitive) */
+
+td.wrap {
+  white-space: normal;
+}
+
+td.actions {
+  width: 1%;
+  padding-right: 20px;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.editor {
+  display: grid;
+  gap: 16px;
+  padding: 16px 20px 20px;
+}
+
+.editor-field {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  color: var(--ink-2);
+  font-size: 13px;
+}
+
+.editor-field legend {
+  margin-bottom: 6px;
+  padding: 0;
+}
+
+.editor-row {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.editor-check {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.editor input:not([type=checkbox]),
+.editor select {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-sunken);
+  color: var(--ink);
+  font: inherit;
+  font-size: 14px;
+}
+
+.editor-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.editor-status[data-tone=good] {
+  color: var(--good-ink);
+}
+
+.editor-status[data-tone=critical] {
+  color: var(--critical);
+}
+
+.button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.button.danger {
+  color: var(--critical);
+}

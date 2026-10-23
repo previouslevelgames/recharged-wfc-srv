@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT games FROM match_reports WHERE match_id = $1 AND player_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "games",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "match_reports",
+            "name": "games"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f669be87306336fc15577a945bb78adc5ed7a8055d792075c21dd49565c04242"
+}

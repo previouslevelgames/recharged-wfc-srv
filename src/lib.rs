@@ -14,6 +14,7 @@ mod html;
 mod master;
 mod nas;
 mod natneg;
+mod pairing;
 pub mod profiles;
 mod serverbrowser;
 
@@ -35,6 +36,9 @@ pub struct App {
     master: Arc<master::Master>,
     /// What happened in matchmaking lately, which `/admin` shows.
     activity: Arc<activity::Activity>,
+    /// Matches' games kept for RANKED: the profile service sets them, the
+    /// server browser lists by them.
+    pairings: Arc<pairing::Pairings>,
 }
 
 impl App {
@@ -49,6 +53,7 @@ impl App {
             )),
             master: Arc::default(),
             activity,
+            pairings: Arc::default(),
             pool,
             tickets,
         }
@@ -77,7 +82,12 @@ impl App {
             ));
         }
         if let Some(config) = profiles {
-            router = router.merge(profiles::router(self.pool.clone(), config));
+            router = router.merge(profiles::router(
+                self.pool.clone(),
+                self.gpcm.clone(),
+                self.pairings.clone(),
+                config,
+            ));
         }
         // One span per request; its events are at `debug` (`RUST_LOG=tower_http=debug`).
         router.layer(TraceLayer::new_for_http())
@@ -91,7 +101,13 @@ impl App {
     /// The server browser, which lists the master server's sessions, on
     /// `listener` (TCP 28910).
     pub async fn serve_server_browser(&self, listener: TcpListener) -> std::io::Result<()> {
-        serverbrowser::serve(self.master.clone(), self.activity.clone(), listener).await
+        serverbrowser::serve(
+            self.master.clone(),
+            self.activity.clone(),
+            self.pairings.clone(),
+            listener,
+        )
+        .await
     }
 
     /// NAT negotiation on `socket` (UDP 27901).

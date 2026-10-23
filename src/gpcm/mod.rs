@@ -90,6 +90,10 @@ struct Session {
     status: Option<String>,
     /// That `\status\`'s DWC status, for `/admin`.
     dwc_status: Option<u8>,
+    /// The login ticket (`lt`) the login got. The game's own use of it is
+    /// SAKE, which this game does not have; the port shows it to the profile
+    /// service to prove which login is its own (docs/profiles.md).
+    login_ticket: String,
 }
 
 /// What `/admin` shows of a profile's login.
@@ -109,6 +113,7 @@ impl Session {
         address: IpAddr,
         kick: Arc<Notify>,
         outbox: mpsc::UnboundedSender<Message>,
+        login_ticket: String,
     ) -> Self {
         Self {
             connection,
@@ -120,6 +125,7 @@ impl Session {
             mutual: HashSet::new(),
             status: None,
             dwc_status: None,
+            login_ticket,
         }
     }
 
@@ -164,6 +170,15 @@ impl Gpcm {
     pub fn logged_in_from(&self, profile_id: i32) -> Option<IpAddr> {
         let sessions = self.sessions.lock().unwrap();
         sessions.get(&profile_id).map(|session| session.address)
+    }
+
+    /// Whether `profile_id` is logged in with the login ticket
+    /// `login_ticket`.
+    pub fn logged_in_with(&self, profile_id: i32, login_ticket: &str) -> bool {
+        let sessions = self.sessions.lock().unwrap();
+        sessions
+            .get(&profile_id)
+            .is_some_and(|session| session.login_ticket == login_ticket)
     }
 
     pub async fn serve(self: Arc<Self>, listener: TcpListener) -> std::io::Result<()> {
@@ -378,14 +393,14 @@ impl Gpcm {
             Error::DATABASE
         })?;
         let sesskey = rand::random_range(10_000_000..300_000_000);
+        let login_ticket = Alphanumeric.sample_string(&mut rand::rng(), 24);
         let reply = Message::new("lc", 2)
             .with("sesskey", sesskey)
             .with("proof", proof(&connection.challenge, client_challenge))
             .with("userid", profile.user_id)
             .with("profileid", profile.profile_id)
             .with("uniquenick", &profile.unique_nick)
-            // The login ticket of SAKE, which this game does not use.
-            .with("lt", Alphanumeric.sample_string(&mut rand::rng(), 24))
+            .with("lt", &login_ticket)
             .with("id", message.get("id").unwrap_or("1"));
 
         // Take over the profile before answering: once the client has the
@@ -399,6 +414,7 @@ impl Gpcm {
                 connection.peer,
                 kick.clone(),
                 connection.outbox.clone(),
+                login_ticket,
             ),
         );
         if let Some(previous) = previous.filter(|previous| previous.connection != connection.id) {
@@ -741,13 +757,14 @@ fn uppercase(len: usize) -> String {
 #[cfg(test)]
 impl Gpcm {
     /// A login of `profile_id` from `address` with no connection behind it,
-    /// for other modules' tests.
+    /// for other modules' tests. Its login ticket is `ticket-<profile_id>`.
     pub(crate) fn fake_login(&self, profile_id: i32, address: IpAddr) {
         let session = Session::new(
             0,
             address,
             Arc::new(Notify::new()),
             mpsc::unbounded_channel().0,
+            format!("ticket-{profile_id}"),
         );
         self.sessions.lock().unwrap().insert(profile_id, session);
     }
@@ -767,6 +784,7 @@ mod tests {
             IpAddr::from([10, 0, 0, 1]),
             Arc::new(Notify::new()),
             mpsc::unbounded_channel().0,
+            String::new(),
         );
         session.add_friend(1_000_000_001);
         session.mutual.insert(1_000_000_001);
@@ -792,6 +810,7 @@ mod tests {
             IpAddr::from([10, 0, 0, 1]),
             Arc::new(Notify::new()),
             mpsc::unbounded_channel().0,
+            String::new(),
         );
         assert!(session.add_friend(1_000_000_001));
         assert!(!session.add_friend(1_000_000_001));
