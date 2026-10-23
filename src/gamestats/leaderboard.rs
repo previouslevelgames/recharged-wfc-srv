@@ -13,6 +13,7 @@
 use std::collections::HashSet;
 
 use sqlx::PgPool;
+use tracing::info;
 
 use super::{GamestatsError, GamestatsState, season, submission::Submission};
 
@@ -76,6 +77,8 @@ pub async fn put(state: &GamestatsState, pid: i32, body: &[u8]) -> Result<Vec<u8
         .leaderboard
         .store(category, pid, region, score, userdata)
         .await?;
+    let Submission { wins, losses, .. } = Submission::parse(userdata);
+    info!(target: "gamestats", pid, category, score, wins, losses, "stored");
     Ok(PUT_REPLY.to_vec())
 }
 

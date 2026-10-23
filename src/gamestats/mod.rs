@@ -129,12 +129,19 @@ async fn handle(
         return StatusCode::NOT_FOUND.into_response();
     };
 
+    let pid = params
+        .as_ref()
+        .ok()
+        .and_then(|Query(params)| params.pid.clone());
     match process(&state, op, peer.ip(), params).await {
         Ok(body) => {
             trace!(target: "raw::gamestats", ?op, reply = %hex(&body), "reply");
             body.into_response()
         }
-        Err(error) => error.into_response(),
+        Err(error) => {
+            warn!(target: "gamestats", ?op, pid, peer = %peer.ip(), %error, "request refused");
+            error.into_response()
+        }
     }
 }
 
@@ -226,7 +233,6 @@ impl From<sqlx::Error> for GamestatsError {
 
 impl IntoResponse for GamestatsError {
     fn into_response(self) -> Response {
-        warn!(target: "gamestats", error = %self, "request refused");
         format!("error:{self}").into_response()
     }
 }
