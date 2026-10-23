@@ -81,6 +81,11 @@ Every operation is two requests (`DWCi_EncSessionProcess`):
   has to know which token it gave to this `pid`: either store it (random token,
   expiry, used once) or derive it again (HMAC of a server secret, the pid and a
   time window). Storing it also stops a request from being replayed.
+- **Nothing bounds the time between the two requests.** The client sends
+  request 2 from the first `DWCi_EncSessionProcess` call after the token
+  arrives, from `NetworkRanking::Update`, and has no timeout of its own. A
+  refused request 2 fails the ranking session for the rest of the login
+  (`mRequestFailed`), so the server keeps a token for 10 minutes.
 - The gamestats key is in every client binary. Anyone can compute `H` for a
   token, so the token proves that a request is fresh, not who sent it.
 

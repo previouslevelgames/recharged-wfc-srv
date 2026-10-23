@@ -25,6 +25,7 @@ use std::{
     fmt,
     net::{IpAddr, SocketAddr},
     sync::Arc,
+    time::Duration,
 };
 
 use axum::{
@@ -35,7 +36,7 @@ use axum::{
     routing::get,
 };
 use serde::Deserialize;
-use tracing::{trace, warn};
+use tracing::{info, trace, warn};
 
 use crate::{GAME_NAME, gpcm::Gpcm};
 use leaderboard::Leaderboard;
@@ -44,6 +45,10 @@ use token::TokenStore;
 /// Signs tokens and responses: the first 20 characters of the init data the
 /// game passes to `DWC_RnkInitialize`.
 const GAMESTATS_KEY: &str = "DbfBialvJznkQWYuOrRa";
+
+/// Request 2 normally follows request 1 within a second; one this much later
+/// is logged.
+const SLOW_REQUEST: Duration = Duration::from_secs(10);
 
 /// State shared by every gamestats2 request. Cloned per request, so it holds
 /// `Arc`s (the database pool has its own inside).
@@ -129,12 +134,19 @@ async fn handle(
         return StatusCode::NOT_FOUND.into_response();
     };
 
+    let pid = params
+        .as_ref()
+        .ok()
+        .and_then(|Query(params)| params.pid.clone());
     match process(&state, op, peer.ip(), params).await {
         Ok(body) => {
             trace!(target: "raw::gamestats", ?op, reply = %hex(&body), "reply");
             body.into_response()
         }
-        Err(error) => error.into_response(),
+        Err(error) => {
+            warn!(target: "gamestats", ?op, pid, peer = %peer.ip(), %error, "request refused");
+            error.into_response()
+        }
     }
 }
 
@@ -160,7 +172,10 @@ async fn process(
     };
 
     // Request 2: the hash proves the client got our token for this pid.
-    state.tokens.redeem(pid, &hash)?;
+    let age = state.tokens.redeem(pid, &hash)?;
+    if age >= SLOW_REQUEST {
+        info!(target: "gamestats", ?op, pid, ?age, "request 2 came late");
+    }
 
     let (data_pid, body) = codec::decode_data(&data)?;
     if data_pid != pid {
@@ -187,8 +202,10 @@ async fn process(
 pub enum GamestatsError {
     /// The query string is malformed, or misses or garbles a field.
     BadQuery(String),
-    /// No token was issued to this pid, or it expired.
+    /// No token was issued to this pid, or it was used.
     NoToken,
+    /// The token issued to this pid is this old, too old to use.
+    TokenExpired(Duration),
     /// The hash does not match the token issued to this pid.
     BadHash,
     /// The pid inside `data` differs from the one in the query.
@@ -205,7 +222,8 @@ impl fmt::Display for GamestatsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::BadQuery(reason) => write!(f, "bad query: {reason}"),
-            Self::NoToken => f.write_str("no token issued to this pid, or it expired"),
+            Self::NoToken => f.write_str("no token issued to this pid"),
+            Self::TokenExpired(age) => write!(f, "token expired after {}s", age.as_secs()),
             Self::BadHash => f.write_str("bad hash"),
             Self::PidMismatch => f.write_str("pid in data differs from the query"),
             Self::NotLoggedIn => f.write_str("pid not logged in from this address"),
@@ -226,7 +244,6 @@ impl From<sqlx::Error> for GamestatsError {
 
 impl IntoResponse for GamestatsError {
     fn into_response(self) -> Response {
-        warn!(target: "gamestats", error = %self, "request refused");
         format!("error:{self}").into_response()
     }
 }
