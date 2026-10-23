@@ -8,7 +8,7 @@ const PUT2: &str = "/mschargedwii/web/client/put2.asp";
 
 async fn get(uri: &str) -> (u16, Vec<u8>) {
     let response = recharged_wfc_srv::App::new(lazy_pool())
-        .router(None)
+        .router(None, None)
         .layer(MockConnectInfo(SocketAddr::from(([203, 0, 113, 4], 50000))))
         .oneshot(Request::get(uri).body(Body::empty()).unwrap())
         .await

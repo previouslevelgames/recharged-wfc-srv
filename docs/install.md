@@ -56,10 +56,13 @@ enter the **Key** and **Value** from the table, and set **Password Mask: Yes** f
 | `MASTER_PORT` | no | UDP port of the master server inside the container. Default: `27900`. |
 | `SERVER_BROWSER_PORT` | no | TCP port of the server browser inside the container. Default: `28910`. |
 | `NATNEG_PORT` | no | UDP port of NAT negotiation inside the container. Default: `27901`. |
-| `PUBLIC_URL` | for `/admin` | The HTTPS address browsers use for this server, without a path, e.g. `https://wfc.example.com`. See [Admin dashboard](#admin-dashboard). |
+| `PUBLIC_URL` | for `/admin` and profiles | The HTTPS address browsers use for this server, without a path, e.g. `https://wfc.example.com`. See [Admin dashboard](#admin-dashboard). |
 | `GOOGLE_CLIENT_ID` | for `/admin` | Client ID of the Google OAuth client. |
 | `GOOGLE_CLIENT_SECRET` | for `/admin` | Client secret of the Google OAuth client. Set **Password Mask: Yes**. |
 | `ADMIN_GOOGLE_EMAILS` | for `/admin` | Google addresses allowed in, comma-separated, e.g. `you@gmail.com, teammate@gmail.com`. |
+| `DISCORD_CLIENT_ID` | for profiles | Client ID of the Discord app players sign in with. See [profiles.md](profiles.md). |
+| `DISCORD_CLIENT_SECRET` | for profiles | Its client secret. Set **Password Mask: Yes**. |
+| `PROFILES_TEST_SIGN_IN` | no | `true` lets anyone sign in to a profile with a name alone, for tests with two games on one PC. Never on a public server. |
 
 With the mapping above, the **SQL data lives on your Unraid server at**
 `/mnt/user/appdata/recharged-wfc-srv/postgres/18/docker`.

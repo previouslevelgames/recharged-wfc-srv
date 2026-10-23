@@ -103,3 +103,4 @@ updates.
 - [docs/development.md](docs/development.md): building and testing it, and how releases work
 - [docs/login.md](docs/login.md) and [docs/gamestats2.md](docs/gamestats2.md):
   what the game sends and what the server answers, for going online and for the leaderboards
+- [docs/profiles.md](docs/profiles.md): Recharged profiles, which the launcher signs in to for competitive play

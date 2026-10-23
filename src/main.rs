@@ -25,6 +25,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     init_tracing();
 
     let admin = recharged_wfc_srv::admin::Config::from_env()?;
+    let profiles = recharged_wfc_srv::profiles::Config::from_env()?;
 
     // DATABASE_URL in local development; the container provides PG* instead.
     let database = match env::var("DATABASE_URL") {
@@ -62,8 +63,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
         ),
     }
 
+    match &profiles {
+        Some(config) => info!(
+            "Profiles at {}/api/v1 (sign-in: {})",
+            config.public_url,
+            match (config.discord.is_some(), config.test_sign_in) {
+                (true, true) => "Discord and test names",
+                (true, false) => "Discord",
+                _ => "test names only",
+            }
+        ),
+        None => info!(
+            "Profiles disabled: set {} to enable them",
+            recharged_wfc_srv::profiles::VARIABLES.join(", ")
+        ),
+    }
+
     let app = App::new(pool);
-    let router = app.router(admin);
+    let router = app.router(admin, profiles);
     // HTTP stops gracefully on a signal; the others stop with it.
     tokio::select! {
         result = axum::serve(http, router.into_make_service_with_connect_info::<SocketAddr>())

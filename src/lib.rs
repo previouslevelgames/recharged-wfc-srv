@@ -10,9 +10,11 @@ mod activity;
 pub mod admin;
 mod gamestats;
 mod gpcm;
+mod html;
 mod master;
 mod nas;
 mod natneg;
+pub mod profiles;
 mod serverbrowser;
 
 pub const REVISION: &str = env!("BUILD_REVISION");
@@ -52,10 +54,15 @@ impl App {
         }
     }
 
-    /// The HTTP routes: status, NAS, gamestats2, and `/admin` with its
-    /// configuration. gamestats2 needs the caller's address: serve them with
+    /// The HTTP routes: status, NAS, gamestats2, and `/admin` and the
+    /// profile service with their configurations. gamestats2 needs the
+    /// caller's address: serve them with
     /// `into_make_service_with_connect_info::<SocketAddr>()`.
-    pub fn router(&self, admin: Option<admin::Config>) -> Router {
+    pub fn router(
+        &self,
+        admin: Option<admin::Config>,
+        profiles: Option<profiles::Config>,
+    ) -> Router {
         let mut router = Router::new()
             .route("/status", get(status))
             .merge(nas::router(self.pool.clone(), self.tickets.clone()))
@@ -68,6 +75,9 @@ impl App {
                 self.activity.clone(),
                 config,
             ));
+        }
+        if let Some(config) = profiles {
+            router = router.merge(profiles::router(self.pool.clone(), config));
         }
         // One span per request; its events are at `debug` (`RUST_LOG=tower_http=debug`).
         router.layer(TraceLayer::new_for_http())
