@@ -21,6 +21,10 @@ mod serverbrowser;
 pub const REVISION: &str = env!("BUILD_REVISION");
 /// The release, from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The daily log files in `LOG_DIR` are `recharged-wfc-srv.2026-10-24.log`;
+/// `/admin` reads them.
+pub const LOG_FILE_PREFIX: &str = "recharged-wfc-srv";
+pub const LOG_FILE_SUFFIX: &str = "log";
 
 /// The one game this server serves, as GameSpy names it.
 const GAME_NAME: &str = "mschargedwii";

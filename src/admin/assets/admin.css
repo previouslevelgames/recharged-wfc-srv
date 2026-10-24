@@ -1109,3 +1109,66 @@ td.actions {
 .button.danger {
   color: var(--critical);
 }
+
+/* Logs */
+
+a.button {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+
+.log-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 20px;
+}
+
+.log-tools select,
+.log-tools input {
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-sunken);
+  color: var(--ink);
+  font: inherit;
+}
+
+.log-tools input {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+td.log-text {
+  min-width: 320px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* On a phone, each message goes under its time, level and source. */
+@media (max-width: 640px) {
+  .log-lines thead {
+    display: none;
+  }
+  .log-lines tr {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 10px;
+    padding: 10px 16px;
+    border-top: 1px solid var(--hairline);
+  }
+  .log-lines td {
+    padding: 0;
+    border: 0;
+  }
+  .log-lines td.log-text {
+    flex-basis: 100%;
+    min-width: 0;
+  }
+}

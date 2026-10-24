@@ -90,9 +90,11 @@ container health check checks both.
 The server writes one log file per day (UTC) to **Path (logs)**, e.g.
 `/mnt/user/appdata/recharged-wfc-srv/logs/recharged-wfc-srv.2026-10-23.log`,
 and deletes the oldest once there are more than `LOG_RETENTION_DAYS`. The files
-survive container updates. The container log (**Docker → container icon →
-Logs**) shows the same lines plus PostgreSQL's, but Docker deletes it whenever
-Unraid recreates the container, e.g. on an update.
+survive container updates. Admins can also read them, and download a whole day,
+on the dashboard's **Logs** page (`/admin/logs`), without access to the server.
+The container log (**Docker → container icon → Logs**) shows the same lines plus
+PostgreSQL's, but Docker deletes it whenever Unraid recreates the container,
+e.g. on an update.
 
 ## Connecting the game
 
@@ -114,9 +116,9 @@ the userid in `data/shared2/DWC_AUTHDATA`.
 ## Admin dashboard
 
 `/admin` shows the server to admins who sign in with Google: an **Overview**,
-then **Players**, **Matchmaking**, **Leaderboards** and **Database**, each at its
-own address (e.g. `/admin/database`), refreshed every 5 seconds. Only the
-Google accounts in `ADMIN_GOOGLE_EMAILS` get in. Without the four `/admin`
+then **Players**, **Matchmaking**, **Leaderboards**, **Database** and **Logs**,
+each at its own address (e.g. `/admin/database`), refreshed every 5 seconds.
+Only the Google accounts in `ADMIN_GOOGLE_EMAILS` get in. Without the four `/admin`
 variables, the server runs as before and `/admin` answers 404. With only some of
 them, the container stops at start and its log names the missing ones.
 

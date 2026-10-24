@@ -24,7 +24,7 @@ const CLIENT_ID: &str = "client.apps.googleusercontent.com";
 const CLIENT_SECRET: &str = "client-secret";
 const CODE: &str = "the-code";
 
-const PAGES: [&str; 7] = [
+const PAGES: [&str; 8] = [
     "/admin",
     "/admin/players",
     "/admin/matchmaking",
@@ -32,6 +32,7 @@ const PAGES: [&str; 7] = [
     "/admin/competitive",
     "/admin/moderation",
     "/admin/database",
+    "/admin/logs",
 ];
 
 #[sqlx::test]
@@ -75,6 +76,7 @@ async fn an_admin_signs_in_sees_every_section_and_signs_out(pool: PgPool) {
         ("database", "/tables/0/name"),
         ("leaderboards", "/totals/entries"),
         ("competitive", "/rule_sets/0/rules/tweaks"),
+        ("logs", "/files"),
     ] {
         let (status, _, body) = browser.get(&format!("/admin/api/{api}")).await;
         assert_eq!(status, 200, "{api}");
@@ -92,6 +94,55 @@ async fn an_admin_signs_in_sees_every_section_and_signs_out(pool: PgPool) {
     assert_eq!(status, 303);
     assert!(!browser.cookies.contains_key("wfc_admin"));
     assert_eq!(browser.get("/admin/api/overview").await.0, 401);
+}
+
+#[tokio::test]
+async fn an_admin_reads_and_downloads_the_log_files() {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("admin-logs");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let day = "2026-10-24T09:00:00.000000Z  INFO gpcm: logged in profile_id=7\n\
+               2026-10-24T09:01:00.000000Z  WARN admin: sign-in refused\n";
+    std::fs::write(dir.join("recharged-wfc-srv.2026-10-24.log"), day).unwrap();
+    std::fs::write(dir.join("secret.txt"), "not a log").unwrap();
+
+    let (mut config, google) = fake_google().await;
+    config.log_dir = Some(dir.clone());
+    let mut browser =
+        Browser::new(recharged_wfc_srv::App::new(lazy_pool()).router(Some(config), None));
+    assert_eq!(browser.get("/admin/api/logs").await.0, 401);
+    assert_eq!(browser.get("/admin/api/logs/2026-10-24").await.0, 401);
+
+    let params = start_sign_in(&mut browser, "/admin/login").await;
+    google.approve(&params, "admin@example.com");
+    browser.callback(CODE, &params["state"]).await;
+
+    let (status, _, body) = browser.get("/admin/api/logs?level=warn").await;
+    assert_eq!(status, 200);
+    let data: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let logs = &data["content"];
+    assert_eq!(logs["day"], "2026-10-24", "{body}");
+    assert_eq!(logs["files"].as_array().unwrap().len(), 1, "{body}");
+    assert_eq!(logs["matched"], 1, "{body}");
+    assert_eq!(logs["lines"][0]["level"], "WARN", "{body}");
+    assert_eq!(logs["lines"][0]["target"], "admin", "{body}");
+
+    let (status, headers, body) = browser.get("/admin/api/logs/2026-10-24").await;
+    assert_eq!(status, 200);
+    assert_eq!(body, day);
+    assert_eq!(
+        headers[header::CONTENT_DISPOSITION],
+        r#"attachment; filename="recharged-wfc-srv.2026-10-24.log""#
+    );
+    for uri in [
+        "/admin/api/logs/2026-10-23",
+        "/admin/api/logs/..%2Fsecret.txt",
+        "/admin/api/logs/secret.txt",
+    ] {
+        assert_eq!(browser.get(uri).await.0, 404, "{uri}");
+    }
+
+    std::fs::remove_dir_all(dir).unwrap();
 }
 
 #[tokio::test]
