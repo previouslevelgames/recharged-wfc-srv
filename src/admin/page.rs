@@ -1,7 +1,7 @@
 //! What every dashboard page's API answers: the page's content, with who is
 //! looking and the server they look at.
 
-use std::{future::Future, time::Duration};
+use std::{fmt::Display, future::Future, time::Duration};
 
 use serde::Serialize;
 use sqlx::{PgPool, Postgres, Transaction};
@@ -10,7 +10,7 @@ use tracing::warn;
 
 use super::google::Account;
 
-/// A database that answers slower than this counts as down.
+/// A database, or a disk, that answers slower than this counts as down.
 const TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Serialize)]
@@ -20,8 +20,8 @@ pub struct PageData<T> {
     #[serde(with = "time::serde::rfc3339")]
     now: OffsetDateTime,
     server: Server,
-    /// What the page shows. `None` when the database failed to answer;
-    /// `error` says why.
+    /// What the page shows. `None` when the database (or for the Logs page,
+    /// the log folder) failed to answer; `error` says why.
     content: Option<T>,
     error: Option<String>,
 }
@@ -44,18 +44,17 @@ struct Pool {
 }
 
 impl<T> PageData<T> {
-    /// Reads the page's content with `read`, or why the database could not
-    /// tell.
-    pub async fn read(
+    /// Reads the page's content with `read`, or why it could not.
+    pub async fn read<E: Display>(
         pool: &PgPool,
         viewer: Account,
         started_at: OffsetDateTime,
-        read: impl Future<Output = Result<T, sqlx::Error>>,
+        read: impl Future<Output = Result<T, E>>,
     ) -> Self {
         let (content, error) = match tokio::time::timeout(TIMEOUT, read).await {
             Ok(Ok(content)) => (Some(content), None),
             Ok(Err(error)) => {
-                warn!(target: "admin", %error, "database read failed");
+                warn!(target: "admin", %error, "page read failed");
                 (None, Some(error.to_string()))
             }
             Err(_) => (

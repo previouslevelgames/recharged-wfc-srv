@@ -65,6 +65,14 @@ const MATCH_COMMANDS = {
   0x41: ['Host keepalive', null],
 };
 const SEVERITY = ['good', 'warning', 'serious', 'critical'];
+// tracing's levels, as the log files write them, with their badge tone.
+const LEVELS = {
+  ERROR: ['Error', 'critical'],
+  WARN: ['Warning', 'warning'],
+  INFO: ['Info', null],
+  DEBUG: ['Debug', null],
+  TRACE: ['Trace', null],
+};
 // What a rule set can hold (src/profiles/rules.rs), with the names players
 // know.
 const TWEAK_NAMES = {
@@ -117,6 +125,7 @@ const ICONS = {
   competitive: 'M4 22v-7M4 15V3h13l-3 6 3 6H4',
   moderation: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z',
   database: 'M12 8c4.97 0 9-1.34 9-3s-4.03-3-9-3-9 1.34-9 3 4.03 3 9 3zM21 12c0 1.66-4 3-9 3s-9-1.34-9-3M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5',
+  logs: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M16 13H8M16 17H8M10 9H8',
   good: 'M20 6 9 17l-5-5',
   warning: 'M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z',
   serious: 'M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z',
@@ -197,6 +206,15 @@ const SECTIONS = [
     api: 'database',
     render: renderDatabase,
   },
+  {
+    path: '/admin/logs',
+    group: 'System',
+    name: 'Logs',
+    icon: 'logs',
+    intro: "The server's log files, one per day: read them here, or download a whole day.",
+    api: 'logs',
+    render: renderLogs,
+  },
 ];
 
 const integer = new Intl.NumberFormat();
@@ -217,6 +235,7 @@ let previous = null; // The last transaction counters.
 let samples = []; // { at, rate } for the sparkline.
 let hover = null; // The pointer's position across the sparkline, 0 to 1.
 let category = 0; // The board whose leaders are shown.
+let polls = 0; // Polls started, so a slow answer never replaces a newer one.
 
 // --- DOM helpers ---------------------------------------------------------
 
@@ -394,6 +413,15 @@ function renderOverview(data, now) {
   const cards = ordered.map((target) => {
     if (target.planned) {
       return serviceCard(target, { tone: null, status: 'Planned', text: target.intro, foot: `Needs ${target.planned.needs}` });
+    }
+    // Files on the server's disk, there without the database too.
+    if (target.path === '/admin/logs') {
+      return serviceCard(target, {
+        tone: null,
+        status: 'Daily files',
+        text: content ? target.intro : 'The database does not answer: the logs say why.',
+        foot: 'One file per day (UTC), in LOG_DIR',
+      });
     }
     if (!content) return serviceCard(target, { tone: 'critical', status: 'Down', text: 'The database does not answer.' });
     if (target.path === '/admin/database') {
@@ -884,6 +912,162 @@ function renderDatabase(data, now) {
   ];
 }
 
+// --- Logs ----------------------------------------------------------------
+
+/** The Logs page's controls. They stay out of the polled page, so typing
+ * survives each refresh. */
+const logs = {
+  node: null,
+  day: null, // The file shown, or null for the newest.
+  level: '', // The least severe level shown, or '' for all.
+  text: '',
+  paused: false,
+  typing: null, // The search's pending refresh.
+
+  query() {
+    const params = new URLSearchParams();
+    if (this.day) params.set('day', this.day);
+    if (this.level) params.set('level', this.level);
+    if (this.text) params.set('q', this.text);
+    const query = params.toString();
+    return query && `?${query}`;
+  },
+
+  load(content) {
+    if (!this.node) this.build();
+    const days = content.files.map((file) => file.day);
+    // The file asked for is gone: follow the newest again.
+    if (this.day && !days.includes(this.day)) this.day = null;
+    const select = this.node.querySelector('select');
+    if (select.dataset.days !== days.join()) {
+      select.dataset.days = days.join();
+      select.replaceChildren(
+        ...days.map((day, index) => h('option', { value: day }, `${calendarDay.format(new Date(day))}${index ? '' : ' · newest'}`)),
+      );
+    }
+    select.value = content.day;
+  },
+
+  build() {
+    const select = h('select', {
+      'aria-label': 'Day',
+      onchange: () => {
+        this.day = select.selectedIndex > 0 ? select.value : null;
+        poll();
+      },
+    });
+    const levels = h(
+      'div',
+      { class: 'segmented', role: 'group', 'aria-label': 'Levels' },
+      [['', 'All'], ['warn', 'Warnings and errors'], ['error', 'Errors']].map(([level, name]) =>
+        h(
+          'button',
+          {
+            type: 'button',
+            'aria-pressed': String(level === this.level),
+            onclick: (event) => {
+              this.level = level;
+              for (const button of levels.children) button.setAttribute('aria-pressed', String(button === event.currentTarget));
+              poll();
+            },
+          },
+          name,
+        ),
+      ),
+    );
+    const search = h('input', {
+      type: 'search',
+      placeholder: 'Search',
+      'aria-label': 'Search the lines',
+      oninput: () => {
+        clearTimeout(this.typing);
+        this.typing = setTimeout(() => {
+          this.text = search.value.trim();
+          poll();
+        }, 300);
+      },
+    });
+    const pause = h(
+      'button',
+      {
+        class: 'button',
+        type: 'button',
+        'aria-pressed': 'false',
+        onclick: () => {
+          this.paused = !this.paused;
+          pause.setAttribute('aria-pressed', String(this.paused));
+          pause.textContent = this.paused ? 'Resume' : 'Pause';
+          if (!this.paused) poll();
+          else {
+            clearTimeout(timer);
+            setLive('paused', 'Paused');
+          }
+        },
+      },
+      'Pause',
+    );
+    this.node = h('section', { class: 'card log-tools', 'aria-label': 'Filters' }, select, levels, search, pause);
+    document.getElementById('body').before(this.node);
+  },
+};
+
+function renderLogs(data, now) {
+  const content = data.content;
+  if (!content) return [banner({ level: 'critical', title: 'Logs unreadable', detail: data.error || 'No answer.' })];
+  if (!content.dir) {
+    return [banner({ level: 'warning', title: 'No log files', detail: 'The server logs to stderr only. Set LOG_DIR to keep a file per day and read it here.' })];
+  }
+  if (!content.files.length) {
+    return [banner({ level: 'pending', title: 'No log files yet', detail: `The server writes them to ${content.dir}.` })];
+  }
+  logs.load(content);
+  const filtered = logs.level || logs.text;
+  const note = [
+    `${integer.format(content.matched)} ${filtered ? 'matching ' : ''}${content.matched === 1 ? 'line' : 'lines'}, newest first`,
+    content.lines.length < content.matched && `the last ${integer.format(content.lines.length)} shown`,
+    content.partial && `only the file's last ${bytes(content.scanned_bytes)} searched: download it for the rest`,
+  ].filter(Boolean).join(' · ');
+
+  const lines = table(
+    [
+      {
+        label: 'Time',
+        cell: (line) => h('time', { datetime: line.time, title: dateTime.format(new Date(line.time)) }, clock.format(new Date(line.time))),
+      },
+      {
+        label: 'Level',
+        cell: (line) => {
+          const [name, tone] = LEVELS[line.level] || [line.level, null];
+          return badge(tone, name);
+        },
+      },
+      { label: 'Source', cell: (line) => (line.target ? h('code', null, line.target) : '—') },
+      { label: 'Message', class: 'log-text', cell: (line) => line.text },
+    ],
+    content.lines,
+    filtered ? 'No lines match.' : 'Nothing logged on this day yet.',
+  );
+  lines.classList.add('log-lines');
+
+  return [
+    card(calendarDay.format(new Date(content.day)), note, lines),
+    card(
+      'Files',
+      `One per day (UTC) in ${content.dir}; the oldest go after LOG_RETENTION_DAYS`,
+      table(
+        [
+          { label: 'Day', cell: (file) => [calendarDay.format(new Date(file.day)), file.day === content.day && h('span', { class: 'sub' }, 'Shown above')] },
+          { label: 'Size', num: true, cell: (file) => bytes(file.bytes) },
+          { label: 'Last written', cell: (file) => ago(file.modified, now) },
+          { label: '', class: 'actions', cell: (file) => h('a', { class: 'button', href: `/admin/api/logs/${file.day}`, download: '' }, 'Download') },
+        ],
+        content.files,
+        'No files.',
+      ),
+    ),
+  ];
+}
+
 // --- Competitive ---------------------------------------------------------
 
 function gameLength(seconds) {
@@ -1165,8 +1349,10 @@ function setLive(state, text) {
 
 async function poll() {
   clearTimeout(timer);
+  const asked = ++polls;
   try {
-    const response = await fetch(`/admin/api/${section.api || 'overview'}`, {
+    const query = section.api === 'logs' ? logs.query() : '';
+    const response = await fetch(`/admin/api/${section.api || 'overview'}${query}`, {
       cache: 'no-store',
       headers: { Accept: 'application/json' },
     });
@@ -1177,14 +1363,17 @@ async function poll() {
     }
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const data = await response.json();
+    if (asked !== polls) return;
     if (section.api === 'database') sample(data);
     lastData = data;
     render(data);
-    setLive('live', `Live · ${clock.format(new Date(data.now))}`);
+    const at = clock.format(new Date(data.now));
+    setLive(logs.paused ? 'paused' : 'live', logs.paused ? `Paused · ${at}` : `Live · ${at}`);
   } catch (error) {
+    if (asked !== polls) return;
     setLive('error', 'Server unreachable · retrying');
   }
-  if (!document.hidden) timer = setTimeout(poll, POLL_MS);
+  if (!document.hidden && !logs.paused) timer = setTimeout(poll, POLL_MS);
 }
 
 document.title = `${section.name} · Recharged WFC`;

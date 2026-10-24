@@ -28,8 +28,8 @@ fn init_tracing() -> Result<Option<WorkerGuard>, Box<dyn Error>> {
         Some(dir) => {
             let appender = RollingFileAppender::builder()
                 .rotation(Rotation::DAILY)
-                .filename_prefix("recharged-wfc-srv")
-                .filename_suffix("log")
+                .filename_prefix(recharged_wfc_srv::LOG_FILE_PREFIX)
+                .filename_suffix(recharged_wfc_srv::LOG_FILE_SUFFIX)
                 .max_log_files(retention_days()?.get())
                 .build(&dir)
                 .map_err(|error| format!("LOG_DIR {dir}: {error}"))?;
