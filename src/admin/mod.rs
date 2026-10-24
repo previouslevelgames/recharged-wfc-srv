@@ -4,22 +4,23 @@
 //! Sessions live in memory ([`session`]). Every page in [`PAGES`] is the same
 //! static page; its script shows the section for its path and polls that
 //! section's JSON under `/admin/api/` ([`page`]): [`overview`], [`players`],
-//! [`matchmaking`], [`leaderboards`], [`competitive`] and [`database`]. The
-//! other sections are planned with the services they need. The Competitive
-//! page also edits the rule sets matches are played by.
+//! [`matchmaking`], [`leaderboards`], [`competitive`], [`database`] and
+//! [`logs`]. The other sections are planned with the services they need. The
+//! Competitive page also edits the rule sets matches are played by.
 
 mod competitive;
 mod config;
 mod database;
 mod google;
 mod leaderboards;
+mod logs;
 mod matchmaking;
 mod overview;
 mod page;
 mod players;
 mod session;
 
-use std::{future::Future, sync::Arc, time::Duration};
+use std::{fmt::Display, future::Future, sync::Arc, time::Duration};
 
 use axum::{
     Json, Router,
@@ -49,7 +50,7 @@ use session::{SESSION_TTL, Sessions};
 
 /// The dashboard's pages, Overview first. The script in `assets/admin.js`
 /// knows the same list.
-const PAGES: [&str; 7] = [
+const PAGES: [&str; 8] = [
     "/admin",
     "/admin/players",
     "/admin/matchmaking",
@@ -57,6 +58,7 @@ const PAGES: [&str; 7] = [
     "/admin/competitive",
     "/admin/moderation",
     "/admin/database",
+    "/admin/logs",
 ];
 
 const SESSION_COOKIE: &str = "wfc_admin";
@@ -125,6 +127,8 @@ pub(crate) fn router(
         .route("/admin/api/database", get(api_database))
         .route("/admin/api/leaderboards", get(api_leaderboards))
         .route("/admin/api/competitive", get(api_competitive))
+        .route("/admin/api/logs", get(api_logs))
+        .route("/admin/api/logs/{day}", get(log_file))
         .route("/admin/api/rules", post(create_rule_set))
         .route(
             "/admin/api/rules/{id}",
@@ -191,10 +195,10 @@ impl AdminState {
     }
 
     /// A page's JSON, with its content from `read`, or 401 when signed out.
-    async fn page_data<T: Serialize>(
+    async fn page_data<T: Serialize, E: Display>(
         &self,
         jar: &CookieJar,
-        read: impl Future<Output = Result<T, sqlx::Error>>,
+        read: impl Future<Output = Result<T, E>>,
     ) -> Response {
         let Some(viewer) = self.signed_in(jar) else {
             return (
@@ -331,6 +335,44 @@ async fn api_leaderboards(State(state): State<Arc<AdminState>>, jar: CookieJar) 
 
 async fn api_competitive(State(state): State<Arc<AdminState>>, jar: CookieJar) -> Response {
     state.page_data(&jar, competitive::read(&state.pool)).await
+}
+
+async fn api_logs(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    Query(filter): Query<logs::Filter>,
+) -> Response {
+    let dir = state.config.log_dir.clone();
+    state.page_data(&jar, logs::read(dir, filter)).await
+}
+
+/// A day's whole log file, to save.
+async fn log_file(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    Path(day): Path<String>,
+) -> Response {
+    if state.signed_in(&jar).is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match logs::file(state.config.log_dir.clone(), day).await {
+        Ok(Some((name, bytes))) => (
+            [
+                (header::CONTENT_TYPE, "text/plain; charset=utf-8".to_owned()),
+                (
+                    header::CONTENT_DISPOSITION,
+                    format!(r#"attachment; filename="{name}""#),
+                ),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(error) => {
+            warn!(target: "admin", %error, "log file unreadable");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
 }
 
 /// A rule set as the Competitive page sends it.

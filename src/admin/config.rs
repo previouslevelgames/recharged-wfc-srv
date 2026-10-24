@@ -1,12 +1,12 @@
 //! `/admin`'s settings, from the environment.
 
-use std::{env, fmt};
+use std::{env, fmt, path::PathBuf};
 
 use reqwest::Url;
 
-/// Every variable `/admin` reads. Set all of them, or none of the Google
+/// Every variable `/admin` needs. Set all of them, or none of the Google
 /// ones to run the server without `/admin`: `PUBLIC_URL` serves the profile
-/// service too.
+/// service too. It also reads `LOG_DIR`, for the Logs page.
 pub const VARIABLES: [&str; 4] = [
     "PUBLIC_URL",
     "GOOGLE_CLIENT_ID",
@@ -26,6 +26,8 @@ pub struct Config {
     /// The Google accounts that may sign in, lowercase.
     pub admins: Vec<String>,
     pub google: GoogleEndpoints,
+    /// Where the server writes its daily log files, if anywhere.
+    pub log_dir: Option<PathBuf>,
 }
 
 /// Google's OpenID Connect endpoints. Tests point them at a fake.
@@ -70,7 +72,11 @@ impl Config {
             ));
         }
         let [public_url, client_id, client_secret, admins] = values.map(Option::unwrap);
-        Self::new(&public_url, client_id.trim(), client_secret.trim(), &admins).map(Some)
+        let mut config = Self::new(&public_url, client_id.trim(), client_secret.trim(), &admins)?;
+        config.log_dir = var("LOG_DIR")
+            .filter(|dir| !dir.is_empty())
+            .map(PathBuf::from);
+        Ok(Some(config))
     }
 
     /// Checks and normalizes the settings. `admins` is a comma-separated
@@ -95,6 +101,7 @@ impl Config {
             client_secret: client_secret.to_owned(),
             admins,
             google: GoogleEndpoints::default(),
+            log_dir: None,
         })
     }
 
@@ -118,6 +125,7 @@ impl fmt::Debug for Config {
             .field("client_id", &self.client_id)
             .field("admins", &self.admins)
             .field("google", &self.google)
+            .field("log_dir", &self.log_dir)
             .finish_non_exhaustive()
     }
 }
@@ -195,6 +203,12 @@ mod tests {
         assert_eq!(config.admins, ["admin@example.com", "second@example.com"]);
         assert!(config.secure());
         assert!(!format!("{config:?}").contains("the-client-secret"));
+        assert_eq!(config.log_dir, None);
+
+        let config = from(&[ALL.as_slice(), &[("LOG_DIR", "/var/log/wfc")]].concat())
+            .unwrap()
+            .unwrap();
+        assert_eq!(config.log_dir, Some("/var/log/wfc".into()));
     }
 
     #[test]
