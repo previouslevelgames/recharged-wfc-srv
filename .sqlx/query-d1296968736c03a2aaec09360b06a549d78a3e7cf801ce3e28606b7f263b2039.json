@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS (SELECT 1 FROM online_matches\n                          WHERE state = 'in_progress'\n                            AND last_report_at < now() - interval '30 minutes') AS \"any!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "any!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "d1296968736c03a2aaec09360b06a549d78a3e7cf801ce3e28606b7f263b2039"
+}

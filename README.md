@@ -37,8 +37,8 @@ supported.
 ## Admin dashboard
 
 Whoever runs the server can sign in at `/admin` with a Google account and watch
-it live: who is online, who is searching for a match, the leaderboards, the
-health of the database and the server's logs. The page follows your system's
+it live: who is online, who is searching for a match, the matches being
+played, the leaderboards, the health of the database and the server's logs. The page follows your system's
 light or dark mode.
 
 <p align="center">

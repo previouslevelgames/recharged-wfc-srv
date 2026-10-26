@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT received_at AS at, side, event, game, body FROM online_match_events\n           WHERE match_id = $1\n           ORDER BY event_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "online_match_events",
+            "name": "received_at"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "side",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_match_events",
+            "name": "side"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "event",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_match_events",
+            "name": "event"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "game",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "online_match_events",
+            "name": "game"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "body",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_match_events",
+            "name": "body"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "b5c66c64f6d0c9497b0eced0848e8f57649696f98062c3bdbb84dbc4d38dc6d6"
+}

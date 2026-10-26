@@ -1,0 +1,70 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT count(*) AS \"matches!\",\n                  count(*) FILTER (WHERE state = 'in_progress') AS \"in_progress!\",\n                  count(*) FILTER (WHERE state = 'finished') AS \"finished!\",\n                  count(*) FILTER (WHERE state = 'disputed') AS \"disputed!\",\n                  count(*) FILTER (WHERE state = 'abandoned') AS \"abandoned!\",\n                  count(*) FILTER (WHERE mode = 'ranked') AS \"ranked!\",\n                  count(*) FILTER (WHERE sides.reported = 1) AS \"one_sided!\",\n                  max(last_report_at) AS last_report\n           FROM online_matches\n           JOIN (SELECT match_id, count(*) AS reported FROM online_match_sides GROUP BY match_id)\n                sides USING (match_id)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "matches!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "in_progress!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "finished!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "disputed!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "abandoned!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "ranked!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "one_sided!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "last_report",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "b8d5488774a415ed9e68aceeebe79277f4d7e366d1f2f3b18ec81e0fb5da291f"
+}

@@ -25,6 +25,7 @@ use tracing::{debug, info, trace, warn};
 
 use crate::gpcm::Gpcm;
 use report::Report;
+pub(crate) use store::{settle_idle, sides};
 
 /// A report is a few hundred bytes.
 const MAX_BODY: usize = 16 * 1024;

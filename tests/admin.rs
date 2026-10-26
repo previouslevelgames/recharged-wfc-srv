@@ -24,10 +24,11 @@ const CLIENT_ID: &str = "client.apps.googleusercontent.com";
 const CLIENT_SECRET: &str = "client-secret";
 const CODE: &str = "the-code";
 
-const PAGES: [&str; 8] = [
+const PAGES: [&str; 9] = [
     "/admin",
     "/admin/players",
     "/admin/matchmaking",
+    "/admin/matches",
     "/admin/leaderboards",
     "/admin/competitive",
     "/admin/moderation",
@@ -67,12 +68,23 @@ async fn an_admin_signs_in_sees_every_section_and_signs_out(pool: PgPool) {
         assert!(page.contains("/admin/admin.js"), "{path}");
     }
     assert_eq!(browser.get("/admin/elsewhere").await.0, 404);
+    // A match's own page, for a number only.
+    assert_eq!(browser.get("/admin/matches/12").await.0, 200);
+    for path in [
+        "/admin/matches/twelve",
+        "/admin/matches/",
+        "/admin/leaderboards/1",
+    ] {
+        assert_eq!(browser.get(path).await.0, 404, "{path}");
+    }
 
     for (api, check) in [
         ("overview", "/players/accounts"),
         ("overview", "/matchmaking/sessions"),
+        ("overview", "/matches/in_progress"),
         ("players", "/profiles/0/friend_code"),
         ("matchmaking", "/totals/searching"),
+        ("matches", "/totals/one_sided"),
         ("database", "/tables/0/name"),
         ("leaderboards", "/totals/entries"),
         ("competitive", "/rule_sets/0/rules/tweaks"),
@@ -88,12 +100,22 @@ async fn an_admin_signs_in_sees_every_section_and_signs_out(pool: PgPool) {
         assert!(data["content"].pointer(check).is_some(), "{body}");
     }
 
+    // No match 12 yet: no content, and no error either.
+    let (status, _, body) = browser.get("/admin/api/matches/12").await;
+    assert_eq!(status, 200);
+    let data: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(
+        data["content"].is_null() && data["error"].is_null(),
+        "{body}"
+    );
+
     let (status, _, _) = browser
         .send(Request::post("/admin/logout").header(header::ORIGIN, PUBLIC_URL))
         .await;
     assert_eq!(status, 303);
     assert!(!browser.cookies.contains_key("wfc_admin"));
     assert_eq!(browser.get("/admin/api/overview").await.0, 401);
+    assert_eq!(browser.get("/admin/api/matches/12").await.0, 401);
 }
 
 #[tokio::test]
@@ -197,8 +219,13 @@ async fn sign_in_returns_to_the_page_it_began_on() {
     assert_eq!(status, 200);
     assert!(page.contains(r#"href="http://127.0.0.1:8080/admin/login?next=/admin/database""#));
 
+    let (_, _, page) = browser.get("/admin/matches/12").await;
+    assert!(page.contains(r#"href="http://127.0.0.1:8080/admin/login?next=/admin/matches/12""#));
+
     for (login, page) in [
         ("/admin/login?next=/admin/database", "/admin/database"),
+        ("/admin/login?next=/admin/matches/12", "/admin/matches/12"),
+        ("/admin/login?next=/admin/matches/../logs", "/admin"),
         ("/admin/login?next=https://elsewhere.example", "/admin"),
     ] {
         let params = start_sign_in(&mut browser, login).await;

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE online_matches SET last_report_at = now() - interval '40 minutes'\n             WHERE match_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "433b4c68faef803bc4567aafc09f9aa153f20c7bf303eb056873b806f089d735"
+}
