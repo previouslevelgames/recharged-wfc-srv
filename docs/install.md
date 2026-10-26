@@ -121,7 +121,11 @@ then **Players**, **Matchmaking**, **Matches**, **Leaderboards**,
 `/admin/database`), refreshed every 5 seconds. **Matches** lists the series
 Recharged builds report ([reports.md](reports.md)), in progress first; a match
 opens its own page (e.g. `/admin/matches/12`) with both players, each game as
-both sides saw it, and the reports as they came.
+both sides saw it, and the reports as they came. A profile on **Players** opens
+its own page too (e.g. `/admin/players/1000000000`): its friend code and
+console, its record in the reported matches by mode (series and games won,
+lost and drawn, goals, captains), its standing on the leaderboards and its
+matches.
 Only the Google accounts in `ADMIN_GOOGLE_EMAILS` get in. Without the four `/admin`
 variables, the server runs as before and `/admin` answers 404. With only some of
 them, the container stops at start and its log names the missing ones.

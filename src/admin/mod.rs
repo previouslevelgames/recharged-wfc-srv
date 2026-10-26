@@ -66,7 +66,7 @@ const PAGES: [&str; 9] = [
 ];
 
 /// The sections whose rows open a page of their own: `/admin/matches/12`.
-const DETAILS: [&str; 1] = ["/admin/matches"];
+const DETAILS: [&str; 2] = ["/admin/players", "/admin/matches"];
 
 const SESSION_COOKIE: &str = "wfc_admin";
 const LOGIN_COOKIE: &str = "wfc_admin_login";
@@ -133,6 +133,7 @@ pub(crate) fn router(
         .route("/admin/logout", post(logout))
         .route("/admin/api/overview", get(api_overview))
         .route("/admin/api/players", get(api_players))
+        .route("/admin/api/players/{id}", get(api_player))
         .route("/admin/api/matchmaking", get(api_matchmaking))
         .route("/admin/api/matches", get(api_matches))
         .route("/admin/api/matches/{id}", get(api_match))
@@ -338,6 +339,17 @@ async fn api_overview(State(state): State<Arc<AdminState>>, jar: CookieJar) -> R
 async fn api_players(State(state): State<Arc<AdminState>>, jar: CookieJar) -> Response {
     state
         .page_data(&jar, players::read(&state.pool, &state.gpcm))
+        .await
+}
+
+/// A profile's detail; `null` for none.
+async fn api_player(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    Path(id): Path<i32>,
+) -> Response {
+    state
+        .page_data(&jar, players::detail(&state.pool, &state.gpcm, id))
         .await
 }
 

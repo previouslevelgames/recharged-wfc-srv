@@ -6,7 +6,7 @@ a ranked match puts the players' new scores to the leaderboards
 stadium, and a friend battle sends nothing. Recharged builds report every
 series they play online, ranked or with friends. Both games of a match
 report; the server pairs their sides into one match and works out its result
-from what both saw. `/admin` shows the matches
+from what both saw. `/admin` shows the matches and each player's record
 ([install.md](install.md#admin-dashboard)).
 
 ## The report
