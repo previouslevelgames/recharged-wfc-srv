@@ -105,7 +105,51 @@ const STADIUM_NAMES = {
   the_vice: 'The Vice',
   the_wastelands: 'The Wastelands',
   sand_tomb: 'Sand Tomb',
+  unknown: 'Unknown',
 };
+// The captains and sidekicks a match report names (src/reports/report.rs).
+const CAPTAIN_NAMES = {
+  mario: 'Mario',
+  bowser: 'Bowser',
+  daisy: 'Daisy',
+  donkey_kong: 'Donkey Kong',
+  luigi: 'Luigi',
+  peach: 'Peach',
+  waluigi: 'Waluigi',
+  wario: 'Wario',
+  yoshi: 'Yoshi',
+  bowser_jr: 'Bowser Jr.',
+  diddy_kong: 'Diddy Kong',
+  petey: 'Petey Piranha',
+  unknown: 'Unknown',
+};
+const SIDEKICK_NAMES = {
+  toad: 'Toad',
+  koopa: 'Koopa',
+  hammer_bro: 'Hammer Bro',
+  birdo: 'Birdo',
+  boo: 'Boo',
+  dry_bones: 'Dry Bones',
+  monty_mole: 'Monty Mole',
+  shy_guy: 'Shy Guy',
+};
+// An online match's state (docs/reports.md, "Games and states"), with its
+// badge tone.
+const ONLINE_STATES = {
+  in_progress: ['In progress', 'accent'],
+  finished: ['Finished', 'good'],
+  disputed: ['Disputed', 'warning'],
+  abandoned: ['Abandoned', null],
+};
+// A game of an online match: whether its sides saw it the same.
+const GAME_STATUSES = {
+  agreed: ['Agreed', 'good'],
+  disputed: ['Disputed', 'warning'],
+  only_home: ['Home only', null],
+  only_away: ['Away only', null],
+};
+const MODES = { ranked: 'Ranked', friends: 'Friends' };
+const ENDINGS = { normal: 'Normal', disconnect: 'Disconnect', desync: 'Desync' };
 // A match's state (docs/profiles.md, "Matches"), with its badge tone.
 const MATCH_STATES = {
   challenged: ['Challenged', 'warning'],
@@ -121,6 +165,7 @@ const ICONS = {
   overview: 'M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z',
   players: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75',
   matchmaking: 'M5 12.55a11 11 0 0 1 14.08 0M1.42 9a16 16 0 0 1 21.16 0M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01',
+  matches: 'M7 16V4M3 8l4-4 4 4M17 8v12M21 16l-4 4-4-4',
   leaderboards: 'M6 9H4.5a2.5 2.5 0 0 1 0-5H6M18 9h1.5a2.5 2.5 0 0 0 0-5H18M4 22h16M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22M18 2H6v7a6 6 0 0 0 12 0V2z',
   competitive: 'M4 22v-7M4 15V3h13l-3 6 3 6H4',
   moderation: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z',
@@ -153,6 +198,7 @@ const SECTIONS = [
     intro: 'The consoles that registered, their profiles with friend codes, and who is online.',
     api: 'players',
     render: renderPlayers,
+    detail: renderPlayer,
   },
   {
     path: '/admin/matchmaking',
@@ -162,6 +208,16 @@ const SECTIONS = [
     intro: 'The games online, and what each is doing in matchmaking.',
     api: 'matchmaking',
     render: renderMatchmaking,
+  },
+  {
+    path: '/admin/matches',
+    group: 'Game',
+    name: 'Matches',
+    icon: 'matches',
+    intro: 'The series Recharged builds play online, ranked and with friends, as both games reported them.',
+    api: 'matches',
+    render: renderMatches,
+    detail: renderMatch,
   },
   {
     path: '/admin/leaderboards',
@@ -227,7 +283,17 @@ const dateTime = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeS
 // Calendar days, as the server sends them ("2026-10-15"): no time zone to shift them.
 const calendarDay = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeZone: 'UTC' });
 
-const section = SECTIONS.find((candidate) => candidate.path === window.location.pathname) || SECTIONS[0];
+// The page for this path: a section, or a row of one that opens a page of
+// its own (/admin/matches/12).
+const route = (() => {
+  const path = window.location.pathname;
+  const found = SECTIONS.find((candidate) => candidate.path === path);
+  if (found) return { section: found, id: null };
+  const row = path.match(/^(\/admin\/[a-z]+)\/(\d+)$/);
+  const parent = row && SECTIONS.find((candidate) => candidate.path === row[1] && candidate.detail);
+  return parent ? { section: parent, id: row[2] } : { section: SECTIONS[0], id: null };
+})();
+const section = route.section;
 
 let timer = null;
 let lastData = null; // For re-rendering on a click, between polls.
@@ -463,17 +529,33 @@ function renderOverview(data, now) {
         foot: 'QR2, server browser and NAT negotiation',
       });
     }
-    const boards = content.leaderboards;
-    return serviceCard(target, {
-      tone: 'good',
-      status: 'Live',
-      facts: [
-        ['Entries', count(boards.entries)],
-        ['Players', count(boards.players)],
-        ['Last score', boards.last_put ? ago(boards.last_put, now) : 'none yet'],
-      ],
-      foot: 'gamestats2 · get2.asp and put2.asp',
-    });
+    if (target.path === '/admin/matches') {
+      const matches = content.matches;
+      return serviceCard(target, {
+        tone: 'good',
+        status: 'Live',
+        facts: [
+          ['In progress', count(matches.in_progress)],
+          ['Matches', count(matches.matches)],
+          ['Last report', matches.last_report ? ago(matches.last_report, now) : 'none yet'],
+        ],
+        foot: `Recharged's match reports · ${count(matches.disputed)} disputed`,
+      });
+    }
+    if (target.path === '/admin/leaderboards') {
+      const boards = content.leaderboards;
+      return serviceCard(target, {
+        tone: 'good',
+        status: 'Live',
+        facts: [
+          ['Entries', count(boards.entries)],
+          ['Players', count(boards.players)],
+          ['Last score', boards.last_put ? ago(boards.last_put, now) : 'none yet'],
+        ],
+        foot: 'gamestats2 · get2.asp and put2.asp',
+      });
+    }
+    return serviceCard(target, { tone: 'good', status: 'Live', text: target.intro });
   });
 
   return [banner(status), h('section', { class: 'services', 'aria-label': 'Sections' }, cards)];
@@ -510,7 +592,7 @@ function renderPlayers(data, now) {
         : 'Every profile, online first; the CPU buddy is the server\'s own',
       table(
         [
-          { label: 'Player', cell: (p) => [p.mii_name || 'Unnamed', h('span', { class: 'sub' }, `Profile ${p.profile_id}`)] },
+          { label: 'Player', cell: (p) => [h('a', { href: playerPath(p.profile_id) }, p.mii_name || 'Unnamed'), h('span', { class: 'sub' }, `Profile ${p.profile_id}`)] },
           { label: 'Friend code', cell: (p) => h('code', null, p.friend_code) },
           { label: 'Status', cell: (p) => presence(p, now) },
           {
@@ -526,6 +608,105 @@ function renderPlayers(data, now) {
         ],
         profiles,
         'No players yet. A console appears here after its first sign-in.',
+      ),
+    ),
+  ];
+}
+
+// --- A player's page -----------------------------------------------------
+
+function record(won, lost, drawn) {
+  return `${integer.format(won)}–${integer.format(lost)}–${integer.format(drawn)}`;
+}
+
+function playedResult(match, now) {
+  if (match.result) {
+    const [name, tone] = { won: ['Won', 'good'], lost: ['Lost', 'critical'], drawn: ['Drawn', null] }[match.result];
+    return [badge(tone, name), h('span', { class: 'sub' }, ago(match.ended_at || match.started_at, now))];
+  }
+  return onlineState({ ...match, last_report_at: match.started_at }, now);
+}
+
+function renderPlayer(data, now) {
+  const detail = data.content;
+  if (!detail) {
+    if (data.error) return [unreachable(data.error)];
+    return [banner({ level: 'warning', title: 'No such profile', detail: `No profile ${route.id} has signed in.` })];
+  }
+  const { profile, stats, standing, matches } = detail;
+  setHead(profile.mii_name || 'Unnamed', [`Profile ${profile.profile_id} · friend code `, h('code', null, profile.friend_code)]);
+  const player = profile.player;
+
+  return [
+    h(
+      'section',
+      { class: 'tiles', 'aria-label': 'Key figures' },
+      tile(
+        'Status',
+        profile.cpu_buddy ? 'Server' : profile.online ? (STATUSES[profile.online.status] || ['Logged in'])[0] : 'Offline',
+        profile.online ? ['Logged in to GPCM ', ago(profile.online.since, now)] : 'Not logged in to GPCM',
+      ),
+      tile('Release', profile.release, profile.gsbrcd),
+      tile('Account', h('code', null, `${profile.user_id}`), 'The console, registered with NAS'),
+      tile('Last sign-in', profile.cpu_buddy ? '—' : ago(profile.last_login_at, now), profile.last_ip || 'No address'),
+      tile('Recharged player', player ? player.name : '—', player ? (player.discord ? `Discord ${player.discord}` : 'Test player') : 'Not signed in from the launcher'),
+    ),
+    card(
+      'Record',
+      'The series its Recharged build reported, by mode; a game counts when both sides saw it the same, or only one reported it',
+      table(
+        [
+          { label: 'Mode', cell: (m) => MODES[m.mode] || m.mode },
+          { label: 'Series', num: true, cell: (m) => integer.format(m.series.played) },
+          { label: 'Won–lost–drawn', num: true, cell: (m) => record(m.series.won, m.series.lost, m.series.drawn) },
+          {
+            label: 'Other series',
+            cell: (m) => h('span', { class: 'sub' }, `${m.series.in_progress} in progress · ${m.series.disputed} disputed · ${m.series.abandoned} abandoned`),
+          },
+          { label: 'Games', num: true, cell: (m) => integer.format(m.games.played) },
+          { label: 'Won–lost–drawn', num: true, cell: (m) => record(m.games.won, m.games.lost, m.games.drawn) },
+          { label: 'Goals', num: true, cell: (m) => [`${integer.format(m.games.goals_for)} : ${integer.format(m.games.goals_against)}`, h('span', { class: 'sub' }, 'for : against')] },
+          {
+            label: 'Captains',
+            class: 'wrap',
+            cell: (m) => (m.captains.length ? m.captains.map((c) => `${captainName(c.captain)} ×${c.games}`).join(', ') : h('span', { class: 'sub' }, 'none')),
+          },
+        ],
+        stats,
+        'No modes.',
+      ),
+    ),
+    card(
+      'Ranked standing',
+      'Its rows on the leaderboards, ranked as on the Leaderboards page',
+      table(
+        [
+          { label: 'Board', cell: (e) => CATEGORIES[e.category] || `Category ${e.category}` },
+          { label: 'Rank', num: true, cell: (e) => [`${e.rank}`, h('span', { class: 'sub' }, `of ${integer.format(e.entries)}`)] },
+          { label: 'Score', num: true, cell: (e) => integer.format(e.score) },
+          { label: 'Wins', num: true, cell: (e) => (e.wins == null ? '—' : integer.format(e.wins)) },
+          { label: 'Losses', num: true, cell: (e) => (e.losses == null ? '—' : integer.format(e.losses)) },
+          { label: 'Updated', cell: (e) => ago(e.updated_at, now) },
+        ],
+        standing,
+        'No scores on the leaderboards.',
+      ),
+    ),
+    card(
+      'Matches',
+      'The series its game reported, the newest first',
+      table(
+        [
+          { label: 'Started', cell: (m) => [ago(m.started_at, now), h('span', { class: 'sub' }, dateTime.format(new Date(m.started_at)))] },
+          { label: 'Mode', cell: (m) => [MODES[m.mode] || m.mode, h('span', { class: 'sub' }, `${m.release} · best of ${m.best_of}`)] },
+          { label: 'Played as', cell: (m) => [captainName(m.captain), h('span', { class: 'sub' }, m.side === 'home' ? 'Home' : 'Away')] },
+          { label: 'Games', num: true, cell: (m) => h('a', { href: matchPath(m) }, `${m.games_won} – ${m.games_lost}`) },
+          { label: 'Opponent', cell: (m) => [miiLink(m.opponent.mii, m.opponent.profile_id), h('span', { class: 'sub' }, captainName(m.opponent.captain))] },
+          { label: 'Result', cell: (m) => playedResult(m, now) },
+          { label: '', class: 'actions', cell: (m) => h('a', { class: 'button', href: matchPath(m) }, 'Open') },
+        ],
+        matches,
+        'No matches reported yet. They appear here when its Recharged build plays online.',
       ),
     ),
   ];
@@ -655,6 +836,225 @@ function renderMatchmaking(data, now) {
         ],
         activity,
         'Nothing yet. Searches, reservations and NAT negotiations appear here as games make them.',
+      ),
+    ),
+  ];
+}
+
+// --- Matches -------------------------------------------------------------
+
+function captainName(captain) {
+  return CAPTAIN_NAMES[captain] || captain;
+}
+
+function onlineState(match, now) {
+  const [name, tone] = ONLINE_STATES[match.state] || [match.state, null];
+  const sub = match.ended_at ? ['ended ', ago(match.ended_at, now)] : ['last report ', ago(match.last_report_at, now)];
+  return [badge(tone, name), h('span', { class: 'sub' }, sub)];
+}
+
+function playerPath(profileId) {
+  return `/admin/players/${profileId}`;
+}
+
+/** A Mii's name, to its profile's page when a game reported it. */
+function miiLink(mii, profileId) {
+  return profileId == null ? mii : h('a', { href: playerPath(profileId) }, mii);
+}
+
+/** A team in the list: its Mii, bold when it won, and its captain. */
+function matchTeam(team, won) {
+  const link = miiLink(team.mii, team.profile_id);
+  const name = won ? h('strong', null, link) : link;
+  const reported = team.profile_id == null ? ' · no reports' : '';
+  return [name, h('span', { class: 'sub' }, `${captainName(team.captain)}${reported}`)];
+}
+
+function matchPath(match) {
+  return `/admin/matches/${match.id}`;
+}
+
+function renderMatches(data, now) {
+  const content = data.content;
+  if (!content) return [unreachable(data.error)];
+  const { totals, matches } = content;
+  const ended = totals.finished + totals.disputed + totals.abandoned;
+
+  return [
+    h(
+      'section',
+      { class: 'tiles', 'aria-label': 'Key figures' },
+      tile('In progress', count(totals.in_progress), 'Series being played'),
+      tile('Finished', count(totals.finished), `${count(totals.disputed)} disputed · ${count(totals.abandoned)} abandoned`),
+      tile('Matches', count(totals.matches), `${count(totals.ranked)} ranked · ${count(totals.matches - totals.ranked)} with friends`),
+      tile('One-sided', count(totals.one_sided), 'Only one game reported'),
+    ),
+    card(
+      'Matches',
+      matches.length < totals.matches
+        ? `In progress first, then the newest: ${integer.format(matches.length)} of ${integer.format(totals.matches)}`
+        : `In progress first, then the newest; ${integer.format(ended)} ended`,
+      table(
+        [
+          { label: 'Started', cell: (m) => [ago(m.started_at, now), h('span', { class: 'sub' }, dateTime.format(new Date(m.started_at)))] },
+          { label: 'Mode', cell: (m) => [MODES[m.mode] || m.mode, h('span', { class: 'sub' }, `${m.release} · best of ${m.best_of}`)] },
+          { label: 'Home', cell: (m) => matchTeam(m.home, m.winner === 'home') },
+          { label: 'Score', num: true, cell: (m) => h('a', { href: matchPath(m) }, `${m.score.home} – ${m.score.away}`) },
+          { label: 'Away', cell: (m) => matchTeam(m.away, m.winner === 'away') },
+          { label: 'State', cell: (m) => onlineState(m, now) },
+          { label: '', class: 'actions', cell: (m) => h('a', { class: 'button', href: matchPath(m) }, 'Open') },
+        ],
+        matches,
+        'No matches yet. A match appears here when a Recharged build reports the first kickoff of a series.',
+      ),
+    ),
+  ];
+}
+
+/** What a finished match came to, for its banner. */
+function matchResult(match) {
+  const score = `${match.score.home} – ${match.score.away}`;
+  if (!match.winner) return `A draw, ${score}`;
+  return `${match.winner === 'home' ? match.home.mii : match.away.mii} won, ${score}`;
+}
+
+function matchBanner(match, now) {
+  const times = match.ended_at
+    ? `Ended ${ago(match.ended_at, now).textContent} · took ${duration(since(match.started_at, now) - since(match.ended_at, now))}`
+    : `Last report ${ago(match.last_report_at, now).textContent}`;
+  if (match.state === 'finished') return banner({ level: 'good', title: matchResult(match), detail: times });
+  if (match.state === 'disputed') {
+    return banner({ level: 'warning', title: 'Disputed', detail: `The two games saw a game differently · ${times}` });
+  }
+  if (match.state === 'abandoned') {
+    return banner({ level: 'serious', title: 'Abandoned', detail: `The series stopped before a side won it · ${times}` });
+  }
+  return banner({ level: 'pending', title: `In progress, ${match.score.home} – ${match.score.away}`, detail: times });
+}
+
+function sideReporter(side) {
+  const reporter = side.reporter;
+  if (!reporter) return h('span', { class: 'sub' }, 'No reports: a retail game, or its reports never came');
+  return [
+    h('a', { href: playerPath(reporter.profile_id) }, `Profile ${reporter.profile_id}`),
+    h('span', { class: 'sub' }, ['Friend code ', h('code', null, reporter.friend_code)]),
+  ];
+}
+
+function sideEnd(side, now) {
+  const reporter = side.reporter;
+  if (!reporter) return '—';
+  if (!reporter.reason) return [badge(null, 'No end yet'), h('span', { class: 'sub' }, ['last report ', ago(reporter.last_report_at, now)])];
+  const [name, tone] = reporter.reason === 'decided' ? ['Decided', 'good'] : ['Abandoned', null];
+  return [badge(tone, name), h('span', { class: 'sub' }, ago(reporter.ended_at, now))];
+}
+
+/** A value both sides reported: once when they agree, else each side's. */
+function eachSide(home, away, format) {
+  const [mine, theirs] = [home, away].map((value) => (value == null ? null : format(value)));
+  if (mine == null || theirs == null || mine === theirs) return mine ?? theirs ?? '—';
+  return [`${mine} (home)`, h('span', { class: 'sub' }, `${theirs} (away)`)];
+}
+
+function gameRows(games) {
+  const rows = [];
+  for (const game of games) {
+    if (game.status === 'disputed') {
+      rows.push({ game, seen: 'Home saw', view: game.home, first: true });
+      rows.push({ game, seen: 'Away saw', view: game.away, first: false });
+    } else {
+      rows.push({ game, seen: game.status === 'agreed' ? 'Both' : game.status === 'only_home' ? 'Home' : 'Away', view: game.home || game.away, other: game.home && game.away, first: true });
+    }
+  }
+  return rows;
+}
+
+/** A game's field: its view's, or both views' when both sides saw it the
+ * same game (an unknown name gives way to a known one). */
+function gameCell(row, field, format) {
+  if (!row.other) return format(row.view[field]);
+  const known = (value) => (value === 'unknown' ? null : value);
+  return eachSide(known(row.game.home[field]), known(row.game.away[field]), format);
+}
+
+function renderMatch(data, now) {
+  const detail = data.content;
+  if (!detail) {
+    if (data.error) return [unreachable(data.error)];
+    return [banner({ level: 'warning', title: 'No such match', detail: `No game reported a match ${route.id}.` })];
+  }
+  const { match, sides, games, events } = detail;
+  setHead(`${match.home.mii} vs ${match.away.mii}`, [
+    `${MODES[match.mode] || match.mode} · ${match.release} · best of ${match.best_of} · started `,
+    ago(match.started_at, now),
+  ]);
+  const bySide = { home: sides[0], away: sides[1] };
+  const gameOf = (event) => games.find((game) => game.number === event.game);
+
+  return [
+    matchBanner(match, now),
+    card(
+      'Players',
+      'Each side as its own game reported it',
+      table(
+        [
+          { label: 'Side', cell: (side) => (side.side === 'home' ? 'Home' : 'Away') },
+          { label: 'Mii', cell: (side) => (match.winner === side.side ? h('strong', null, side.mii) : side.mii) },
+          { label: 'Reported by', cell: (side) => sideReporter(side) },
+          { label: 'Captain', cell: (side) => captainName(side.captain) },
+          { label: 'Sidekicks', cell: (side) => (side.sidekicks.length ? side.sidekicks.map((name) => SIDEKICK_NAMES[name] || name).join(', ') : h('span', { class: 'sub' }, 'unknown')) },
+          { label: 'Games won', num: true, cell: (side) => `${match.score[side.side]}` },
+          { label: 'End', cell: (side) => sideEnd(side, now) },
+        ],
+        sides,
+        'No sides.',
+      ),
+    ),
+    card(
+      'Games',
+      "A game counts when both games saw it the same, or only one reported it; each side's view where they differ",
+      table(
+        [
+          { label: 'Game', cell: (row) => (row.first ? `${row.game.number}` : '') },
+          {
+            label: 'Status',
+            cell: (row) => {
+              if (!row.first) return '';
+              const [name, tone] = GAME_STATUSES[row.game.status] || [row.game.status, null];
+              return badge(tone, name);
+            },
+          },
+          { label: 'Seen by', cell: (row) => row.seen },
+          { label: 'Score', num: true, cell: (row) => `${row.view.score.home} – ${row.view.score.away}` },
+          { label: 'Captains', cell: (row) => gameCell(row, 'captains', (c) => `${captainName(c.home)} vs ${captainName(c.away)}`) },
+          { label: 'Stadium', cell: (row) => gameCell(row, 'stadium', (name) => STADIUM_NAMES[name] || name) },
+          { label: 'Ending', cell: (row) => gameCell(row, 'ending', (ending) => ENDINGS[ending] || ending) },
+          { label: 'Length', cell: (row) => gameCell(row, 'seconds', gameLength) },
+        ],
+        gameRows(games),
+        'No game reported yet.',
+      ),
+    ),
+    card(
+      'Reports',
+      'As the games sent them, the first first; a report that came again is kept once',
+      table(
+        [
+          { label: 'When', cell: (e) => [h('time', { datetime: e.at, title: dateTime.format(new Date(e.at)) }, clock.format(new Date(e.at))), h('span', { class: 'sub' }, ago(e.at, now))] },
+          { label: 'Side', cell: (e) => [e.side === 'home' ? 'Home' : 'Away', h('span', { class: 'sub' }, bySide[e.side].mii)] },
+          {
+            label: 'Report',
+            cell: (e) => {
+              if (e.event === 'start') return 'Start';
+              if (e.event === 'end') return `End: ${bySide[e.side].reporter?.reason || 'unknown'}`;
+              const view = gameOf(e)?.[e.side];
+              return view ? `Game ${e.game}: ${view.score.home} – ${view.score.away}` : `Game ${e.game}`;
+            },
+          },
+          { label: 'Body', class: 'query', cell: (e) => h('code', { title: e.body }, e.body) },
+        ],
+        events,
+        'No reports.',
       ),
     ),
   ];
@@ -1338,8 +1738,18 @@ function render(data) {
   const now = Date.parse(data.now);
   renderViewer(data.viewer);
   renderFooter(data, now);
-  const body = section.planned ? renderPlanned() : section.render(data, now);
+  let body;
+  if (section.planned) body = renderPlanned();
+  else if (route.id) body = section.detail(data, now);
+  else body = section.render(data, now);
   document.getElementById('body').replaceChildren(...body);
+}
+
+/** A row's page: its title and what it is, once its data is there. */
+function setHead(title, intro) {
+  document.getElementById('page-title').textContent = title;
+  document.getElementById('page-intro').replaceChildren(...[intro].flat());
+  document.title = `${title} · ${section.name} · Recharged WFC`;
 }
 
 function setLive(state, text) {
@@ -1352,7 +1762,8 @@ async function poll() {
   const asked = ++polls;
   try {
     const query = section.api === 'logs' ? logs.query() : '';
-    const response = await fetch(`/admin/api/${section.api || 'overview'}${query}`, {
+    const api = route.id ? `${section.api}/${route.id}` : section.api || 'overview';
+    const response = await fetch(`/admin/api/${api}${query}`, {
       cache: 'no-store',
       headers: { Accept: 'application/json' },
     });
@@ -1379,7 +1790,18 @@ async function poll() {
 document.title = `${section.name} · Recharged WFC`;
 renderNav();
 document.getElementById('content').replaceChildren(
-  h('header', { class: 'page-head' }, h('span', { class: 'page-icon' }, icon(section.icon)), h('div', null, h('h1', null, section.name), h('p', null, section.intro))),
+  h(
+    'header',
+    { class: 'page-head' },
+    h('span', { class: 'page-icon' }, icon(section.icon)),
+    h(
+      'div',
+      null,
+      route.id && h('a', { class: 'page-back', href: section.path }, `‹ ${section.name}`),
+      h('h1', { id: 'page-title' }, route.id ? `${section.name} · ${route.id}` : section.name),
+      h('p', { id: 'page-intro' }, route.id ? 'Loading…' : section.intro),
+    ),
+  ),
   h('div', { class: 'page-body', id: 'body' }, banner({ level: 'pending', title: 'Loading…', detail: 'Asking the server.' })),
 );
 

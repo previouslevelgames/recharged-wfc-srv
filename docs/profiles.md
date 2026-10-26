@@ -94,7 +94,8 @@ accounts a player signs in with, one per provider (`discord`, `test`), with
 the username other players look them up by and the avatar.
 `player_sessions` holds the sessions, `player_wfc_profiles` the friend codes
 proven theirs, `rule_sets` the rules, `matches` and `match_reports` the
-matches and what each game reported.
+matches and what each game reported. The series every Recharged build reports
+online are separate ([reports.md](reports.md)).
 
 ## Friend codes
 

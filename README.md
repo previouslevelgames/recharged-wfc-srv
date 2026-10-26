@@ -25,6 +25,9 @@ reference, and runs as a single Docker container with its own database.
   day* boards, plus the boards only the European release has. A score is only
   accepted from the player who is signed in. As in the original game, seasons
   restart every week; the dashboard keeps how the last one ended.
+- **Match reports.** Recharged builds report every series they play online,
+  ranked or with friends. The server pairs the two games' reports into one
+  match, and the games both saw the same make its result.
 - **Admin dashboard.** A web page for whoever runs the server, see below.
 
 Not there yet: moderation tools (banning a player, kicking one from a match,
@@ -34,8 +37,8 @@ supported.
 ## Admin dashboard
 
 Whoever runs the server can sign in at `/admin` with a Google account and watch
-it live: who is online, who is searching for a match, the leaderboards, the
-health of the database and the server's logs. The page follows your system's
+it live: who is online, who is searching for a match, the matches being
+played, the leaderboards, the health of the database and the server's logs. The page follows your system's
 light or dark mode.
 
 <p align="center">
@@ -104,4 +107,6 @@ updates.
 - [docs/development.md](docs/development.md): building and testing it, and how releases work
 - [docs/login.md](docs/login.md) and [docs/gamestats2.md](docs/gamestats2.md):
   what the game sends and what the server answers, for going online and for the leaderboards
+- [docs/reports.md](docs/reports.md): the match reports Recharged builds send, and how the
+  server pairs them into matches
 - [docs/profiles.md](docs/profiles.md): Recharged profiles, which the launcher signs in to for competitive play

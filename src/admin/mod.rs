@@ -4,9 +4,11 @@
 //! Sessions live in memory ([`session`]). Every page in [`PAGES`] is the same
 //! static page; its script shows the section for its path and polls that
 //! section's JSON under `/admin/api/` ([`page`]): [`overview`], [`players`],
-//! [`matchmaking`], [`leaderboards`], [`competitive`], [`database`] and
-//! [`logs`]. The other sections are planned with the services they need. The
-//! Competitive page also edits the rule sets matches are played by.
+//! [`matchmaking`], [`matches`], [`leaderboards`], [`competitive`],
+//! [`database`] and [`logs`]. The other sections are planned with the
+//! services they need. A section's rows may open a page of their own, its
+//! path and an id ([`DETAILS`]). The Competitive page also edits the rule
+//! sets matches are played by.
 
 mod competitive;
 mod config;
@@ -14,6 +16,7 @@ mod database;
 mod google;
 mod leaderboards;
 mod logs;
+mod matches;
 mod matchmaking;
 mod overview;
 mod page;
@@ -50,16 +53,20 @@ use session::{SESSION_TTL, Sessions};
 
 /// The dashboard's pages, Overview first. The script in `assets/admin.js`
 /// knows the same list.
-const PAGES: [&str; 8] = [
+const PAGES: [&str; 9] = [
     "/admin",
     "/admin/players",
     "/admin/matchmaking",
+    "/admin/matches",
     "/admin/leaderboards",
     "/admin/competitive",
     "/admin/moderation",
     "/admin/database",
     "/admin/logs",
 ];
+
+/// The sections whose rows open a page of their own: `/admin/matches/12`.
+const DETAILS: [&str; 2] = ["/admin/players", "/admin/matches"];
 
 const SESSION_COOKIE: &str = "wfc_admin";
 const LOGIN_COOKIE: &str = "wfc_admin_login";
@@ -116,6 +123,9 @@ pub(crate) fn router(
     for path in PAGES {
         router = router.route(path, get(home));
     }
+    for path in DETAILS {
+        router = router.route(&format!("{path}/{{id}}"), get(home));
+    }
     router
         .route("/admin/", get(|| async { Redirect::permanent("/admin") }))
         .route("/admin/login", get(login))
@@ -123,7 +133,10 @@ pub(crate) fn router(
         .route("/admin/logout", post(logout))
         .route("/admin/api/overview", get(api_overview))
         .route("/admin/api/players", get(api_players))
+        .route("/admin/api/players/{id}", get(api_player))
         .route("/admin/api/matchmaking", get(api_matchmaking))
+        .route("/admin/api/matches", get(api_matches))
+        .route("/admin/api/matches/{id}", get(api_match))
         .route("/admin/api/database", get(api_database))
         .route("/admin/api/leaderboards", get(api_leaderboards))
         .route("/admin/api/competitive", get(api_competitive))
@@ -157,7 +170,7 @@ impl AdminState {
             .build()
     }
 
-    /// The sign-in page, for coming back to `return_to`, one of [`PAGES`].
+    /// The sign-in page, for coming back to `return_to`, a [`page`].
     fn login_page(&self, status: StatusCode, message: Option<&str>, return_to: &str) -> Response {
         let message = message
             .map(|message| format!(r#"<p class="notice" role="alert">{}</p>"#, escape(message)))
@@ -211,20 +224,33 @@ impl AdminState {
     }
 }
 
-/// `path` if it is one of [`PAGES`], else the Overview. Redirects only ever
-/// go to these.
-fn page(path: &str) -> &'static str {
-    PAGES
-        .into_iter()
-        .find(|page| *page == path)
-        .unwrap_or(PAGES[0])
+/// `path` if it is one of [`PAGES`] or a page of one of [`DETAILS`]' rows,
+/// else the Overview. Redirects only ever go to these.
+fn page(path: &str) -> String {
+    let detail = DETAILS.into_iter().any(|section| {
+        path.strip_prefix(section)
+            .and_then(|rest| rest.strip_prefix('/'))
+            .is_some_and(|id| {
+                (1..=18).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_digit())
+            })
+    });
+    if detail || PAGES.contains(&path) {
+        path.to_owned()
+    } else {
+        PAGES[0].to_owned()
+    }
 }
 
-/// The dashboard, or the sign-in page.
+/// The dashboard, or the sign-in page. A row's page is there for a number
+/// only.
 async fn home(State(state): State<Arc<AdminState>>, jar: CookieJar, uri: Uri) -> Response {
+    let path = page(uri.path());
+    if path != uri.path() {
+        return StatusCode::NOT_FOUND.into_response();
+    }
     match state.signed_in(&jar) {
         Some(_) => Html(DASHBOARD_PAGE).into_response(),
-        None => state.login_page(StatusCode::OK, None, page(uri.path())),
+        None => state.login_page(StatusCode::OK, None, &path),
     }
 }
 
@@ -240,7 +266,7 @@ async fn login(
     jar: CookieJar,
     Query(params): Query<LoginParams>,
 ) -> (CookieJar, Redirect) {
-    let login = Login::new(page(params.next.as_deref().unwrap_or_default()));
+    let login = Login::new(&page(params.next.as_deref().unwrap_or_default()));
     let cookie = state.cookie(LOGIN_COOKIE, login.to_cookie(), LOGIN_TTL);
     (
         jar.add(cookie),
@@ -271,11 +297,11 @@ async fn callback(
             info!(target: "admin", email = %account.email, "signed in");
             let session = state.sessions.open(account);
             let jar = jar.add(state.cookie(SESSION_COOKIE, session, SESSION_TTL));
-            (jar, Redirect::to(return_to)).into_response()
+            (jar, Redirect::to(&return_to)).into_response()
         }
         Err(error) => {
             warn!(target: "admin", %error, "sign-in refused");
-            let page = state.login_page(error.status(), Some(&error.message()), return_to);
+            let page = state.login_page(error.status(), Some(&error.message()), &return_to);
             (jar, page).into_response()
         }
     }
@@ -316,12 +342,38 @@ async fn api_players(State(state): State<Arc<AdminState>>, jar: CookieJar) -> Re
         .await
 }
 
+/// A profile's detail; `null` for none.
+async fn api_player(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    Path(id): Path<i32>,
+) -> Response {
+    state
+        .page_data(&jar, players::detail(&state.pool, &state.gpcm, id))
+        .await
+}
+
 async fn api_matchmaking(State(state): State<Arc<AdminState>>, jar: CookieJar) -> Response {
     state
         .page_data(
             &jar,
             matchmaking::read(&state.pool, &state.master, &state.activity),
         )
+        .await
+}
+
+async fn api_matches(State(state): State<Arc<AdminState>>, jar: CookieJar) -> Response {
+    state.page_data(&jar, matches::read(&state.pool)).await
+}
+
+/// A match's detail; `null` for none.
+async fn api_match(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    Path(id): Path<i64>,
+) -> Response {
+    state
+        .page_data(&jar, matches::detail(&state.pool, id))
         .await
 }
 

@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT best_of FROM online_matches WHERE match_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "best_of",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "online_matches",
+            "name": "best_of"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "017e5131d9361101a694396fe5c3f0e2ccc37b281ef2b1db9e1ae76642b4720f"
+}

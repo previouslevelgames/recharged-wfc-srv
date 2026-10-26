@@ -1,0 +1,221 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT m.match_id, m.mode, m.release, m.best_of, m.state, m.winner, m.home_mii,\n                  m.away_mii, m.home_captain, m.away_captain, m.home_wins, m.away_wins,\n                  m.started_at, m.last_report_at, m.ended_at,\n                  home.profile_id AS \"home_profile?\", away.profile_id AS \"away_profile?\"\n           FROM online_matches m\n           LEFT JOIN online_match_sides home ON home.match_id = m.match_id AND home.side = 'home'\n           LEFT JOIN online_match_sides away ON away.match_id = m.match_id AND away.side = 'away'\n           WHERE $1::bigint IS NULL OR m.match_id = $1\n           ORDER BY (m.state <> 'in_progress'), m.started_at DESC\n           LIMIT $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "match_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "online_matches",
+            "name": "match_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "mode",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_matches",
+            "name": "mode"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "release",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_matches",
+            "name": "release"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "best_of",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "online_matches",
+            "name": "best_of"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "state",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_matches",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "winner",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_matches",
+            "name": "winner"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "home_mii",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_matches",
+            "name": "home_mii"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "away_mii",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_matches",
+            "name": "away_mii"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "home_captain",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_matches",
+            "name": "home_captain"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "away_captain",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_matches",
+            "name": "away_captain"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "home_wins",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "online_matches",
+            "name": "home_wins"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "away_wins",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "online_matches",
+            "name": "away_wins"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "started_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "online_matches",
+            "name": "started_at"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "last_report_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "online_matches",
+            "name": "last_report_at"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "ended_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "online_matches",
+            "name": "ended_at"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "home_profile?",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "online_match_sides",
+            "name": "profile_id"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "away_profile?",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "online_match_sides",
+            "name": "profile_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "06c2d20a3c1f560a98cab0f416301cebfe9e0d52a0658f8515004f71fdd84c36"
+}
