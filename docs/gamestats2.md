@@ -364,6 +364,6 @@ A put also has to come from the address the pid is logged in to GPCM from
 puts while it is logged in, and a pid is easy to learn, from a friend code or
 the server browser. Gets stay open: the leaderboards are public.
 
-Real trust comes later: work scores out from match results reported by both
-players. Until then a modified game can still put any score for its own
-profile.
+Real trust comes later: work scores out from the match results both players'
+games report ([reports.md](reports.md)). Until then a modified game can still
+put any score for its own profile.

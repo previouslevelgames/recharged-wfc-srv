@@ -1,0 +1,32 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO online_match_events (match_id, side, event, game, body)\n         VALUES ($1, $2, $3, $4, $5)\n         ON CONFLICT DO NOTHING\n         RETURNING event_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "event_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "online_match_events",
+            "name": "event_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Text",
+        "Int4",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f9d2a28b2c9560d7ec2c9878568348db82d476c4d9eb9a0b6b8eafa360b3c8c7"
+}

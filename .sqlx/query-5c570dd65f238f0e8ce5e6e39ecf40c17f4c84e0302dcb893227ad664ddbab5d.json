@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT state, winner, home_wins, away_wins FROM online_matches WHERE match_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "state",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_matches",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "winner",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_matches",
+            "name": "winner"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "home_wins",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "online_matches",
+            "name": "home_wins"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "away_wins",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "online_matches",
+            "name": "away_wins"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "5c570dd65f238f0e8ce5e6e39ecf40c17f4c84e0302dcb893227ad664ddbab5d"
+}

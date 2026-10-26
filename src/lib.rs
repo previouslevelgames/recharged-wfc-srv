@@ -16,6 +16,7 @@ mod nas;
 mod natneg;
 mod pairing;
 pub mod profiles;
+mod reports;
 mod serverbrowser;
 
 pub const REVISION: &str = env!("BUILD_REVISION");
@@ -63,9 +64,9 @@ impl App {
         }
     }
 
-    /// The HTTP routes: status, NAS, gamestats2, and `/admin` and the
-    /// profile service with their configurations. gamestats2 needs the
-    /// caller's address: serve them with
+    /// The HTTP routes: status, NAS, gamestats2, match reports, and `/admin`
+    /// and the profile service with their configurations. gamestats2 and the
+    /// reports need the caller's address: serve them with
     /// `into_make_service_with_connect_info::<SocketAddr>()`.
     pub fn router(
         &self,
@@ -75,7 +76,8 @@ impl App {
         let mut router = Router::new()
             .route("/status", get(status))
             .merge(nas::router(self.pool.clone(), self.tickets.clone()))
-            .merge(gamestats::router(self.pool.clone(), self.gpcm.clone()));
+            .merge(gamestats::router(self.pool.clone(), self.gpcm.clone()))
+            .merge(reports::router(self.pool.clone(), self.gpcm.clone()));
         if let Some(config) = admin {
             router = router.merge(admin::router(
                 self.pool.clone(),

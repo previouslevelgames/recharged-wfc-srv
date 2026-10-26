@@ -1,0 +1,184 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT match_id, side, profile_id, series, mii, opponent_mii, home_captain,\n                away_captain, home_sidekicks, away_sidekicks, reason, opened_at,\n                last_report_at, ended_at\n         FROM online_match_sides\n         WHERE match_id = ANY($1)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "match_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "online_match_sides",
+            "name": "match_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "side",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_match_sides",
+            "name": "side"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "profile_id",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "online_match_sides",
+            "name": "profile_id"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "series",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "online_match_sides",
+            "name": "series"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "mii",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_match_sides",
+            "name": "mii"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "opponent_mii",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_match_sides",
+            "name": "opponent_mii"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "home_captain",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_match_sides",
+            "name": "home_captain"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "away_captain",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_match_sides",
+            "name": "away_captain"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "home_sidekicks",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "online_match_sides",
+            "name": "home_sidekicks"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "away_sidekicks",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "online_match_sides",
+            "name": "away_sidekicks"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_match_sides",
+            "name": "reason"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "opened_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "online_match_sides",
+            "name": "opened_at"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "last_report_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "online_match_sides",
+            "name": "last_report_at"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "ended_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "online_match_sides",
+            "name": "ended_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8Array"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "350ef213e6ae00014e2a1d8f7a81f518a5ba2c64d6d8c2b7d7e03f1045d518ba"
+}

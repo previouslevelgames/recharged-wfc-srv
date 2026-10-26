@@ -1,0 +1,136 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT match_id, side, number, home_score, away_score, home_captain, away_captain,\n                stadium, ending, seconds\n         FROM online_match_games\n         WHERE match_id = ANY($1)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "match_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "online_match_games",
+            "name": "match_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "side",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_match_games",
+            "name": "side"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "number",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "online_match_games",
+            "name": "number"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "home_score",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "online_match_games",
+            "name": "home_score"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "away_score",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "online_match_games",
+            "name": "away_score"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "home_captain",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_match_games",
+            "name": "home_captain"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "away_captain",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_match_games",
+            "name": "away_captain"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "stadium",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_match_games",
+            "name": "stadium"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "ending",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_match_games",
+            "name": "ending"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "seconds",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "online_match_games",
+            "name": "seconds"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8Array"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "210aac25c2ffe07d3f7663c929e34cb09a5366e44b2376d3e59952384afdb11b"
+}

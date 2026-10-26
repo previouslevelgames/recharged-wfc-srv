@@ -8,7 +8,7 @@ The game reaches the server on five ports:
 
 | Port | Service |
 |---|---|
-| TCP 80 | NAS (registration and login) and gamestats2 (leaderboards), plus `/status` and `/admin` |
+| TCP 80 | NAS (registration and login), gamestats2 (leaderboards) and Recharged's match reports, plus `/status` and `/admin` |
 | TCP 29900 | GPCM: logins, friends and their status |
 | UDP 27900 | QR2 master: the games' heartbeats |
 | TCP 28910 | Server browser: finding a match |

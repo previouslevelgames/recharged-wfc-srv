@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT ended_at - last_report_at AS \"after!\" FROM online_matches WHERE match_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "after!",
+        "type_info": "Interval",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "d5dfc8458339ddf15b5bde82aa5ce92620b7e975c8bd119edfc1b35878124264"
+}

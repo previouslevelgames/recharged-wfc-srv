@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE online_matches\n         SET state = $2, winner = $3, home_wins = $4, away_wins = $5, home_mii = $6,\n             away_mii = $7, home_captain = $8, away_captain = $9,\n             last_report_at = CASE WHEN $10 THEN last_report_at ELSE now() END,\n             ended_at = CASE WHEN $2 = 'in_progress' THEN NULL\n                             WHEN $10 AND $2 = 'abandoned' THEN last_report_at + interval '30 minutes'\n                             WHEN $10 THEN last_report_at\n                             ELSE coalesce(ended_at, now()) END\n         WHERE match_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Text",
+        "Int4",
+        "Int4",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c5ac30e5c8482edc4493460e87ee461654186b581f7fcdaa84048cca7a452087"
+}
