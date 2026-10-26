@@ -6,7 +6,8 @@ a ranked match puts the players' new scores to the leaderboards
 stadium, and a friend battle sends nothing. Recharged builds report every
 series they play online, ranked or with friends. Both games of a match
 report; the server pairs their sides into one match and works out its result
-from what both saw.
+from what both saw. `/admin` shows the matches
+([install.md](install.md#admin-dashboard)).
 
 ## The report
 
@@ -130,9 +131,9 @@ does not count. Endings and lengths are each side's own.
   enough. An end that comes after the decision changes nothing.
 - An end with `abandoned` may come without any game: the session was left
   after the first kickoff.
-- The 30 minutes are applied when the next report comes in. A report that
-  comes even later shows the series went on, and the match is worked out
-  again.
+- The 30 minutes are applied when the next report comes in, or when a page
+  of `/admin` shows matches. A report that comes even later shows the series
+  went on, and the match is worked out again.
 
 ## Tables
 

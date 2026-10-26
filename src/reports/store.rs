@@ -128,8 +128,30 @@ pub async fn record(pool: &PgPool, report: &Report, body: &str) -> Result<Record
     })
 }
 
-/// One report at a time: the two games' starts come together, and the
-/// second must find the match the first one opened.
+/// Settles the matches that heard nothing for 30 minutes: finished if
+/// their games decide them, else abandoned. The pages that show matches call
+/// it first; a report does it too.
+pub async fn settle_idle(pool: &PgPool) -> Result<usize, sqlx::Error> {
+    // Most calls find none, and then need not wait for a report.
+    let any = sqlx::query_scalar!(
+        r#"SELECT EXISTS (SELECT 1 FROM online_matches
+                          WHERE state = 'in_progress'
+                            AND last_report_at < now() - interval '30 minutes') AS "any!""#
+    )
+    .fetch_one(pool)
+    .await?;
+    if !any {
+        return Ok(0);
+    }
+    let mut tx = pool.begin().await?;
+    lock(&mut tx).await?;
+    let settled = settle_idle_in(&mut tx).await?;
+    tx.commit().await?;
+    Ok(settled)
+}
+
+/// One report or settling at a time: the two games' starts come together,
+/// and the second must find the match the first one opened.
 async fn lock(conn: &mut PgConnection) -> Result<(), sqlx::Error> {
     sqlx::query!("LOCK TABLE online_matches IN SHARE ROW EXCLUSIVE MODE")
         .execute(conn)
@@ -137,8 +159,6 @@ async fn lock(conn: &mut PgConnection) -> Result<(), sqlx::Error> {
     Ok(())
 }
 
-/// Settles the matches that heard nothing for 30 minutes: finished if
-/// their games decide them, else abandoned.
 async fn settle_idle_in(conn: &mut PgConnection) -> Result<usize, sqlx::Error> {
     let idle = sqlx::query_scalar!(
         "SELECT match_id FROM online_matches
@@ -454,13 +474,6 @@ mod tests {
             .fetch_one(pool)
             .await
             .unwrap()
-    }
-
-    async fn settle_idle(pool: &PgPool) -> Result<usize, sqlx::Error> {
-        let mut tx = pool.begin().await?;
-        let settled = settle_idle_in(&mut tx).await?;
-        tx.commit().await?;
-        Ok(settled)
     }
 
     /// As if the match's last report came `minutes` ago.

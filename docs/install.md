@@ -116,8 +116,12 @@ the userid in `data/shared2/DWC_AUTHDATA`.
 ## Admin dashboard
 
 `/admin` shows the server to admins who sign in with Google: an **Overview**,
-then **Players**, **Matchmaking**, **Leaderboards**, **Database** and **Logs**,
-each at its own address (e.g. `/admin/database`), refreshed every 5 seconds.
+then **Players**, **Matchmaking**, **Matches**, **Leaderboards**,
+**Competitive**, **Database** and **Logs**, each at its own address (e.g.
+`/admin/database`), refreshed every 5 seconds. **Matches** lists the series
+Recharged builds report ([reports.md](reports.md)), in progress first; a match
+opens its own page (e.g. `/admin/matches/12`) with both players, each game as
+both sides saw it, and the reports as they came.
 Only the Google accounts in `ADMIN_GOOGLE_EMAILS` get in. Without the four `/admin`
 variables, the server runs as before and `/admin` answers 404. With only some of
 them, the container stops at start and its log names the missing ones.

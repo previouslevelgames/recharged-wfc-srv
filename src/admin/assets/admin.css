@@ -445,6 +445,20 @@ body.signin {
   color: var(--ink-2);
 }
 
+/* A row's page: the way back to its section. */
+.page-back {
+  display: inline-block;
+  margin-bottom: 2px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 550;
+  text-decoration: none;
+}
+
+.page-back:hover {
+  color: var(--accent-ink);
+}
+
 .page-footer {
   padding: 4px 0 32px;
   color: var(--muted);
