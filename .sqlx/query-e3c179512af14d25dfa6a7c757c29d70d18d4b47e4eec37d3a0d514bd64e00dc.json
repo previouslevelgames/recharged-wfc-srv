@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE online_match_sides SET reason = $3, ended_at = now()\n                 WHERE match_id = $1 AND side = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e3c179512af14d25dfa6a7c757c29d70d18d4b47e4eec37d3a0d514bd64e00dc"
+}

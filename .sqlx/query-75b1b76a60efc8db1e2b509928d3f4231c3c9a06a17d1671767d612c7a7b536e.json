@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE online_matches SET last_report_at = now() - make_interval(secs => $2)\n             WHERE match_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Float8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "75b1b76a60efc8db1e2b509928d3f4231c3c9a06a17d1671767d612c7a7b536e"
+}

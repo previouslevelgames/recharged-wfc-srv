@@ -22,7 +22,7 @@ branch patches out TLS. The services are told apart by port:
 
 | Port | Service | Names |
 |---|---|---|
-| TCP 80 | NAS `/ac`, gamestats2 | `naswii.`, `gamestats2.gs.` |
+| TCP 80 | NAS `/ac`, gamestats2, Recharged's match reports ([reports.md](reports.md)) | `naswii.`, `gamestats2.gs.`; the reports go to the server's address |
 | TCP 29900 | GPCM | `gpcm.gs.` |
 | UDP 27900 | QR2 master: availability check, heartbeats | `mschargedwii.available.gs.`, `mschargedwii.master.gs.` |
 | TCP 28910 | Server browser: the master's sessions | `mschargedwii.ms11.gs.` |

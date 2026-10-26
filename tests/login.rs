@@ -1,8 +1,9 @@
 //! Registration and login as the port does them (docs/login.md): NAS
 //! `acctcreate` and `login` over HTTP, GPCM over TCP with friend requests,
 //! the master server's availability check and heartbeats over UDP, and the
-//! server browser's lookup of a host and its messages to one over TCP, and
-//! NAT negotiation over UDP.
+//! server browser's lookup of a host and its messages to one over TCP, NAT
+//! negotiation over UDP, and a Recharged build's match reports over HTTP
+//! (docs/reports.md).
 
 use std::{collections::HashMap, net::SocketAddr};
 
@@ -239,6 +240,37 @@ async fn matchmaking_messages_pass_between_mutual_friends(pool: PgPool) {
     // Nothing comes back to the sender.
     alice.client.send(r"\ka\\final\").await;
     assert!(alice.client.receive().await.contains_key("ka"));
+}
+
+#[sqlx::test]
+async fn a_logged_in_game_reports_its_series(pool: PgPool) {
+    let server = Server::start(pool).await;
+    let mut player = Player::log_in(&server, 42).await;
+    let report = serde_json::json!({
+        "profile_id": player.profile_id.parse::<i32>().unwrap(), "release": "R4QE",
+        "event": "start", "series": 1_792_000_000_i64, "mode": "friends", "best_of": 1,
+        "side": "home", "mii": "Mario", "opponent_mii": "Luigi",
+        "captains": {"home": "mario", "away": "luigi"},
+        "sidekicks": {"home": [], "away": []}, "game": null, "reason": null,
+    })
+    .to_string();
+
+    // From the address of its GPCM login: this test's.
+    let (status, body) = server.report(&report).await;
+    assert_eq!(status, 200, "{body}");
+    let answer: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(answer["match_id"].as_i64().is_some(), "{body}");
+
+    player.client.send(r"\logout\\final\").await;
+    assert!(player.client.closed().await);
+    let (status, body) = server.report(&report).await;
+    assert_eq!(
+        (status, body.as_str()),
+        (
+            403,
+            r#"{"error":"profile not logged in from this address"}"#
+        )
+    );
 }
 
 #[sqlx::test]
@@ -546,6 +578,24 @@ impl Server {
                 (key.to_owned(), String::from_utf8(value).unwrap())
             })
             .collect()
+    }
+
+    /// `POST /api/v1/wfc/reports` as the port sends it, to the server's
+    /// address rather than a host name. Returns the status and the body.
+    async fn report(&self, report: &str) -> (u16, String) {
+        let request = format!(
+            "POST /api/v1/wfc/reports HTTP/1.1\r\nHost: 2.31.48.136\r\n\
+             Content-Type: application/json\r\nContent-Length: {}\r\n\
+             Connection: close\r\n\r\n{report}",
+            report.len()
+        );
+        let mut stream = TcpStream::connect(self.http).await.unwrap();
+        stream.write_all(request.as_bytes()).await.unwrap();
+        let mut response = String::new();
+        stream.read_to_string(&mut response).await.unwrap();
+        let (head, body) = response.split_once("\r\n\r\n").unwrap();
+        let status = head.split(' ').nth(1).unwrap().parse().unwrap();
+        (status, body.to_owned())
     }
 
     /// A NAS login of `user_id` to [`GSBRCD`]. Returns the token and the

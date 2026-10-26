@@ -1,0 +1,36 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT m.match_id FROM online_matches m\n         JOIN online_match_sides first ON first.match_id = m.match_id\n         WHERE m.state = 'in_progress'\n           AND m.release = $1 AND m.mode = $2 AND m.best_of = $3\n           AND m.started_at > now() - interval '3 minutes'\n           AND first.side <> $4 AND first.reason IS NULL AND first.profile_id <> $5\n           AND first.opponent_mii = $6 AND first.mii = $7\n           AND (first.home_captain = $8 OR first.home_captain = 'unknown' OR $8 = 'unknown')\n           AND (first.away_captain = $9 OR first.away_captain = 'unknown' OR $9 = 'unknown')\n           AND NOT EXISTS (SELECT 1 FROM online_match_sides taken\n                           WHERE taken.match_id = m.match_id AND taken.side = $4)\n         ORDER BY m.started_at DESC\n         LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "match_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "online_matches",
+            "name": "match_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Int4",
+        "Text",
+        "Int4",
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "13febcc16de7c06a5f951d988e236782acb4779e153bf9af886824fde306d90d"
+}
