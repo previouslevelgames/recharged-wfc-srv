@@ -3,10 +3,13 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::profiles::rules::{SERIES, STADIUMS};
+use crate::profiles::rules::STADIUMS;
 
 /// The releases' game codes.
 pub const RELEASES: [&str; 4] = ["R4QE", "R4QP", "R4QJ", "R4QK"];
+/// The game's series lengths (its Series Length choices); the profiles' rule
+/// sets offer fewer.
+pub const SERIES_LENGTHS: [i32; 5] = [1, 3, 5, 7, 9];
 /// The captains, in the game's order (`eTeamID`).
 pub const CAPTAINS: [&str; 12] = [
     "mario",
@@ -232,11 +235,10 @@ impl RawReport {
             .filter(|&series| series >= 0)
             .ok_or("series: the series' start time, in Unix seconds")?;
         let mode = one_of("mode", &self.mode, &["ranked", "friends"])?;
-        let best_of = SERIES
+        let best_of = SERIES_LENGTHS
             .into_iter()
-            .map(i32::from)
             .find(|&games| i64::from(games) == self.best_of)
-            .ok_or("best_of: 1, 3, 5 or 7")?;
+            .ok_or("best_of: 1, 3, 5, 7 or 9")?;
         let side = Side::parse(&self.side).ok_or("side: home or away")?;
         let mii = mii_name("mii", self.mii)?;
         let opponent_mii = mii_name("opponent_mii", self.opponent_mii)?;
@@ -500,6 +502,20 @@ pub(crate) mod tests {
             }
         });
         assert!(parse(&without).is_ok());
+    }
+
+    #[test]
+    fn nine_game_series_are_read() {
+        let nine = |number: i64| {
+            parse(&with(game_event(), |body| {
+                body["best_of"] = json!(9);
+                body["game"]["number"] = json!(number);
+            }))
+        };
+        let report = nine(9).unwrap();
+        assert_eq!(report.best_of, 9);
+        let error = nine(10).unwrap_err();
+        assert!(error.starts_with("game.number:"), "{error}");
     }
 
     #[test]

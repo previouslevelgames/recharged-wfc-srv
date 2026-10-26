@@ -713,6 +713,25 @@ mod tests {
     }
 
     #[sqlx::test]
+    async fn a_nine_game_series_goes_to_its_ninth_game(pool: PgPool) {
+        let pair = Pair::new(&pool).await;
+        let mut anosch = pair.anosch();
+        anosch["best_of"] = json!(9);
+        let opened = send(&pool, &anosch).await;
+        for number in 1..=8 {
+            let (home, away) = if number <= 4 { (1, 0) } else { (0, 1) };
+            let recorded = send(&pool, &game(anosch.clone(), number, home, away)).await;
+            assert_eq!(recorded.state, "in_progress", "game {number}");
+        }
+        let decided = send(&pool, &game(anosch.clone(), 9, 2, 1)).await;
+        assert_eq!(decided.state, "finished");
+        assert_eq!(
+            state(&pool, opened.match_id).await,
+            ("finished".into(), Some("home".into()), 5, 4)
+        );
+    }
+
+    #[sqlx::test]
     async fn nothing_for_30_minutes_abandons_an_undecided_match(pool: PgPool) {
         let pair = Pair::new(&pool).await;
         let opened = send(&pool, &pair.anosch()).await;
