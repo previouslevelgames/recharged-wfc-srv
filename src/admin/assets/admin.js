@@ -198,6 +198,7 @@ const SECTIONS = [
     intro: 'The consoles that registered, their profiles with friend codes, and who is online.',
     api: 'players',
     render: renderPlayers,
+    detail: renderPlayer,
   },
   {
     path: '/admin/matchmaking',
@@ -591,7 +592,7 @@ function renderPlayers(data, now) {
         : 'Every profile, online first; the CPU buddy is the server\'s own',
       table(
         [
-          { label: 'Player', cell: (p) => [p.mii_name || 'Unnamed', h('span', { class: 'sub' }, `Profile ${p.profile_id}`)] },
+          { label: 'Player', cell: (p) => [h('a', { href: playerPath(p.profile_id) }, p.mii_name || 'Unnamed'), h('span', { class: 'sub' }, `Profile ${p.profile_id}`)] },
           { label: 'Friend code', cell: (p) => h('code', null, p.friend_code) },
           { label: 'Status', cell: (p) => presence(p, now) },
           {
@@ -607,6 +608,105 @@ function renderPlayers(data, now) {
         ],
         profiles,
         'No players yet. A console appears here after its first sign-in.',
+      ),
+    ),
+  ];
+}
+
+// --- A player's page -----------------------------------------------------
+
+function record(won, lost, drawn) {
+  return `${integer.format(won)}–${integer.format(lost)}–${integer.format(drawn)}`;
+}
+
+function playedResult(match, now) {
+  if (match.result) {
+    const [name, tone] = { won: ['Won', 'good'], lost: ['Lost', 'critical'], drawn: ['Drawn', null] }[match.result];
+    return [badge(tone, name), h('span', { class: 'sub' }, ago(match.ended_at || match.started_at, now))];
+  }
+  return onlineState({ ...match, last_report_at: match.started_at }, now);
+}
+
+function renderPlayer(data, now) {
+  const detail = data.content;
+  if (!detail) {
+    if (data.error) return [unreachable(data.error)];
+    return [banner({ level: 'warning', title: 'No such profile', detail: `No profile ${route.id} has signed in.` })];
+  }
+  const { profile, stats, standing, matches } = detail;
+  setHead(profile.mii_name || 'Unnamed', [`Profile ${profile.profile_id} · friend code `, h('code', null, profile.friend_code)]);
+  const player = profile.player;
+
+  return [
+    h(
+      'section',
+      { class: 'tiles', 'aria-label': 'Key figures' },
+      tile(
+        'Status',
+        profile.cpu_buddy ? 'Server' : profile.online ? (STATUSES[profile.online.status] || ['Logged in'])[0] : 'Offline',
+        profile.online ? ['Logged in to GPCM ', ago(profile.online.since, now)] : 'Not logged in to GPCM',
+      ),
+      tile('Release', profile.release, profile.gsbrcd),
+      tile('Account', h('code', null, `${profile.user_id}`), 'The console, registered with NAS'),
+      tile('Last sign-in', profile.cpu_buddy ? '—' : ago(profile.last_login_at, now), profile.last_ip || 'No address'),
+      tile('Recharged player', player ? player.name : '—', player ? (player.discord ? `Discord ${player.discord}` : 'Test player') : 'Not signed in from the launcher'),
+    ),
+    card(
+      'Record',
+      'The series its Recharged build reported, by mode; a game counts when both sides saw it the same, or only one reported it',
+      table(
+        [
+          { label: 'Mode', cell: (m) => MODES[m.mode] || m.mode },
+          { label: 'Series', num: true, cell: (m) => integer.format(m.series.played) },
+          { label: 'Won–lost–drawn', num: true, cell: (m) => record(m.series.won, m.series.lost, m.series.drawn) },
+          {
+            label: 'Other series',
+            cell: (m) => h('span', { class: 'sub' }, `${m.series.in_progress} in progress · ${m.series.disputed} disputed · ${m.series.abandoned} abandoned`),
+          },
+          { label: 'Games', num: true, cell: (m) => integer.format(m.games.played) },
+          { label: 'Won–lost–drawn', num: true, cell: (m) => record(m.games.won, m.games.lost, m.games.drawn) },
+          { label: 'Goals', num: true, cell: (m) => [`${integer.format(m.games.goals_for)} : ${integer.format(m.games.goals_against)}`, h('span', { class: 'sub' }, 'for : against')] },
+          {
+            label: 'Captains',
+            class: 'wrap',
+            cell: (m) => (m.captains.length ? m.captains.map((c) => `${captainName(c.captain)} ×${c.games}`).join(', ') : h('span', { class: 'sub' }, 'none')),
+          },
+        ],
+        stats,
+        'No modes.',
+      ),
+    ),
+    card(
+      'Ranked standing',
+      'Its rows on the leaderboards, ranked as on the Leaderboards page',
+      table(
+        [
+          { label: 'Board', cell: (e) => CATEGORIES[e.category] || `Category ${e.category}` },
+          { label: 'Rank', num: true, cell: (e) => [`${e.rank}`, h('span', { class: 'sub' }, `of ${integer.format(e.entries)}`)] },
+          { label: 'Score', num: true, cell: (e) => integer.format(e.score) },
+          { label: 'Wins', num: true, cell: (e) => (e.wins == null ? '—' : integer.format(e.wins)) },
+          { label: 'Losses', num: true, cell: (e) => (e.losses == null ? '—' : integer.format(e.losses)) },
+          { label: 'Updated', cell: (e) => ago(e.updated_at, now) },
+        ],
+        standing,
+        'No scores on the leaderboards.',
+      ),
+    ),
+    card(
+      'Matches',
+      'The series its game reported, the newest first',
+      table(
+        [
+          { label: 'Started', cell: (m) => [ago(m.started_at, now), h('span', { class: 'sub' }, dateTime.format(new Date(m.started_at)))] },
+          { label: 'Mode', cell: (m) => [MODES[m.mode] || m.mode, h('span', { class: 'sub' }, `${m.release} · best of ${m.best_of}`)] },
+          { label: 'Played as', cell: (m) => [captainName(m.captain), h('span', { class: 'sub' }, m.side === 'home' ? 'Home' : 'Away')] },
+          { label: 'Games', num: true, cell: (m) => h('a', { href: matchPath(m) }, `${m.games_won} – ${m.games_lost}`) },
+          { label: 'Opponent', cell: (m) => [miiLink(m.opponent.mii, m.opponent.profile_id), h('span', { class: 'sub' }, captainName(m.opponent.captain))] },
+          { label: 'Result', cell: (m) => playedResult(m, now) },
+          { label: '', class: 'actions', cell: (m) => h('a', { class: 'button', href: matchPath(m) }, 'Open') },
+        ],
+        matches,
+        'No matches reported yet. They appear here when its Recharged build plays online.',
       ),
     ),
   ];
@@ -753,9 +853,19 @@ function onlineState(match, now) {
   return [badge(tone, name), h('span', { class: 'sub' }, sub)];
 }
 
+function playerPath(profileId) {
+  return `/admin/players/${profileId}`;
+}
+
+/** A Mii's name, to its profile's page when a game reported it. */
+function miiLink(mii, profileId) {
+  return profileId == null ? mii : h('a', { href: playerPath(profileId) }, mii);
+}
+
 /** A team in the list: its Mii, bold when it won, and its captain. */
 function matchTeam(team, won) {
-  const name = won ? h('strong', null, team.mii) : team.mii;
+  const link = miiLink(team.mii, team.profile_id);
+  const name = won ? h('strong', null, link) : link;
   const reported = team.profile_id == null ? ' · no reports' : '';
   return [name, h('span', { class: 'sub' }, `${captainName(team.captain)}${reported}`)];
 }
@@ -826,7 +936,7 @@ function sideReporter(side) {
   const reporter = side.reporter;
   if (!reporter) return h('span', { class: 'sub' }, 'No reports: a retail game, or its reports never came');
   return [
-    `Profile ${reporter.profile_id}`,
+    h('a', { href: playerPath(reporter.profile_id) }, `Profile ${reporter.profile_id}`),
     h('span', { class: 'sub' }, ['Friend code ', h('code', null, reporter.friend_code)]),
   ];
 }

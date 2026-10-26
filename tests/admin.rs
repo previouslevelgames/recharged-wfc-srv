@@ -68,7 +68,8 @@ async fn an_admin_signs_in_sees_every_section_and_signs_out(pool: PgPool) {
         assert!(page.contains("/admin/admin.js"), "{path}");
     }
     assert_eq!(browser.get("/admin/elsewhere").await.0, 404);
-    // A match's own page, for a number only.
+    // A profile's or a match's own page, for a number only.
+    assert_eq!(browser.get("/admin/players/999999999").await.0, 200);
     assert_eq!(browser.get("/admin/matches/12").await.0, 200);
     for path in [
         "/admin/matches/twelve",
@@ -99,6 +100,15 @@ async fn an_admin_signs_in_sees_every_section_and_signs_out(pool: PgPool) {
         assert!(data["error"].is_null(), "{body}");
         assert!(data["content"].pointer(check).is_some(), "{body}");
     }
+
+    let (status, _, body) = browser.get("/admin/api/players/999999999").await;
+    assert_eq!(status, 200);
+    let data: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        data["content"]["profile"]["friend_code"], "1770-9365-9135",
+        "{body}"
+    );
+    assert_eq!(data["content"]["stats"][0]["mode"], "ranked", "{body}");
 
     // No match 12 yet: no content, and no error either.
     let (status, _, body) = browser.get("/admin/api/matches/12").await;
