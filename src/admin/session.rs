@@ -73,6 +73,7 @@ mod tests {
             email: "admin@example.com".into(),
             name: None,
             picture: None,
+            owner: false,
         }
     }
 

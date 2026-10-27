@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO past_scores\n                 (profile_id, category, first_day, region, score, userdata, updated_at)\n             VALUES (3, 0, '2026-10-15', 4, 20, '', now())",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "5214b698aebfe574a710756b630f766d5da340ac0bb04fdbf8499408ae72cf26"
+}
