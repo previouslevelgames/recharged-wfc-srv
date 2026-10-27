@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT (SELECT count(*) FROM scores) AS \"entries!\",\n                  (SELECT count(*) FROM (SELECT profile_id FROM scores\n                                         UNION SELECT profile_id FROM past_scores) p) AS \"players!\",\n                  (SELECT count(*) FROM past_scores) AS \"past_entries!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "entries!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "players!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "past_entries!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "7563390405c7f8bfd93e3ba559b0f88feacbc1cb493c3d30eb63b97aa8653f11"
+}

@@ -24,6 +24,7 @@ const CLIENT_ID: &str = "client.apps.googleusercontent.com";
 const CLIENT_SECRET: &str = "client-secret";
 const CODE: &str = "the-code";
 
+/// The pages every admin sees: all but the owners' Maintenance page.
 const PAGES: [&str; 9] = [
     "/admin",
     "/admin/players",
@@ -126,6 +127,86 @@ async fn an_admin_signs_in_sees_every_section_and_signs_out(pool: PgPool) {
     assert!(!browser.cookies.contains_key("wfc_admin"));
     assert_eq!(browser.get("/admin/api/overview").await.0, 401);
     assert_eq!(browser.get("/admin/api/matches/12").await.0, 401);
+}
+
+#[sqlx::test]
+async fn only_an_owner_wipes_the_leaderboards_and_only_when_asked_twice(pool: PgPool) {
+    const ASK: &str = "/admin/api/maintenance/wipe-leaderboards";
+    const CONFIRM: &str = "/admin/api/maintenance/wipe-leaderboards/confirm";
+    for (profile_id, category) in [(1, 0), (2, 1)] {
+        sqlx::query(
+            "INSERT INTO scores (profile_id, category, region, score, userdata)
+             VALUES ($1, $2, 4, 10, '')",
+        )
+        .bind(profile_id)
+        .bind(category)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    let scores = || async {
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM scores")
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    };
+    let (config, google) = fake_google().await;
+    let app = recharged_wfc_srv::App::new(pool.clone()).router(Some(config), None);
+
+    // An admin, not an owner: no page, no nav item, no wipe.
+    let mut admin = Browser::new(app.clone());
+    sign_in(&mut admin, &google, "second@example.com").await;
+    assert_eq!(admin.get("/admin/maintenance").await.0, 404);
+    assert_eq!(admin.get("/admin/api/maintenance").await.0, 403);
+    assert_eq!(admin.post_json(ASK, None).await.0, 403);
+    let (_, _, body) = admin.get("/admin/api/overview").await;
+    let data: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(data["viewer"]["owner"], false, "{body}");
+
+    // The owner, who is in OWNER_GOOGLE_EMAILS only.
+    let mut owner = Browser::new(app);
+    sign_in(&mut owner, &google, "owner@example.com").await;
+    assert_eq!(owner.get("/admin/maintenance").await.0, 200);
+    let (status, _, body) = owner.get("/admin/api/maintenance").await;
+    assert_eq!(status, 200);
+    let data: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(data["viewer"]["owner"], true, "{body}");
+    assert_eq!(data["content"]["leaderboards"]["entries"], 2, "{body}");
+
+    // Never from another site, nor without the first ask.
+    let (status, _, _) = owner
+        .send(Request::post(ASK).header(header::ORIGIN, "https://elsewhere.example"))
+        .await;
+    assert_eq!(status, 403);
+    let confirm =
+        |token: &str, phrase: &str| Some(serde_json::json!({ "token": token, "phrase": phrase }));
+    let (status, answer) = owner
+        .post_json(CONFIRM, confirm("made-up", "wipe all leaderboards"))
+        .await;
+    assert_eq!(status, 409, "{answer}");
+
+    // The first ask tells what goes; a wrong phrase uses its token up.
+    let (status, asked) = owner.post_json(ASK, None).await;
+    assert_eq!(status, 200, "{asked}");
+    assert_eq!(asked["phrase"], "wipe all leaderboards");
+    assert_eq!(asked["impact"]["entries"], 2, "{asked}");
+    let token = asked["token"].as_str().unwrap();
+    let (status, answer) = owner.post_json(CONFIRM, confirm(token, "wipe")).await;
+    assert_eq!(status, 400, "{answer}");
+    let (status, _) = owner
+        .post_json(CONFIRM, confirm(token, "wipe all leaderboards"))
+        .await;
+    assert_eq!(status, 409);
+    assert_eq!(scores().await, 2, "nothing wiped yet");
+
+    let (_, asked) = owner.post_json(ASK, None).await;
+    let token = asked["token"].as_str().unwrap();
+    let (status, wiped) = owner
+        .post_json(CONFIRM, confirm(token, "wipe all leaderboards"))
+        .await;
+    assert_eq!(status, 200, "{wiped}");
+    assert_eq!(wiped, serde_json::json!({ "scores": 2, "past_scores": 0 }));
+    assert_eq!(scores().await, 0);
 }
 
 #[tokio::test]
@@ -274,6 +355,14 @@ async fn admin_is_not_served_without_its_configuration() {
     }
 }
 
+/// Signs `email` in, through [`FakeGoogle`].
+async fn sign_in(browser: &mut Browser, google: &FakeGoogle, email: &str) {
+    let params = start_sign_in(browser, "/admin/login").await;
+    google.approve(&params, email);
+    let (status, _, _) = browser.callback(CODE, &params["state"]).await;
+    assert_eq!(status, 303, "{email}");
+}
+
 /// Follows `login`, a `/admin/login` URI, to Google. Returns the query it
 /// sends there.
 async fn start_sign_in(browser: &mut Browser, login: &str) -> HashMap<String, String> {
@@ -318,7 +407,30 @@ impl Browser {
             .await
     }
 
-    async fn send(&mut self, mut request: request::Builder) -> (StatusCode, HeaderMap, String) {
+    /// A change from this server's own pages: `json`, or no body. Returns
+    /// the JSON answer, or `null`.
+    async fn post_json(
+        &mut self,
+        uri: &str,
+        json: Option<serde_json::Value>,
+    ) -> (StatusCode, serde_json::Value) {
+        let request = Request::post(uri)
+            .header(header::ORIGIN, PUBLIC_URL)
+            .header(header::CONTENT_TYPE, "application/json");
+        let body = json.map_or_else(Body::empty, |json| Body::from(json.to_string()));
+        let (status, _, answer) = self.send_body(request, body).await;
+        (status, serde_json::from_str(&answer).unwrap_or_default())
+    }
+
+    async fn send(&mut self, request: request::Builder) -> (StatusCode, HeaderMap, String) {
+        self.send_body(request, Body::empty()).await
+    }
+
+    async fn send_body(
+        &mut self,
+        mut request: request::Builder,
+        body: Body,
+    ) -> (StatusCode, HeaderMap, String) {
         if !self.cookies.is_empty() {
             let cookies: Vec<String> = self
                 .cookies
@@ -330,7 +442,7 @@ impl Browser {
         let response = self
             .app
             .clone()
-            .oneshot(request.body(Body::empty()).unwrap())
+            .oneshot(request.body(body).unwrap())
             .await
             .unwrap();
         for cookie in response.headers().get_all(header::SET_COOKIE) {
@@ -394,6 +506,7 @@ async fn fake_google() -> (Config, FakeGoogle) {
         "admin@example.com, second@example.com",
     )
     .unwrap();
+    config.owners = vec!["owner@example.com".into()];
     config.google.authorize = Url::parse("https://accounts.example.com/authorize").unwrap();
     config.google.token = Url::parse(&format!("http://{address}/token")).unwrap();
     (config, google)

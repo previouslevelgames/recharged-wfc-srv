@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM scores",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "6026dd0ba0227e9b24750245979912dbc137ba1f28ba0df8784e9b2aa404d5b9"
+}

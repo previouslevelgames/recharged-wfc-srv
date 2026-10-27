@@ -1186,3 +1186,125 @@ td.log-text {
     min-width: 0;
   }
 }
+
+/* Maintenance (owners only) */
+
+.nav-item[hidden] {
+  display: none;
+}
+
+.card.danger-zone {
+  border-color: color-mix(in srgb, var(--critical) 45%, transparent);
+}
+
+.operation {
+  display: grid;
+  gap: 12px;
+  padding: 0 20px 20px;
+}
+
+.operation p,
+.confirm p {
+  margin: 0;
+  color: var(--ink-2);
+}
+
+.warning-note {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--warning) 55%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--warning) 12%, var(--surface));
+}
+
+.operation .warning-note,
+.confirm .warning-note {
+  color: var(--ink);
+}
+
+.warning-note svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  margin-top: 1px;
+  color: #8a5a00;
+}
+
+.button.destroy {
+  background: var(--critical);
+  border-color: var(--critical);
+  color: #fff;
+}
+
+.button.destroy:hover {
+  background: color-mix(in srgb, var(--critical) 85%, #000);
+}
+
+.button:disabled,
+.button:disabled:hover {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.button.destroy:disabled:hover {
+  background: var(--critical);
+}
+
+dialog.confirm {
+  width: min(480px, calc(100vw - 32px));
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 12px 40px rgba(11, 11, 11, 0.25);
+}
+
+dialog.confirm::backdrop {
+  background: rgba(11, 11, 11, 0.5);
+}
+
+.confirm form {
+  display: grid;
+  gap: 14px;
+  padding: 20px;
+}
+
+.confirm h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 650;
+}
+
+.confirm input {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-sunken);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 14px;
+}
+
+.confirm input:focus-visible {
+  outline: 2px solid var(--critical);
+  outline-offset: 1px;
+}
+
+.confirm .confirm-expires {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.confirm .editor-actions {
+  justify-content: flex-end;
+}
+
+@media (prefers-color-scheme: dark) {
+  .warning-note svg {
+    color: var(--warning);
+  }
+}

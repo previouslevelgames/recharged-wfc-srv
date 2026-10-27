@@ -42,7 +42,7 @@ the public address it logged in to GPCM from.
 | `event` | `start` (the series' first kickoff), `game` (a game ended) or `end` (the series is over) |
 | `series` | the series' start time in Unix seconds, by the game's clock: every report of a series carries it, a later series has a larger one |
 | `mode` | `ranked` or `friends` |
-| `best_of` | games in the series: 1, 3, 5 or 7 |
+| `best_of` | games in the series: 1, 3, 5, 7 or 9 |
 | `side` | the reporter's team: `home` or `away` |
 | `mii`, `opponent_mii` | the Mii names as the reporter's game shows them: 1 to 10 characters (not bytes), no control characters |
 | `captains` | per team, a captain in the game's order (`eTeamID`): `mario`, `bowser`, `daisy`, `donkey_kong`, `luigi`, `peach`, `waluigi`, `wario`, `yoshi`, `bowser_jr`, `diddy_kong`, `petey`; or `unknown` when the game had none drafted for that team |
