@@ -1,14 +1,19 @@
 //! `/admin`: the dashboard of the WFC server, behind Google sign-in.
 //!
-//! Only the Google accounts in `ADMIN_GOOGLE_EMAILS` get in ([`google`]).
+//! Only the Google accounts in `ADMIN_GOOGLE_EMAILS` or `OWNER_GOOGLE_EMAILS`
+//! get in ([`google`]).
 //! Sessions live in memory ([`session`]). Every page in [`PAGES`] is the same
 //! static page; its script shows the section for its path and polls that
 //! section's JSON under `/admin/api/` ([`page`]): [`overview`], [`players`],
 //! [`matchmaking`], [`matches`], [`leaderboards`], [`competitive`],
-//! [`database`] and [`logs`]. The other sections are planned with the
-//! services they need. A section's rows may open a page of their own, its
-//! path and an id ([`DETAILS`]). The Competitive page also edits the rule
-//! sets matches are played by.
+//! [`database`], [`logs`] and [`maintenance`]. The other sections are
+//! planned with the services they need. A section's rows may open a page of
+//! their own, its path and an id ([`DETAILS`]). The Competitive page also
+//! edits the rule sets matches are played by.
+//!
+//! Owners, in `OWNER_GOOGLE_EMAILS`, are above admins: they alone see the
+//! pages in [`OWNER_PAGES`], whose operations cannot be undone. Those ask
+//! twice ([`maintenance::Confirmations`]).
 
 mod competitive;
 mod config;
@@ -16,6 +21,7 @@ mod database;
 mod google;
 mod leaderboards;
 mod logs;
+mod maintenance;
 mod matches;
 mod matchmaking;
 mod overview;
@@ -48,12 +54,13 @@ use crate::{
 };
 pub use config::{Config, GoogleEndpoints, VARIABLES};
 use google::{Account, Login, SignInError};
+use maintenance::{Confirmations, Operation, Refusal};
 use page::PageData;
 use session::{SESSION_TTL, Sessions};
 
 /// The dashboard's pages, Overview first. The script in `assets/admin.js`
 /// knows the same list.
-const PAGES: [&str; 9] = [
+const PAGES: [&str; 10] = [
     "/admin",
     "/admin/players",
     "/admin/matchmaking",
@@ -63,7 +70,11 @@ const PAGES: [&str; 9] = [
     "/admin/moderation",
     "/admin/database",
     "/admin/logs",
+    "/admin/maintenance",
 ];
+
+/// The pages for owners only: anyone else gets a 404.
+const OWNER_PAGES: [&str; 1] = ["/admin/maintenance"];
 
 /// The sections whose rows open a page of their own: `/admin/matches/12`.
 const DETAILS: [&str; 2] = ["/admin/players", "/admin/matches"];
@@ -95,6 +106,8 @@ struct AdminState {
     /// For Google's token endpoint.
     http: reqwest::Client,
     sessions: Sessions,
+    /// The Maintenance page's operations waiting for their second ask.
+    confirmations: Confirmations,
     started_at: OffsetDateTime,
 }
 
@@ -117,6 +130,7 @@ pub(crate) fn router(
         activity,
         http,
         sessions: Sessions::default(),
+        confirmations: Confirmations::default(),
         started_at: OffsetDateTime::now_utc(),
     });
     let mut router = Router::new();
@@ -142,6 +156,15 @@ pub(crate) fn router(
         .route("/admin/api/competitive", get(api_competitive))
         .route("/admin/api/logs", get(api_logs))
         .route("/admin/api/logs/{day}", get(log_file))
+        .route("/admin/api/maintenance", get(api_maintenance))
+        .route(
+            "/admin/api/maintenance/wipe-leaderboards",
+            post(arm_wipe_leaderboards),
+        )
+        .route(
+            "/admin/api/maintenance/wipe-leaderboards/confirm",
+            post(wipe_leaderboards),
+        )
         .route("/admin/api/rules", post(create_rule_set))
         .route(
             "/admin/api/rules/{id}",
@@ -200,10 +223,11 @@ impl AdminState {
             .code
             .filter(|_| params.state.as_deref() == Some(login.state.as_str()))
             .ok_or(SignInError::BadCallback)?;
-        let account = google::exchange(&self.http, &self.config, &login, &code).await?;
-        if !self.config.admins.contains(&account.email) {
+        let mut account = google::exchange(&self.http, &self.config, &login, &code).await?;
+        if !self.config.may_sign_in(&account.email) {
             return Err(SignInError::NotAdmin(account.email));
         }
+        account.owner = self.config.is_owner(&account.email);
         Ok(account)
     }
 
@@ -249,6 +273,9 @@ async fn home(State(state): State<Arc<AdminState>>, jar: CookieJar, uri: Uri) ->
         return StatusCode::NOT_FOUND.into_response();
     }
     match state.signed_in(&jar) {
+        Some(viewer) if !viewer.owner && OWNER_PAGES.contains(&path.as_str()) => {
+            StatusCode::NOT_FOUND.into_response()
+        }
         Some(_) => Html(DASHBOARD_PAGE).into_response(),
         None => state.login_page(StatusCode::OK, None, &path),
     }
@@ -294,7 +321,7 @@ async fn callback(
     let jar = jar.remove(Cookie::build(LOGIN_COOKIE).path("/admin"));
     match state.sign_in(login, params).await {
         Ok(account) => {
-            info!(target: "admin", email = %account.email, "signed in");
+            info!(target: "admin", email = %account.email, owner = account.owner, "signed in");
             let session = state.sessions.open(account);
             let jar = jar.add(state.cookie(SESSION_COOKIE, session, SESSION_TTL));
             (jar, Redirect::to(&return_to)).into_response()
@@ -445,6 +472,14 @@ impl AdminState {
         self.signed_in(jar).ok_or(StatusCode::UNAUTHORIZED)
     }
 
+    /// Who may run an owner's operation: an [`AdminState::editor`] who is an
+    /// owner. Otherwise 403, or 401 when signed out.
+    fn owner(&self, jar: &CookieJar, headers: &HeaderMap) -> Result<Account, StatusCode> {
+        Some(self.editor(jar, headers)?)
+            .filter(|account| account.owner)
+            .ok_or(StatusCode::FORBIDDEN)
+    }
+
     async fn save_rule_set(
         &self,
         jar: &CookieJar,
@@ -452,9 +487,6 @@ impl AdminState {
         id: Option<i64>,
         form: RuleSetForm,
     ) -> Response {
-        let error = |status: StatusCode, message: &str| {
-            (status, Json(serde_json::json!({ "error": message }))).into_response()
-        };
         let editor = match self.editor(jar, headers) {
             Ok(editor) => editor,
             Err(StatusCode::UNAUTHORIZED) => return error(StatusCode::UNAUTHORIZED, "signed out"),
@@ -519,6 +551,95 @@ async fn delete_rule_set(
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
+}
+
+/// The Maintenance page, for owners only.
+async fn api_maintenance(State(state): State<Arc<AdminState>>, jar: CookieJar) -> Response {
+    if state.signed_in(&jar).is_some_and(|viewer| !viewer.owner) {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    state
+        .page_data(&jar, maintenance::read(&state.pool, &state.gpcm))
+        .await
+}
+
+/// The first ask: arms the wipe and answers with what it would delete, the
+/// phrase to type and the token for the second ask.
+async fn arm_wipe_leaderboards(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    headers: HeaderMap,
+) -> Response {
+    let owner = match state.owner(&jar, &headers) {
+        Ok(owner) => owner,
+        Err(status) => return status.into_response(),
+    };
+    let leaderboards = match maintenance::leaderboards(&state.pool, &state.gpcm).await {
+        Ok(leaderboards) => leaderboards,
+        Err(failure) => {
+            warn!(target: "admin", error = %failure, "database error");
+            return error(StatusCode::INTERNAL_SERVER_ERROR, "the database failed");
+        }
+    };
+    let asked = state
+        .confirmations
+        .arm(Operation::WipeLeaderboards, &owner.email, leaderboards);
+    info!(target: "admin", email = %owner.email, "leaderboard wipe asked");
+    Json(asked).into_response()
+}
+
+/// The second ask: the first one's token and the phrase typed out.
+#[derive(Deserialize)]
+struct Confirmation {
+    token: String,
+    phrase: String,
+}
+
+async fn wipe_leaderboards(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Json(confirmation): Json<Confirmation>,
+) -> Response {
+    let owner = match state.owner(&jar, &headers) {
+        Ok(owner) => owner,
+        Err(status) => return status.into_response(),
+    };
+    let operation = Operation::WipeLeaderboards;
+    let confirmed = state.confirmations.confirm(
+        operation,
+        &owner.email,
+        &confirmation.token,
+        &confirmation.phrase,
+    );
+    if let Err(refusal) = confirmed {
+        warn!(target: "admin", email = %owner.email, ?refusal, "leaderboard wipe refused");
+        return match refusal {
+            Refusal::Expired => error(
+                StatusCode::CONFLICT,
+                "this confirmation expired: start again",
+            ),
+            Refusal::Phrase => error(
+                StatusCode::BAD_REQUEST,
+                &format!("type \"{}\" to confirm: start again", operation.phrase()),
+            ),
+        };
+    }
+    match maintenance::wipe_leaderboards(&state.pool).await {
+        Ok(wiped) => {
+            warn!(target: "admin", email = %owner.email, ?wiped, "leaderboards wiped");
+            Json(wiped).into_response()
+        }
+        Err(failure) => {
+            warn!(target: "admin", error = %failure, "database error");
+            error(StatusCode::INTERNAL_SERVER_ERROR, "the database failed")
+        }
+    }
+}
+
+/// A JSON error the dashboard's script shows.
+fn error(status: StatusCode, message: &str) -> Response {
+    (status, Json(serde_json::json!({ "error": message }))).into_response()
 }
 
 async fn stylesheet() -> impl IntoResponse {

@@ -61,6 +61,7 @@ enter the **Key** and **Value** from the table, and set **Password Mask: Yes** f
 | `GOOGLE_CLIENT_ID` | for `/admin` | Client ID of the Google OAuth client. |
 | `GOOGLE_CLIENT_SECRET` | for `/admin` | Client secret of the Google OAuth client. Set **Password Mask: Yes**. |
 | `ADMIN_GOOGLE_EMAILS` | for `/admin` | Google addresses allowed in, comma-separated, e.g. `you@gmail.com, teammate@gmail.com`. |
+| `OWNER_GOOGLE_EMAILS` | no | Owners, above admins: Google addresses, comma-separated, e.g. `you@gmail.com`. They sign in too, and only they see **Maintenance**. Unset, no one does. |
 | `DISCORD_CLIENT_ID` | for profiles | Client ID of the Discord app players sign in with. See [profiles.md](profiles.md). |
 | `DISCORD_CLIENT_SECRET` | for profiles | Its client secret. Set **Password Mask: Yes**. |
 | `PROFILES_TEST_SIGN_IN` | no | `true` lets anyone sign in to a profile with a name alone, for tests with two games on one PC. Never on a public server. |
@@ -126,7 +127,13 @@ its own page too (e.g. `/admin/players/1000000000`): its friend code and
 console, its record in the reported matches by mode (series and games won,
 lost and drawn, goals, captains), its standing on the leaderboards and its
 matches.
-Only the Google accounts in `ADMIN_GOOGLE_EMAILS` get in. Without the four `/admin`
+Only the Google accounts in `ADMIN_GOOGLE_EMAILS` or `OWNER_GOOGLE_EMAILS` get
+in. Owners also see **Maintenance** (`/admin/maintenance`), operations that
+cannot be undone: **Wipe all leaderboards** deletes every board's scores and the
+final standings of past seasons. It asks twice: the button shows what would go,
+then the wipe runs only once you type `wipe all leaderboards` within 5 minutes.
+A game that is online keeps its totals until it logs in again and puts them
+back after its next match, so wipe when no one is online. Without the four `/admin`
 variables, the server runs as before and `/admin` answers 404. With only some of
 them, the container stops at start and its log names the missing ones.
 
@@ -147,8 +154,9 @@ carries only the dashboard; the game still needs the five ports above.
    enough: add every admin as a **test user**. The scopes are only `openid`,
    `email` and `profile`.
 3. Add the four variables `PUBLIC_URL`, `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`
-   and `ADMIN_GOOGLE_EMAILS` (see [Environment variables](#environment-variables))
-   and click **Apply**. The log shows `Admin dashboard at https://wfc.example.com/admin`.
+   and `ADMIN_GOOGLE_EMAILS` (see [Environment variables](#environment-variables)),
+   and `OWNER_GOOGLE_EMAILS` with your own address for **Maintenance**, and click
+   **Apply**. The log shows `Admin dashboard at https://wfc.example.com/admin`.
 
 Sessions last 12 hours and live in the server's memory: restarting or updating
 the container signs everyone out. To remove an admin, edit `ADMIN_GOOGLE_EMAILS`

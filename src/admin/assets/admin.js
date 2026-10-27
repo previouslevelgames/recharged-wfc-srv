@@ -171,6 +171,7 @@ const ICONS = {
   moderation: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z',
   database: 'M12 8c4.97 0 9-1.34 9-3s-4.03-3-9-3-9 1.34-9 3 4.03 3 9 3zM21 12c0 1.66-4 3-9 3s-9-1.34-9-3M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5',
   logs: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M16 13H8M16 17H8M10 9H8',
+  maintenance: 'M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z',
   good: 'M20 6 9 17l-5-5',
   warning: 'M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z',
   serious: 'M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z',
@@ -180,7 +181,8 @@ const ICONS = {
 
 // The sections, in the order of the server's PAGES (src/admin/mod.rs). A
 // planned section has no data of its own yet: it polls the overview, for
-// the header and footer.
+// the header and footer. An owner's section, in the server's OWNER_PAGES,
+// shows to owners only.
 const SECTIONS = [
   {
     path: '/admin',
@@ -270,6 +272,16 @@ const SECTIONS = [
     intro: "The server's log files, one per day: read them here, or download a whole day.",
     api: 'logs',
     render: renderLogs,
+  },
+  {
+    path: '/admin/maintenance',
+    group: 'System',
+    name: 'Maintenance',
+    icon: 'maintenance',
+    intro: "Operations on the server's data that cannot be undone, for owners only. Each one asks twice.",
+    api: 'maintenance',
+    render: renderMaintenance,
+    owner: true,
   },
 ];
 
@@ -424,6 +436,20 @@ function tile(label, value, sub, ...extra) {
   );
 }
 
+/** Sends a change to the server. Returns its JSON answer, or throws with
+ * the error it gives. */
+async function send(method, path, body) {
+  const response = await fetch(path, {
+    method,
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: body && JSON.stringify(body),
+  });
+  if (response.status === 401) window.location.reload();
+  const answer = response.status === 204 ? null : await response.json().catch(() => null);
+  if (!response.ok) throw new Error((answer && answer.error) || `HTTP ${response.status}`);
+  return answer;
+}
+
 function badge(tone, text) {
   return h('span', { class: 'badge', 'data-tone': tone }, text);
 }
@@ -461,8 +487,9 @@ function serviceCard(target, { tone, status, facts, text, foot }) {
 
 function renderOverview(data, now) {
   const content = data.content;
-  const planned = SECTIONS.filter((target) => target.planned).length;
-  const live = SECTIONS.length - 1 - planned;
+  const sections = SECTIONS.filter((target) => !target.owner || data.viewer.owner);
+  const planned = sections.filter((target) => target.planned).length;
+  const live = sections.length - 1 - planned;
   let status;
   if (!content) {
     status = { level: 'critical', title: 'Database unreachable', detail: `The leaderboards are down with it. ${data.error || ''}` };
@@ -474,7 +501,7 @@ function renderOverview(data, now) {
   }
 
   // Live sections first, then the planned ones.
-  const targets = SECTIONS.filter((target) => target.path !== '/admin');
+  const targets = sections.filter((target) => target.path !== '/admin');
   const ordered = [...targets.filter((target) => !target.planned), ...targets.filter((target) => target.planned)];
   const cards = ordered.map((target) => {
     if (target.planned) {
@@ -490,6 +517,7 @@ function renderOverview(data, now) {
       });
     }
     if (!content) return serviceCard(target, { tone: 'critical', status: 'Down', text: 'The database does not answer.' });
+    if (target.owner) return serviceCard(target, { tone: null, status: 'Owners only', text: target.intro });
     if (target.path === '/admin/database') {
       const db = content.database;
       return serviceCard(target, {
@@ -1620,18 +1648,6 @@ const editor = {
     status.dataset.tone = tone || '';
   },
 
-  async send(method, path, body) {
-    const response = await fetch(path, {
-      method,
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: body && JSON.stringify(body),
-    });
-    if (response.status === 401) window.location.reload();
-    const answer = response.status === 204 ? null : await response.json().catch(() => null);
-    if (!response.ok) throw new Error((answer && answer.error) || `HTTP ${response.status}`);
-    return answer;
-  },
-
   async save() {
     const value = (id) => document.getElementById(id).value;
     const form = {
@@ -1648,7 +1664,7 @@ const editor = {
     };
     try {
       const path = this.editing ? `/admin/api/rules/${this.editing}` : '/admin/api/rules';
-      const saved = await this.send(this.editing ? 'PUT' : 'POST', path, form);
+      const saved = await send(this.editing ? 'PUT' : 'POST', path, form);
       this.render(saved);
       this.status('Saved', 'good');
       poll();
@@ -1660,13 +1676,149 @@ const editor = {
   async remove() {
     if (!window.confirm('Delete this rule set? Matches made with it keep their rules.')) return;
     try {
-      await this.send('DELETE', `/admin/api/rules/${this.editing}`);
+      await send('DELETE', `/admin/api/rules/${this.editing}`);
       this.render(null);
       this.status('Deleted', 'good');
       poll();
     } catch (error) {
       this.status(error.message, 'critical');
     }
+  },
+};
+
+// --- Maintenance ---------------------------------------------------------
+
+/** `1 entry`, `2 entries`. */
+function plural(value, one, many) {
+  return `${integer.format(value)} ${value === 1 ? one : many}`;
+}
+
+/** A warning inside a card or dialog. */
+function warningNote(...text) {
+  return h('p', { class: 'warning-note' }, icon('warning'), h('span', null, ...text));
+}
+
+/** The games online keep their totals (docs/gamestats2.md, "Seasons"). */
+function onlineWarning(online) {
+  if (!online) return null;
+  return warningNote(
+    `${count(online)} ${online === 1 ? 'game is' : 'games are'} online now. `,
+    'A game keeps its totals until it logs in again, and its next match puts them back. Wipe when no one is online.',
+  );
+}
+
+function renderMaintenance(data) {
+  if (!data.content) return [unreachable(data.error)];
+  const boards = data.content.leaderboards;
+  const empty = boards.entries + boards.past_entries === 0;
+  return [
+    h(
+      'section',
+      { class: 'tiles', 'aria-label': 'What a wipe deletes' },
+      tile('Entries', count(boards.entries), 'Every board, as it stands'),
+      tile('Past seasons', count(boards.past_entries), 'Final standings kept'),
+      tile('Players', count(boards.players), 'With a score in either'),
+      tile('Online now', count(boards.online), 'Games that keep their totals'),
+    ),
+    h(
+      'section',
+      { class: 'card danger-zone' },
+      h('header', { class: 'card-head' }, h('h2', null, 'Wipe all leaderboards'), h('p', null, 'Asks twice · cannot be undone')),
+      h(
+        'div',
+        { class: 'operation' },
+        h('p', null, 'Deletes every score on every board (season, striker of the day, friends and the alternate boards) and the final standings kept from past seasons. Profiles, matches and rule sets stay.'),
+        h('p', null, 'Each game then finds no score of its own when it logs in, and starts again from 0.'),
+        onlineWarning(boards.online),
+        h(
+          'div',
+          { class: 'editor-actions' },
+          h('button', { class: 'button destroy', type: 'button', disabled: empty || wipe.busy, onclick: () => wipe.ask() }, 'Wipe all leaderboards…'),
+          wipe.result
+            ? h('span', { class: 'editor-status', role: 'status', 'data-tone': wipe.result[1] }, wipe.result[0])
+            : empty && h('span', { class: 'editor-status', role: 'status' }, 'Nothing to wipe: the boards are empty.'),
+        ),
+      ),
+    ),
+  ];
+}
+
+/** Wiping the leaderboards, in two asks: the button arms it on the server,
+ * then the dialog sends back its token with the phrase typed out. The dialog
+ * stays out of the polled page, so typing survives each refresh. */
+const wipe = {
+  dialog: null,
+  asked: null, // The server's answer to the first ask, while the dialog is open.
+  busy: false,
+  result: null, // [text, tone] of the last attempt.
+
+  async ask() {
+    this.busy = true;
+    this.result = null;
+    render(lastData);
+    try {
+      this.asked = await send('POST', '/admin/api/maintenance/wipe-leaderboards');
+      this.open();
+    } catch (error) {
+      this.result = [error.message, 'critical'];
+    }
+    this.busy = false;
+    render(lastData);
+  },
+
+  open() {
+    const { phrase, expires_at: expiresAt, impact } = this.asked;
+    const input = h('input', { type: 'text', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', 'aria-describedby': 'wipe-expires' });
+    const confirm = h('button', { class: 'button destroy', type: 'submit', disabled: true }, 'Wipe leaderboards');
+    input.addEventListener('input', () => {
+      confirm.disabled = input.value.trim() !== phrase;
+    });
+    const form = h(
+      'form',
+      { onsubmit: (event) => { event.preventDefault(); this.confirm(input.value, confirm); } },
+      h('h2', { id: 'wipe-title' }, 'Wipe all leaderboards?'),
+      h(
+        'p',
+        null,
+        'This deletes ',
+        h('strong', null, plural(impact.entries, 'entry', 'entries')),
+        ` of ${plural(impact.players, 'player', 'players')} on every board, and `,
+        h('strong', null, plural(impact.past_entries, 'row', 'rows')),
+        ' kept from past seasons. It cannot be undone.',
+      ),
+      onlineWarning(impact.online),
+      h('label', { class: 'editor-field' }, h('span', null, 'Type ', h('code', null, phrase), ' to confirm'), input),
+      h('p', { class: 'confirm-expires', id: 'wipe-expires' }, `This confirmation expires at ${clock.format(new Date(expiresAt))}.`),
+      h(
+        'div',
+        { class: 'editor-actions' },
+        h('button', { class: 'button', type: 'button', onclick: () => this.dialog.close() }, 'Cancel'),
+        confirm,
+      ),
+    );
+    if (!this.dialog) {
+      this.dialog = h('dialog', { class: 'confirm', 'aria-labelledby': 'wipe-title' });
+      this.dialog.addEventListener('close', () => {
+        this.asked = null;
+      });
+      document.body.append(this.dialog);
+    }
+    this.dialog.replaceChildren(form);
+    this.dialog.showModal();
+    input.focus();
+  },
+
+  async confirm(phrase, button) {
+    button.disabled = true;
+    const { token } = this.asked;
+    try {
+      const wiped = await send('POST', '/admin/api/maintenance/wipe-leaderboards/confirm', { token, phrase });
+      this.result = [`Wiped ${plural(wiped.scores, 'entry', 'entries')} and ${plural(wiped.past_scores, 'row', 'rows')} of past seasons.`, 'good'];
+    } catch (error) {
+      this.result = [error.message, 'critical'];
+    }
+    this.dialog.close();
+    poll();
   },
 };
 
@@ -1700,7 +1852,13 @@ function renderNav() {
     nav.append(
       h(
         'a',
-        { class: 'nav-item', href: target.path, 'aria-current': target === section ? 'page' : null },
+        {
+          class: 'nav-item',
+          href: target.path,
+          'aria-current': target === section ? 'page' : null,
+          'data-owner': target.owner,
+          hidden: target.owner,
+        },
         icon(target.icon),
         h('span', null, target.name),
         target.planned && h('span', { class: 'nav-soon' }, 'Soon'),
@@ -1724,6 +1882,7 @@ function renderViewer(viewer) {
     avatar.replaceChildren(image);
   }
   document.getElementById('viewer').replaceChildren(avatar, h('span', { class: 'viewer-email' }, viewer.email));
+  for (const item of document.querySelectorAll('#nav [data-owner]')) item.hidden = !viewer.owner;
 }
 
 function renderFooter(data, now) {

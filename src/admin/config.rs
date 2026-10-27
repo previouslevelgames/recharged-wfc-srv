@@ -6,7 +6,8 @@ use reqwest::Url;
 
 /// Every variable `/admin` needs. Set all of them, or none of the Google
 /// ones to run the server without `/admin`: `PUBLIC_URL` serves the profile
-/// service too. It also reads `LOG_DIR`, for the Logs page.
+/// service too. It also reads `LOG_DIR`, for the Logs page, and
+/// `OWNER_GOOGLE_EMAILS`, for the owners' pages.
 pub const VARIABLES: [&str; 4] = [
     "PUBLIC_URL",
     "GOOGLE_CLIENT_ID",
@@ -25,6 +26,9 @@ pub struct Config {
     pub client_secret: String,
     /// The Google accounts that may sign in, lowercase.
     pub admins: Vec<String>,
+    /// The accounts above admins, lowercase: they sign in too, and alone see
+    /// the Maintenance page. None when `OWNER_GOOGLE_EMAILS` is unset.
+    pub owners: Vec<String>,
     pub google: GoogleEndpoints,
     /// Where the server writes its daily log files, if anywhere.
     pub log_dir: Option<PathBuf>,
@@ -76,6 +80,12 @@ impl Config {
         config.log_dir = var("LOG_DIR")
             .filter(|dir| !dir.is_empty())
             .map(PathBuf::from);
+        if let Some(owners) = var("OWNER_GOOGLE_EMAILS").filter(|owners| !owners.trim().is_empty())
+        {
+            config.owners = emails(&owners).ok_or(
+                "OWNER_GOOGLE_EMAILS: give comma-separated Google addresses, or leave it unset",
+            )?;
+        }
         Ok(Some(config))
     }
 
@@ -87,22 +97,30 @@ impl Config {
         client_secret: &str,
         admins: &str,
     ) -> Result<Self, String> {
-        let admins: Vec<String> = admins
-            .split(',')
-            .map(|email| email.trim().to_lowercase())
-            .filter(|email| !email.is_empty())
-            .collect();
-        if admins.is_empty() || admins.iter().any(|email| !email.contains('@')) {
-            return Err("ADMIN_GOOGLE_EMAILS: give comma-separated Google addresses".into());
-        }
+        let admins =
+            emails(admins).ok_or("ADMIN_GOOGLE_EMAILS: give comma-separated Google addresses")?;
         Ok(Self {
             public_url: origin(public_url)?,
             client_id: client_id.to_owned(),
             client_secret: client_secret.to_owned(),
             admins,
+            owners: Vec::new(),
             google: GoogleEndpoints::default(),
             log_dir: None,
         })
+    }
+
+    /// Whether `email`, lowercase, may sign in: an admin's or an owner's.
+    pub fn may_sign_in(&self, email: &str) -> bool {
+        self.admins
+            .iter()
+            .chain(&self.owners)
+            .any(|admin| admin == email)
+    }
+
+    /// Whether `email`, lowercase, is an owner's.
+    pub fn is_owner(&self, email: &str) -> bool {
+        self.owners.iter().any(|owner| owner == email)
     }
 
     /// Where Google sends the browser back to. Register it in the OAuth
@@ -124,10 +142,22 @@ impl fmt::Debug for Config {
             .field("public_url", &self.public_url)
             .field("client_id", &self.client_id)
             .field("admins", &self.admins)
+            .field("owners", &self.owners)
             .field("google", &self.google)
             .field("log_dir", &self.log_dir)
             .finish_non_exhaustive()
     }
+}
+
+/// A comma-separated list of addresses, lowercase; `None` for none, or for
+/// one that is not an address.
+fn emails(list: &str) -> Option<Vec<String>> {
+    let emails: Vec<String> = list
+        .split(',')
+        .map(|email| email.trim().to_lowercase())
+        .filter(|email| !email.is_empty())
+        .collect();
+    (!emails.is_empty() && emails.iter().all(|email| email.contains('@'))).then_some(emails)
 }
 
 /// `PUBLIC_URL` as an origin. Google takes `http://` redirect URIs only for
@@ -201,6 +231,7 @@ mod tests {
             "https://wfc.example.com/admin/callback"
         );
         assert_eq!(config.admins, ["admin@example.com", "second@example.com"]);
+        assert!(config.owners.is_empty());
         assert!(config.secure());
         assert!(!format!("{config:?}").contains("the-client-secret"));
         assert_eq!(config.log_dir, None);
@@ -246,5 +277,29 @@ mod tests {
         for admins in ["", " , ", "admin"] {
             assert!(Config::new("https://wfc.example.com", "id", "secret", admins).is_err());
         }
+    }
+
+    #[test]
+    fn owners_sign_in_and_are_above_admins() {
+        let config = from(
+            &[
+                ALL.as_slice(),
+                &[("OWNER_GOOGLE_EMAILS", " Owner@Example.com ")],
+            ]
+            .concat(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(config.owners, ["owner@example.com"]);
+        assert!(config.may_sign_in("owner@example.com") && config.is_owner("owner@example.com"));
+        assert!(config.may_sign_in("admin@example.com") && !config.is_owner("admin@example.com"));
+        assert!(!config.may_sign_in("someone@example.com"));
+
+        let blank = from(&[ALL.as_slice(), &[("OWNER_GOOGLE_EMAILS", " ")]].concat());
+        assert!(blank.unwrap().unwrap().owners.is_empty());
+        let error = from(&[ALL.as_slice(), &[("OWNER_GOOGLE_EMAILS", "owner")]].concat())
+            .err()
+            .unwrap();
+        assert!(error.starts_with("OWNER_GOOGLE_EMAILS"), "{error}");
     }
 }

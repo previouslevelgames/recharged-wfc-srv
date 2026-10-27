@@ -101,6 +101,8 @@ pub struct Account {
     pub name: Option<String>,
     /// The profile photo's URL.
     pub picture: Option<String>,
+    /// Whether `OWNER_GOOGLE_EMAILS` lists it, set once it is let in.
+    pub owner: bool,
 }
 
 /// Trades the callback's `code` for the account that signed in.
@@ -201,6 +203,7 @@ fn verify(id_token: &str, client_id: &str, nonce: &str, now: i64) -> Result<Acco
         email: email.to_lowercase(),
         name: claims.name,
         picture: claims.picture,
+        owner: false,
     })
 }
 
@@ -220,7 +223,8 @@ pub enum SignInError {
     Token(&'static str),
     /// The account has no verified address.
     Unverified,
-    /// A verified account that is not in `ADMIN_GOOGLE_EMAILS`.
+    /// A verified account in neither `ADMIN_GOOGLE_EMAILS` nor
+    /// `OWNER_GOOGLE_EMAILS`.
     NotAdmin(String),
 }
 
@@ -261,7 +265,10 @@ impl fmt::Display for SignInError {
             Self::Exchange(detail) => write!(f, "token exchange failed: {detail}"),
             Self::Token(check) => write!(f, "the ID token failed the {check} check"),
             Self::Unverified => f.write_str("the account has no verified address"),
-            Self::NotAdmin(email) => write!(f, "{email} is not in ADMIN_GOOGLE_EMAILS"),
+            Self::NotAdmin(email) => write!(
+                f,
+                "{email} is not in ADMIN_GOOGLE_EMAILS or OWNER_GOOGLE_EMAILS"
+            ),
         }
     }
 }

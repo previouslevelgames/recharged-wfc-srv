@@ -108,6 +108,7 @@ mod tests {
             email: "admin@example.com".into(),
             name: None,
             picture: None,
+            owner: false,
         };
         let page = PageData::read(&pool, viewer, OffsetDateTime::now_utc(), async {
             snapshot(&pool).await.map(|_| ())
