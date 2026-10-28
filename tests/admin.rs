@@ -25,11 +25,12 @@ const CLIENT_SECRET: &str = "client-secret";
 const CODE: &str = "the-code";
 
 /// The pages every admin sees: all but the owners' Maintenance page.
-const PAGES: [&str; 9] = [
+const PAGES: [&str; 10] = [
     "/admin",
     "/admin/players",
     "/admin/matchmaking",
     "/admin/matches",
+    "/admin/monitoring",
     "/admin/leaderboards",
     "/admin/competitive",
     "/admin/moderation",
@@ -87,6 +88,7 @@ async fn an_admin_signs_in_sees_every_section_and_signs_out(pool: PgPool) {
         ("players", "/profiles/0/friend_code"),
         ("matchmaking", "/totals/searching"),
         ("matches", "/totals/one_sided"),
+        ("monitoring", "/by_day/0/errors"),
         ("database", "/tables/0/name"),
         ("leaderboards", "/totals/entries"),
         ("competitive", "/rule_sets/0/rules/tweaks"),

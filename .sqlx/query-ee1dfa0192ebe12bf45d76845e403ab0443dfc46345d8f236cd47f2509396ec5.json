@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT match_id, side, number, home_score, away_score, home_captain, away_captain,\n                stadium, ending, seconds\n         FROM online_match_games\n         WHERE match_id = ANY($1)",
+  "query": "SELECT match_id, side, number, home_score, away_score, home_captain, away_captain,\n                stadium, ending, seconds, sync_check, sync_frame\n         FROM online_match_games\n         WHERE match_id = ANY($1)",
   "describe": {
     "columns": [
       {
@@ -112,6 +112,28 @@
             "name": "seconds"
           }
         }
+      },
+      {
+        "ordinal": 10,
+        "name": "sync_check",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_match_games",
+            "name": "sync_check"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "sync_frame",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "online_match_games",
+            "name": "sync_frame"
+          }
+        }
       }
     ],
     "parameters": {
@@ -129,8 +151,10 @@
       false,
       false,
       false,
-      false
+      false,
+      true,
+      true
     ]
   },
-  "hash": "210aac25c2ffe07d3f7663c929e34cb09a5366e44b2376d3e59952384afdb11b"
+  "hash": "ee1dfa0192ebe12bf45d76845e403ab0443dfc46345d8f236cd47f2509396ec5"
 }

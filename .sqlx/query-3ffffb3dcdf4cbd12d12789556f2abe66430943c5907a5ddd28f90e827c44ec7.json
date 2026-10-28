@@ -1,0 +1,70 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT code, count(*) AS \"count!\",\n                  count(DISTINCT profile_id) AS \"players!\",\n                  count(DISTINCT address) AS \"addresses!\",\n                  array_remove(array_agg(DISTINCT phase), NULL) AS \"phases!\",\n                  array_remove(array_agg(DISTINCT build), NULL) AS \"builds!\",\n                  max(received_at) AS \"last_at!\"\n           FROM client_errors\n           WHERE received_at >= $1\n           GROUP BY code\n           ORDER BY count(*) DESC, code",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "code",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "client_errors",
+            "name": "code"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "players!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "addresses!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "phases!",
+        "type_info": "TextArray",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "builds!",
+        "type_info": "TextArray",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "last_at!",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "3ffffb3dcdf4cbd12d12789556f2abe66430943c5907a5ddd28f90e827c44ec7"
+}

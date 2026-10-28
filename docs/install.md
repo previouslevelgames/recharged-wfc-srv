@@ -117,7 +117,7 @@ the userid in `data/shared2/DWC_AUTHDATA`.
 ## Admin dashboard
 
 `/admin` shows the server to admins who sign in with Google: an **Overview**,
-then **Players**, **Matchmaking**, **Matches**, **Leaderboards**,
+then **Players**, **Matchmaking**, **Matches**, **Monitoring**, **Leaderboards**,
 **Competitive**, **Database** and **Logs**, each at its own address (e.g.
 `/admin/database`), refreshed every 5 seconds. **Matches** lists the series
 Recharged builds report ([reports.md](reports.md)), in progress first; a match
@@ -126,7 +126,10 @@ both sides saw it, and the reports as they came. A profile on **Players** opens
 its own page too (e.g. `/admin/players/1000000000`): its friend code and
 console, its record in the reported matches by mode (series and games won,
 lost and drawn, goals, captains), its standing on the leaderboards and its
-matches.
+matches. **Monitoring** shows how online matches go wrong over the last 14
+days: games out of sync and lost connections by day, build and stadium, games
+that left WFC in the middle of a match, the error codes players saw, and the
+reports the server refused ([reports.md](reports.md#diagnostics)).
 Only the Google accounts in `ADMIN_GOOGLE_EMAILS` or `OWNER_GOOGLE_EMAILS` get
 in. Owners also see **Maintenance** (`/admin/maintenance`), operations that
 cannot be undone: **Wipe all leaderboards** deletes every board's scores and the
