@@ -36,6 +36,7 @@ use crate::{
     accounts::{self, Profile},
     activity::{Activity, Via},
     nas::{TicketError, Tickets},
+    reports,
 };
 use message::{Message, split};
 
@@ -207,6 +208,7 @@ impl Gpcm {
             writer,
             outbox,
             login: None,
+            ended: "closed",
         };
         debug!(target: "gpcm", %peer, "connected");
         connection
@@ -224,17 +226,24 @@ impl Gpcm {
             let read = tokio::select! {
                 read = reader.read(&mut chunk) => read,
                 () = async { kick.unwrap().notified().await }, if kick.is_some() => {
+                    connection.ended = "replaced";
                     break connection.fail(Error::FORCED_DISCONNECT, None).await;
                 }
                 Some(message) = inbox.recv() => match connection.send(&message).await {
                     Ok(()) => continue,
-                    Err(error) => break Err(error),
+                    Err(error) => {
+                        connection.ended = "lost";
+                        break Err(error);
+                    }
                 },
             };
             let read = match read {
                 Ok(0) => break Ok(()),
                 Ok(read) => read,
-                Err(error) => break Err(error),
+                Err(error) => {
+                    connection.ended = "lost";
+                    break Err(error);
+                }
             };
             buffer.extend_from_slice(&chunk[..read]);
             if buffer.len() > MAX_BUFFER {
@@ -249,22 +258,34 @@ impl Gpcm {
 
         if let Some(login) = &connection.login {
             let profile_id = login.profile.profile_id;
-            let mut sessions = self.sessions.lock().unwrap();
-            if sessions.get(&profile_id).map(|session| session.connection) == Some(connection.id) {
-                let session = sessions.remove(&profile_id).unwrap();
-                for friend in session.mutual {
-                    if let Some(friend) = sessions.get_mut(&friend)
-                        && friend.mutual.remove(&profile_id)
-                    {
-                        let _ = friend.outbox.send(buddy_message(
-                            BM_STATUS,
-                            profile_id,
-                            OFFLINE_STATUS,
-                        ));
+            {
+                let mut sessions = self.sessions.lock().unwrap();
+                if sessions.get(&profile_id).map(|session| session.connection)
+                    == Some(connection.id)
+                {
+                    let session = sessions.remove(&profile_id).unwrap();
+                    for friend in session.mutual {
+                        if let Some(friend) = sessions.get_mut(&friend)
+                            && friend.mutual.remove(&profile_id)
+                        {
+                            let _ = friend.outbox.send(buddy_message(
+                                BM_STATUS,
+                                profile_id,
+                                OFFLINE_STATUS,
+                            ));
+                        }
                     }
                 }
             }
-            info!(target: "gpcm", profile_id, "logged out");
+            info!(target: "gpcm", profile_id, how = connection.ended, "logged out");
+            match reports::left(&self.pool, profile_id, connection.ended).await {
+                Ok(matches) => {
+                    for match_id in matches {
+                        info!(target: "reports", match_id, profile_id, how = connection.ended, "left WFC during the match");
+                    }
+                }
+                Err(error) => warn!(target: "reports", %error, "database error"),
+            }
         }
         debug!(target: "gpcm", %peer, "disconnected");
         result
@@ -297,7 +318,10 @@ impl Gpcm {
                 .send(&Message::new("ka", ""))
                 .await
                 .map(|()| true),
-            "logout" => Ok(false),
+            "logout" => {
+                connection.ended = "logout";
+                Ok(false)
+            }
             "login" => match self.log_in(connection, &message).await {
                 Ok(()) => Ok(true),
                 Err(error) => connection.fail(error, Some(&id)).await.map(|()| false),
@@ -644,6 +668,9 @@ struct Connection {
     /// For the session, so other logins can send to this connection.
     outbox: mpsc::UnboundedSender<Message>,
     login: Option<Login>,
+    /// How it ended, for a match it leaves (`reports::left`): `closed` until
+    /// something else is known.
+    ended: &'static str,
 }
 
 struct Login {

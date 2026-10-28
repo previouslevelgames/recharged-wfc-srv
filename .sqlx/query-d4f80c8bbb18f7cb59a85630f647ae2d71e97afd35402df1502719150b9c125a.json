@@ -1,0 +1,44 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT stadium AS \"stadium!\", count(*) AS \"games!\",\n                  count(*) FILTER (WHERE desync) AS \"desyncs!\",\n                  count(*) FILTER (WHERE disconnect) AS \"disconnects!\"\n           FROM (SELECT coalesce(max(stadium) FILTER (WHERE stadium <> 'unknown'), 'unknown')\n                            AS stadium,\n                        bool_or(ending = 'desync') AS desync,\n                        bool_or(ending = 'disconnect') AND NOT bool_or(ending = 'desync')\n                            AS disconnect\n                 FROM online_match_games WHERE reported_at >= $1\n                 GROUP BY match_id, number) games\n           GROUP BY stadium\n           ORDER BY 3 DESC, 4 DESC, 2 DESC, 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "stadium!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "games!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "desyncs!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "disconnects!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "d4f80c8bbb18f7cb59a85630f647ae2d71e97afd35402df1502719150b9c125a"
+}

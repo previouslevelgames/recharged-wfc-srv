@@ -104,6 +104,15 @@ struct ReporterView {
     series: i64,
     /// The end's: `decided` or `abandoned`; none before it came.
     reason: Option<String>,
+    /// Why the series ended, as the end said: `decided`, `desync`,
+    /// `disconnect` or `offline`; none when it did not say.
+    cause: Option<String>,
+    /// The build that reported, when it said.
+    build: Option<String>,
+    /// When its game left WFC before its end, and how.
+    #[serde(with = "time::serde::rfc3339::option")]
+    left_at: Option<OffsetDateTime>,
+    left_how: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     opened_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
@@ -251,6 +260,10 @@ pub async fn detail(pool: &PgPool, match_id: i64) -> Result<Option<Detail>, sqlx
                     friend_code: accounts::friend_code(reporter.profile_id, &summary.release),
                     series: reporter.series,
                     reason: reporter.reason.clone(),
+                    cause: reporter.cause.clone(),
+                    build: reporter.build.clone(),
+                    left_at: reporter.left_at,
+                    left_how: reporter.left_how.clone(),
                     opened_at: reporter.opened_at,
                     last_report_at: reporter.last_report_at,
                     ended_at: reporter.ended_at,

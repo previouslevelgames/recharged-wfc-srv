@@ -2,6 +2,7 @@
 //! read and checked field by field.
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::profiles::rules::STADIUMS;
 
@@ -36,6 +37,17 @@ pub const SIDEKICKS: [&str; 8] = [
     "monty_mole",
     "shy_guy",
 ];
+/// Why a series ended, as the game tells it (docs/reports.md,
+/// "Diagnostics"): `reason` only says whether it was decided.
+/// `offline`: the game's online session ended without a result (a disc
+/// error, the HOME menu); a network match has no pause menu to quit from.
+pub const CAUSES: [&str; 4] = ["decided", "desync", "disconnect", "offline"];
+/// The game's checks of a network match, in the order it runs them
+/// (`InputRouter::CheckSyncMismatch`): both machines on the same frame, the
+/// same state checksum, the same random seed.
+pub const SYNC_CHECKS: [&str; 3] = ["frame", "checksum", "seed"];
+/// A build's name at most, in characters.
+const MAX_BUILD: usize = 64;
 /// A captain or a stadium the game does not know.
 pub const UNKNOWN: &str = "unknown";
 /// A team's sidekicks, when the game knows them all.
@@ -130,6 +142,10 @@ pub struct Report {
     /// Up to three a team; fewer, or none, when the game does not know them.
     pub sidekicks: Teams<Vec<&'static str>>,
     pub event: Event,
+    /// The build that sent it, e.g. `1.4.2 (abc1234)`, when it says.
+    pub build: Option<String>,
+    /// For an end, why the series ended: one of [`CAUSES`], when it says.
+    pub cause: Option<&'static str>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -175,6 +191,17 @@ pub struct Game {
     pub ending: &'static str,
     /// The game's length on its clock.
     pub seconds: i32,
+    /// For a `desync`, what the game knew of it, when it says.
+    pub sync: Option<SyncError>,
+}
+
+/// The first of the game's checks that failed in a game that went out of
+/// sync, and on which frame.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SyncError {
+    /// One of [`SYNC_CHECKS`].
+    pub check: &'static str,
+    pub frame: Option<i32>,
 }
 
 impl Report {
@@ -204,6 +231,12 @@ struct RawReport {
     game: Option<RawGame>,
     #[serde(default)]
     reason: Option<String>,
+    // The diagnostics, as JSON: one the server cannot read is dropped, and
+    // the report kept.
+    #[serde(default)]
+    build: Option<Value>,
+    #[serde(default)]
+    cause: Option<Value>,
 }
 
 #[derive(Default, Deserialize)]
@@ -222,6 +255,8 @@ struct RawGame {
     stadium: String,
     ending: String,
     seconds: i64,
+    #[serde(default)]
+    sync: Option<Value>,
 }
 
 impl RawReport {
@@ -283,7 +318,12 @@ impl RawReport {
             opponent_mii,
             captains,
             sidekicks,
+            cause: match event {
+                Event::End(_) => self.cause.as_ref().and_then(|cause| known(cause, &CAUSES)),
+                _ => None,
+            },
             event,
+            build: self.build.as_ref().and_then(build),
         })
     }
 }
@@ -322,6 +362,9 @@ impl RawGame {
             .contains(&self.seconds)
             .then_some(self.seconds as i32)
             .ok_or_else(|| format!("game.seconds: 0 to {MAX_SECONDS}"))?;
+        let sync = (ending == "desync")
+            .then(|| self.sync.as_ref().and_then(sync_error))
+            .flatten();
         Ok(Game {
             number,
             score,
@@ -329,8 +372,39 @@ impl RawGame {
             stadium,
             ending,
             seconds,
+            sync,
         })
     }
+}
+
+/// `value` if it is a string of `names`: a diagnostic the server cannot
+/// read is no reason to refuse the report.
+fn known(value: &Value, names: &[&'static str]) -> Option<&'static str> {
+    names
+        .iter()
+        .find(|name| Some(**name) == value.as_str())
+        .copied()
+}
+
+/// A build's name: printable, up to [`MAX_BUILD`] characters.
+fn build(value: &Value) -> Option<String> {
+    let build = value.as_str()?.trim();
+    let printable = !build.is_empty()
+        && build.chars().count() <= MAX_BUILD
+        && !build.chars().any(char::is_control);
+    printable.then(|| build.to_owned())
+}
+
+/// `{"check": "checksum", "frame": 4812}`; the frame may be left out.
+pub(crate) fn sync_error(value: &Value) -> Option<SyncError> {
+    Some(SyncError {
+        check: known(value.get("check")?, &SYNC_CHECKS)?,
+        frame: value
+            .get("frame")
+            .and_then(Value::as_i64)
+            .and_then(|frame| i32::try_from(frame).ok())
+            .filter(|&frame| frame >= 0),
+    })
 }
 
 /// `value` if it is one of `names`.
@@ -425,6 +499,57 @@ pub(crate) mod tests {
                 "stadium": "the_palace", "ending": "normal", "seconds": 180,
             });
         })
+    }
+
+    #[test]
+    fn diagnostics_are_read_and_a_bad_one_is_dropped() {
+        let desync = with(game_event(), |body| {
+            body["build"] = json!("1.4.2 (abc1234)");
+            body["game"]["ending"] = json!("desync");
+            body["game"]["sync"] = json!({"check": "checksum", "frame": 4812});
+        });
+        let report = parse(&desync).unwrap();
+        assert_eq!(report.build.as_deref(), Some("1.4.2 (abc1234)"));
+        let Event::Game(game) = &report.event else {
+            panic!("a game");
+        };
+        assert_eq!(
+            game.sync,
+            Some(SyncError {
+                check: "checksum",
+                frame: Some(4812)
+            })
+        );
+
+        let end = with(start(), |body| {
+            body["event"] = json!("end");
+            body["reason"] = json!("abandoned");
+            body["cause"] = json!("desync");
+        });
+        assert_eq!(parse(&end).unwrap().cause, Some("desync"));
+
+        // Diagnostics the server cannot read go; the report stays.
+        let odd = with(desync, |body| {
+            body["build"] = json!(42);
+            body["cause"] = json!("desync");
+            body["game"]["sync"] = json!({"check": "cosmic rays", "frame": 1});
+        });
+        let report = parse(&odd).unwrap();
+        assert_eq!(report.build, None);
+        assert_eq!(report.cause, None, "a cause is for an end");
+        let Event::Game(game) = report.event else {
+            panic!("a game");
+        };
+        assert_eq!(game.sync, None);
+        let normal = with(game_event(), |body| {
+            body["game"]["sync"] = json!({"check": "seed"});
+        });
+        let Event::Game(game) = parse(&normal).unwrap().event else {
+            panic!("a game");
+        };
+        assert_eq!(game.sync, None, "a sync error is for a desync");
+        let long = with(start(), |body| body["build"] = json!("x".repeat(65)));
+        assert_eq!(parse(&long).unwrap().build, None);
     }
 
     #[test]

@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO report_refusals (profile_id, kind, problem, address)\n         SELECT $1, $2, $3, $4 WHERE EXISTS (SELECT FROM profiles WHERE profile_id = $1)\n         ON CONFLICT (profile_id, kind) DO UPDATE\n         SET count = report_refusals.count + 1, problem = EXCLUDED.problem,\n             address = EXCLUDED.address, last_at = now()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ab44a992b93c574324ff8fba6977102515a060cbffeae4d448300f3c2b3c78d5"
+}

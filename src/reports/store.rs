@@ -11,8 +11,12 @@ use tracing::info;
 
 use super::{
     outcome::{self, Reporter, View},
-    report::{Event, Report, Side, Teams},
+    report::{Event, Report, SYNC_CHECKS, Side, SyncError, Teams},
 };
+
+/// A refusal's problem at most, in characters: a parser's message can quote
+/// the body.
+const MAX_PROBLEM: usize = 200;
 
 /// What became of a report.
 #[derive(Debug, PartialEq)]
@@ -70,8 +74,8 @@ pub async fn record(pool: &PgPool, report: &Report, body: &str) -> Result<Record
             sqlx::query!(
                 "INSERT INTO online_match_games
                      (match_id, side, number, home_score, away_score, home_captain, away_captain,
-                      stadium, ending, seconds)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                      stadium, ending, seconds, sync_check, sync_frame)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
                 match_id,
                 side.as_str(),
                 game.number,
@@ -82,23 +86,27 @@ pub async fn record(pool: &PgPool, report: &Report, body: &str) -> Result<Record
                 game.stadium,
                 game.ending,
                 game.seconds,
+                game.sync.as_ref().map(|sync| sync.check),
+                game.sync.as_ref().and_then(|sync| sync.frame),
             )
             .execute(&mut *tx)
             .await?;
         }
         Event::End(reason) => {
             sqlx::query!(
-                "UPDATE online_match_sides SET reason = $3, ended_at = now()
+                "UPDATE online_match_sides SET reason = $3, cause = $4, ended_at = now()
                  WHERE match_id = $1 AND side = $2",
                 match_id,
                 side.as_str(),
                 reason,
+                report.cause,
             )
             .execute(&mut *tx)
             .await?;
         }
     }
-    // Sidekicks a later report knows, when the earlier ones did not.
+    // Sidekicks a later report knows, when the earlier ones did not; the
+    // build the last report named.
     let sidekicks = report.sidekicks.map(|names| {
         names
             .iter()
@@ -109,12 +117,14 @@ pub async fn record(pool: &PgPool, report: &Report, body: &str) -> Result<Record
         "UPDATE online_match_sides
          SET last_report_at = now(),
              home_sidekicks = CASE WHEN cardinality($3::text[]) > 0 THEN $3 ELSE home_sidekicks END,
-             away_sidekicks = CASE WHEN cardinality($4::text[]) > 0 THEN $4 ELSE away_sidekicks END
+             away_sidekicks = CASE WHEN cardinality($4::text[]) > 0 THEN $4 ELSE away_sidekicks END,
+             build = coalesce($5, build)
          WHERE match_id = $1 AND side = $2",
         match_id,
         side.as_str(),
         &sidekicks.home,
         &sidekicks.away,
+        report.build,
     )
     .execute(&mut *tx)
     .await?;
@@ -126,6 +136,49 @@ pub async fn record(pool: &PgPool, report: &Report, body: &str) -> Result<Record
         repeated: false,
         state: state.into(),
     })
+}
+
+/// Notes that `profile_id`'s GPCM login ended, `how` (`logout`, `closed`,
+/// `lost` or `replaced`): its sides without an end that reported within 30
+/// minutes left WFC, whatever the other side did. Their reports can no
+/// longer come from that login. Returns their matches.
+pub async fn left(pool: &PgPool, profile_id: i32, how: &str) -> Result<Vec<i64>, sqlx::Error> {
+    sqlx::query_scalar!(
+        "UPDATE online_match_sides SET left_at = now(), left_how = $2
+         WHERE profile_id = $1 AND ended_at IS NULL AND left_at IS NULL
+           AND last_report_at > now() - interval '30 minutes'
+         RETURNING match_id",
+        profile_id,
+        how,
+    )
+    .fetch_all(pool)
+    .await
+}
+
+/// Counts a refused report of `profile_id`, `kind` (`elsewhere` or
+/// `invalid`), when the profile exists: its last problem and address stay.
+pub async fn refused(
+    pool: &PgPool,
+    profile_id: i32,
+    kind: &str,
+    problem: &str,
+    address: &str,
+) -> Result<(), sqlx::Error> {
+    let problem: String = problem.chars().take(MAX_PROBLEM).collect();
+    sqlx::query!(
+        "INSERT INTO report_refusals (profile_id, kind, problem, address)
+         SELECT $1, $2, $3, $4 WHERE EXISTS (SELECT FROM profiles WHERE profile_id = $1)
+         ON CONFLICT (profile_id, kind) DO UPDATE
+         SET count = report_refusals.count + 1, problem = EXCLUDED.problem,
+             address = EXCLUDED.address, last_at = now()",
+        profile_id,
+        kind,
+        problem,
+        address,
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 /// Settles the matches that heard nothing for 30 minutes: finished if
@@ -315,8 +368,8 @@ pub async fn sides(
 ) -> Result<HashMap<i64, Teams<Option<Reporter>>>, sqlx::Error> {
     let rows = sqlx::query!(
         "SELECT match_id, side, profile_id, series, mii, opponent_mii, home_captain,
-                away_captain, home_sidekicks, away_sidekicks, reason, opened_at,
-                last_report_at, ended_at
+                away_captain, home_sidekicks, away_sidekicks, reason, cause, build, left_at,
+                left_how, opened_at, last_report_at, ended_at
          FROM online_match_sides
          WHERE match_id = ANY($1)",
         match_ids,
@@ -326,7 +379,7 @@ pub async fn sides(
     let mut games: HashMap<(i64, Side), BTreeMap<i32, View>> = HashMap::new();
     for row in sqlx::query!(
         "SELECT match_id, side, number, home_score, away_score, home_captain, away_captain,
-                stadium, ending, seconds
+                stadium, ending, seconds, sync_check, sync_frame
          FROM online_match_games
          WHERE match_id = ANY($1)",
         match_ids,
@@ -349,6 +402,13 @@ pub async fn sides(
             stadium: row.stadium,
             ending: row.ending,
             seconds: row.seconds,
+            sync: row
+                .sync_check
+                .and_then(|check| SYNC_CHECKS.into_iter().find(|known| *known == check))
+                .map(|check| SyncError {
+                    check,
+                    frame: row.sync_frame,
+                }),
         };
         games
             .entry((row.match_id, side))
@@ -375,6 +435,10 @@ pub async fn sides(
                 away: row.away_sidekicks,
             },
             reason: row.reason,
+            cause: row.cause,
+            build: row.build,
+            left_at: row.left_at,
+            left_how: row.left_how,
             opened_at: row.opened_at,
             last_report_at: row.last_report_at,
             ended_at: row.ended_at,
@@ -487,6 +551,109 @@ mod tests {
         .execute(pool)
         .await
         .unwrap();
+    }
+
+    #[sqlx::test]
+    async fn a_side_keeps_its_build_cause_and_sync_error(pool: PgPool) {
+        let pair = Pair::new(&pool).await;
+        let mut start = pair.anosch();
+        start["build"] = json!("1.4.2 (abc1234)");
+        let opened = send(&pool, &start).await;
+        let mut desync = game(pair.anosch(), 1, 0, 0);
+        desync["game"]["ending"] = json!("desync");
+        desync["game"]["sync"] = json!({"check": "seed", "frame": 90});
+        send(&pool, &desync).await;
+        let mut stopped = end(pair.anosch(), "abandoned");
+        stopped["cause"] = json!("desync");
+        send(&pool, &stopped).await;
+
+        let mut conn = pool.acquire().await.unwrap();
+        let anosch = sides(&mut conn, &[opened.match_id]).await.unwrap()[&opened.match_id]
+            .home
+            .clone()
+            .unwrap();
+        assert_eq!(anosch.build.as_deref(), Some("1.4.2 (abc1234)"));
+        assert_eq!(
+            (anosch.reason.as_deref(), anosch.cause.as_deref()),
+            (Some("abandoned"), Some("desync"))
+        );
+        assert_eq!(
+            anosch.games[&1].sync,
+            Some(SyncError {
+                check: "seed",
+                frame: Some(90)
+            })
+        );
+    }
+
+    #[sqlx::test]
+    async fn a_game_that_leaves_wfc_marks_only_its_open_sides(pool: PgPool) {
+        let pair = Pair::new(&pool).await;
+        let open = send(&pool, &pair.anosch()).await;
+        send(&pool, &pair.sam()).await;
+        send(&pool, &end(pair.sam(), "abandoned")).await;
+
+        assert_eq!(
+            left(&pool, pair.anosch, "closed").await.unwrap(),
+            [open.match_id]
+        );
+        assert_eq!(
+            left(&pool, pair.anosch, "lost").await.unwrap(),
+            [] as [i64; 0],
+            "once"
+        );
+        assert_eq!(
+            left(&pool, pair.sam, "logout").await.unwrap(),
+            [] as [i64; 0],
+            "Sam had ended"
+        );
+
+        let mut conn = pool.acquire().await.unwrap();
+        let sides = sides(&mut conn, &[open.match_id]).await.unwrap()[&open.match_id].clone();
+        let anosch = sides.home.unwrap();
+        assert!(anosch.left_at.is_some());
+        assert_eq!(anosch.left_how.as_deref(), Some("closed"));
+        assert!(sides.away.unwrap().left_at.is_none());
+    }
+
+    #[sqlx::test]
+    async fn refusals_are_counted_for_known_profiles(pool: PgPool) {
+        let pair = Pair::new(&pool).await;
+        for problem in ["not logged in", "logged in from 10.0.0.2"] {
+            refused(&pool, pair.anosch, "elsewhere", problem, "10.0.0.9")
+                .await
+                .unwrap();
+        }
+        refused(
+            &pool,
+            7,
+            "invalid",
+            "mode: one of ranked, friends",
+            "10.0.0.9",
+        )
+        .await
+        .unwrap();
+
+        let rows = sqlx::query!("SELECT profile_id, kind, count, problem FROM report_refusals")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        let rows: Vec<_> = rows
+            .iter()
+            .map(|row| {
+                (
+                    row.profile_id,
+                    row.kind.as_str(),
+                    row.count,
+                    row.problem.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [(pair.anosch, "elsewhere", 2, "logged in from 10.0.0.2")],
+            "no row for a profile that does not exist"
+        );
     }
 
     #[sqlx::test]
