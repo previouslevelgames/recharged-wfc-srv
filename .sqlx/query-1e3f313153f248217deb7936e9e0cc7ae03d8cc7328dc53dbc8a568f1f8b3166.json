@@ -1,0 +1,25 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO online_match_games\n                     (match_id, side, number, home_score, away_score, home_captain, away_captain,\n                      stadium, ending, seconds, sync_check, sync_frame)\n                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Int4",
+        "Int4",
+        "Int4",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int4",
+        "Text",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1e3f313153f248217deb7936e9e0cc7ae03d8cc7328dc53dbc8a568f1f8b3166"
+}

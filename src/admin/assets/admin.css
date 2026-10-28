@@ -1308,3 +1308,23 @@ dialog.confirm::backdrop {
     color: var(--warning);
   }
 }
+
+/* Monitoring */
+
+.zero {
+  color: var(--muted);
+}
+
+.flag[data-tone="serious"] {
+  color: var(--critical);
+}
+
+.flag[data-tone="warning"] {
+  color: #8a5a00;
+}
+
+@media (prefers-color-scheme: dark) {
+  .flag[data-tone="warning"] {
+    color: var(--warning);
+  }
+}

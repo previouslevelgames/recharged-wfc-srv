@@ -1,0 +1,72 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH days AS (\n               SELECT day::date AS day\n               FROM generate_series(($1::timestamptz AT TIME ZONE 'UTC')::date,\n                                    (now() AT TIME ZONE 'UTC')::date, interval '1 day') AS day),\n           games AS (\n               SELECT min(reported_at) AS at, bool_or(ending = 'desync') AS desync,\n                      bool_or(ending = 'disconnect') AND NOT bool_or(ending = 'desync') AS disconnect\n               FROM online_match_games WHERE reported_at >= $1\n               GROUP BY match_id, number),\n           m AS (\n               SELECT (started_at AT TIME ZONE 'UTC')::date AS day, count(*) AS matches,\n                      count(*) FILTER (WHERE state = 'abandoned') AS abandoned\n               FROM online_matches WHERE started_at >= $1 GROUP BY 1),\n           g AS (\n               SELECT (at AT TIME ZONE 'UTC')::date AS day, count(*) AS games,\n                      count(*) FILTER (WHERE desync) AS desyncs,\n                      count(*) FILTER (WHERE disconnect) AS disconnects\n               FROM games GROUP BY 1),\n           l AS (\n               SELECT (left_at AT TIME ZONE 'UTC')::date AS day, count(*) AS left\n               FROM online_match_sides WHERE left_at >= $1 GROUP BY 1),\n           e AS (\n               SELECT (received_at AT TIME ZONE 'UTC')::date AS day, count(*) AS errors\n               FROM client_errors WHERE received_at >= $1 GROUP BY 1)\n           SELECT days.day::text AS \"day!\",\n                  coalesce(m.matches, 0) AS \"matches!\", coalesce(m.abandoned, 0) AS \"abandoned!\",\n                  coalesce(g.games, 0) AS \"games!\", coalesce(g.desyncs, 0) AS \"desyncs!\",\n                  coalesce(g.disconnects, 0) AS \"disconnects!\", coalesce(l.left, 0) AS \"left!\",\n                  coalesce(e.errors, 0) AS \"errors!\"\n           FROM days\n           LEFT JOIN m USING (day) LEFT JOIN g USING (day) LEFT JOIN l USING (day)\n           LEFT JOIN e USING (day)\n           ORDER BY days.day DESC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "day!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "matches!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "abandoned!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "games!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "desyncs!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "disconnects!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "left!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "errors!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "958d29bc151df630d3a87051cb373900f172964e962561e405ade4bb1b79e888"
+}

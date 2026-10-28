@@ -1,0 +1,112 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT r.profile_id, p.ingamesn AS mii, r.kind, r.count, r.problem, r.address,\n                  r.first_at, r.last_at\n           FROM report_refusals r JOIN profiles p USING (profile_id)\n           ORDER BY r.last_at DESC\n           LIMIT $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "profile_id",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "report_refusals",
+            "name": "profile_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "mii",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "profiles",
+            "name": "ingamesn"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "report_refusals",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "count",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "report_refusals",
+            "name": "count"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "problem",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "report_refusals",
+            "name": "problem"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "address",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "report_refusals",
+            "name": "address"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "first_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "report_refusals",
+            "name": "first_at"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "last_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "report_refusals",
+            "name": "last_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "b5c6e9ceb4393d46d9016119b85cecb33149936a267ef5d0edf093ddcd0e6557"
+}

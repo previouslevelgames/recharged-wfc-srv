@@ -5,8 +5,8 @@
 //! Sessions live in memory ([`session`]). Every page in [`PAGES`] is the same
 //! static page; its script shows the section for its path and polls that
 //! section's JSON under `/admin/api/` ([`page`]): [`overview`], [`players`],
-//! [`matchmaking`], [`matches`], [`leaderboards`], [`competitive`],
-//! [`database`], [`logs`] and [`maintenance`]. The other sections are
+//! [`matchmaking`], [`matches`], [`monitoring`], [`leaderboards`],
+//! [`competitive`], [`database`], [`logs`] and [`maintenance`]. The other sections are
 //! planned with the services they need. A section's rows may open a page of
 //! their own, its path and an id ([`DETAILS`]). The Competitive page also
 //! edits the rule sets matches are played by.
@@ -24,6 +24,7 @@ mod logs;
 mod maintenance;
 mod matches;
 mod matchmaking;
+mod monitoring;
 mod overview;
 mod page;
 mod players;
@@ -60,11 +61,12 @@ use session::{SESSION_TTL, Sessions};
 
 /// The dashboard's pages, Overview first. The script in `assets/admin.js`
 /// knows the same list.
-const PAGES: [&str; 10] = [
+const PAGES: [&str; 11] = [
     "/admin",
     "/admin/players",
     "/admin/matchmaking",
     "/admin/matches",
+    "/admin/monitoring",
     "/admin/leaderboards",
     "/admin/competitive",
     "/admin/moderation",
@@ -151,6 +153,7 @@ pub(crate) fn router(
         .route("/admin/api/matchmaking", get(api_matchmaking))
         .route("/admin/api/matches", get(api_matches))
         .route("/admin/api/matches/{id}", get(api_match))
+        .route("/admin/api/monitoring", get(api_monitoring))
         .route("/admin/api/database", get(api_database))
         .route("/admin/api/leaderboards", get(api_leaderboards))
         .route("/admin/api/competitive", get(api_competitive))
@@ -402,6 +405,10 @@ async fn api_match(
     state
         .page_data(&jar, matches::detail(&state.pool, id))
         .await
+}
+
+async fn api_monitoring(State(state): State<Arc<AdminState>>, jar: CookieJar) -> Response {
+    state.page_data(&jar, monitoring::read(&state.pool)).await
 }
 
 async fn api_database(State(state): State<Arc<AdminState>>, jar: CookieJar) -> Response {

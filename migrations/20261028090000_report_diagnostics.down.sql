@@ -1,0 +1,10 @@
+DROP TABLE client_errors;
+DROP TABLE report_refusals;
+ALTER TABLE online_match_games
+    DROP COLUMN sync_check,
+    DROP COLUMN sync_frame;
+ALTER TABLE online_match_sides
+    DROP COLUMN build,
+    DROP COLUMN cause,
+    DROP COLUMN left_at,
+    DROP COLUMN left_how;

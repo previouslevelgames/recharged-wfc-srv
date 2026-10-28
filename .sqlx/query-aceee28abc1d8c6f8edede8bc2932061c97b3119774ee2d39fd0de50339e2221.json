@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE online_match_sides\n         SET last_report_at = now(),\n             home_sidekicks = CASE WHEN cardinality($3::text[]) > 0 THEN $3 ELSE home_sidekicks END,\n             away_sidekicks = CASE WHEN cardinality($4::text[]) > 0 THEN $4 ELSE away_sidekicks END,\n             build = coalesce($5, build)\n         WHERE match_id = $1 AND side = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "TextArray",
+        "TextArray",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "aceee28abc1d8c6f8edede8bc2932061c97b3119774ee2d39fd0de50339e2221"
+}

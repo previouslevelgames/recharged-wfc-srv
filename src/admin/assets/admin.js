@@ -150,6 +150,78 @@ const GAME_STATUSES = {
 };
 const MODES = { ranked: 'Ranked', friends: 'Friends' };
 const ENDINGS = { normal: 'Normal', disconnect: 'Disconnect', desync: 'Desync' };
+// Why a series ended, as a Recharged build's end says (docs/reports.md,
+// "Diagnostics"), with its badge tone.
+const CAUSES = {
+  decided: ['Decided', 'good'],
+  desync: ['Out of sync', 'serious'],
+  disconnect: ['Lost connection', 'warning'],
+  offline: ['Went offline', null],
+};
+// The game's sync checks: the first one that failed in a desync.
+const SYNC_CHECKS = { frame: 'Frame mismatch', checksum: 'Checksum mismatch', seed: 'Random seed mismatch' };
+// How a game's GPCM login ended while its match was in progress.
+const LEFT_HOW = {
+  logout: 'logged out of WFC',
+  closed: 'closed without logging out',
+  lost: 'connection broke off',
+  replaced: 'another login took over',
+};
+// A Monitoring incident, with its badge tone.
+const INCIDENTS = {
+  desync: ['Out of sync', 'serious'],
+  disconnect: ['Lost connection', 'warning'],
+  left: ['Left WFC', 'warning'],
+  offline: ['Went offline', null],
+  abandoned: ['Abandoned', null],
+};
+// DWC's error codes (dwc_error.h): 86420 is the matchmaking sequence (8),
+// NAT negotiation (6), repeated failures (420).
+const DWC_SEQUENCES = { 6: 'Login', 7: 'Friends', 8: 'Matchmaking', 9: 'Other' };
+const DWC_PARTS = {
+  1: 'GPCM (presence)',
+  2: 'Persistent storage',
+  4: 'QR2 (master server)',
+  5: 'Server browser',
+  6: 'NAT negotiation',
+  7: 'Peer connection',
+};
+const DWC_KINDS = {
+  1: 'out of memory',
+  2: 'bad parameter',
+  3: 'socket',
+  9: 'unexpected',
+  10: 'network',
+  20: 'server',
+  30: 'DNS',
+  40: 'bad data',
+  50: 'socket',
+  60: 'bind',
+  70: 'timeout',
+  80: 'peer',
+  100: 'too many connections',
+  200: 'stats sign-in',
+  210: 'stats load',
+  220: 'stats save',
+  410: 'other',
+  420: 'repeated failures',
+  430: 'server or client failure',
+  600: 'closed',
+  610: 'transfer header',
+  620: 'transfer body',
+};
+// The game's session state when an error came (NetworkSession::mSessionState).
+const PHASES = {
+  none: 'Menus',
+  login: 'Login',
+  matchmaking: 'Matchmaking',
+  prestart: 'Before kickoff',
+  loading: 'Loading',
+  in_game: 'In a game',
+  game_end: 'After a game',
+};
+// Why a report was refused (src/reports/mod.rs).
+const REFUSALS = { elsewhere: 'From another address', invalid: 'Invalid report' };
 // A match's state (docs/profiles.md, "Matches"), with its badge tone.
 const MATCH_STATES = {
   challenged: ['Challenged', 'warning'],
@@ -166,6 +238,7 @@ const ICONS = {
   players: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM22 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75',
   matchmaking: 'M5 12.55a11 11 0 0 1 14.08 0M1.42 9a16 16 0 0 1 21.16 0M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01',
   matches: 'M7 16V4M3 8l4-4 4 4M17 8v12M21 16l-4 4-4-4',
+  monitoring: 'M22 12h-4l-3 9L9 3l-3 9H2',
   leaderboards: 'M6 9H4.5a2.5 2.5 0 0 1 0-5H6M18 9h1.5a2.5 2.5 0 0 0 0-5H18M4 22h16M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22M18 2H6v7a6 6 0 0 0 12 0V2z',
   competitive: 'M4 22v-7M4 15V3h13l-3 6 3 6H4',
   moderation: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z',
@@ -220,6 +293,15 @@ const SECTIONS = [
     api: 'matches',
     render: renderMatches,
     detail: renderMatch,
+  },
+  {
+    path: '/admin/monitoring',
+    group: 'Game',
+    name: 'Monitoring',
+    icon: 'monitoring',
+    intro: 'How online matches go wrong: games out of sync, lost connections, games that left WFC mid-match, and reports the server refused.',
+    api: 'monitoring',
+    render: renderMonitoring,
   },
   {
     path: '/admin/leaderboards',
@@ -946,7 +1028,7 @@ function matchResult(match) {
   return `${match.winner === 'home' ? match.home.mii : match.away.mii} won, ${score}`;
 }
 
-function matchBanner(match, now) {
+function matchBanner(match, now, why) {
   const times = match.ended_at
     ? `Ended ${ago(match.ended_at, now).textContent} · took ${duration(since(match.started_at, now) - since(match.ended_at, now))}`
     : `Last report ${ago(match.last_report_at, now).textContent}`;
@@ -955,26 +1037,61 @@ function matchBanner(match, now) {
     return banner({ level: 'warning', title: 'Disputed', detail: `The two games saw a game differently · ${times}` });
   }
   if (match.state === 'abandoned') {
-    return banner({ level: 'serious', title: 'Abandoned', detail: `The series stopped before a side won it · ${times}` });
+    return banner({ level: 'serious', title: 'Abandoned', detail: `${why || 'The series stopped before a side won it'} · ${times}` });
   }
   return banner({ level: 'pending', title: `In progress, ${match.score.home} – ${match.score.away}`, detail: times });
 }
 
+/** Why a series stopped, from what its games told and GPCM saw: the first
+ * of a desync, a lost connection, a game that went offline or left WFC. */
+function stopCause(detail) {
+  const views = detail.games.flatMap((game) => [game.home, game.away]).filter(Boolean);
+  const desync = detail.games.find((game) => [game.home, game.away].some((view) => view?.ending === 'desync'));
+  if (desync) return `Game ${desync.number} went out of sync`;
+  const lost = detail.games.find((game) => [game.home, game.away].some((view) => view?.ending === 'disconnect'));
+  if (lost) return `Game ${lost.number} lost its connection`;
+  const reporters = detail.sides.filter((side) => side.reporter);
+  const cause = (name) => reporters.find((side) => side.reporter.cause === name);
+  if (cause('desync')) return 'The series went out of sync';
+  if (cause('disconnect')) return 'The connection was lost';
+  if (cause('offline')) return `${cause('offline').mii}'s game went offline`;
+  const left = reporters.find((side) => side.reporter.left_at);
+  if (left) return `${left.mii}'s game ${LEFT_HOW[left.reporter.left_how] || 'left WFC'}`;
+  return views.length ? null : 'It stopped before a game ended';
+}
+
 function sideReporter(side) {
   const reporter = side.reporter;
-  if (!reporter) return h('span', { class: 'sub' }, 'No reports: a retail game, or its reports never came');
+  if (!reporter) return h('span', { class: 'sub' }, 'No reports: a retail game, or its reports never came (see Monitoring)');
   return [
     h('a', { href: playerPath(reporter.profile_id) }, `Profile ${reporter.profile_id}`),
     h('span', { class: 'sub' }, ['Friend code ', h('code', null, reporter.friend_code)]),
+    reporter.build && h('span', { class: 'sub' }, ['Build ', h('code', null, reporter.build)]),
   ];
 }
 
 function sideEnd(side, now) {
   const reporter = side.reporter;
   if (!reporter) return '—';
-  if (!reporter.reason) return [badge(null, 'No end yet'), h('span', { class: 'sub' }, ['last report ', ago(reporter.last_report_at, now)])];
+  const left = reporter.left_at && h('span', { class: 'sub' }, `Left WFC ${ago(reporter.left_at, now).textContent}: ${LEFT_HOW[reporter.left_how] || reporter.left_how}`);
+  if (!reporter.reason) return [badge(null, 'No end yet'), h('span', { class: 'sub' }, ['last report ', ago(reporter.last_report_at, now)]), left];
   const [name, tone] = reporter.reason === 'decided' ? ['Decided', 'good'] : ['Abandoned', null];
-  return [badge(tone, name), h('span', { class: 'sub' }, ago(reporter.ended_at, now))];
+  const cause = reporter.reason === 'abandoned' && CAUSES[reporter.cause];
+  return [badge(tone, name), cause && h('span', { class: 'sub' }, cause[0]), h('span', { class: 'sub' }, ago(reporter.ended_at, now))];
+}
+
+/** What a desync's side knew: the first check that failed, and when. */
+function syncText(sync) {
+  const check = SYNC_CHECKS[sync.check] || sync.check;
+  return sync.frame == null ? check : `${check} at frame ${integer.format(sync.frame)}`;
+}
+
+/** A game's ending, with what a desync's sides knew of it. */
+function endingCell(row) {
+  const views = row.other ? [row.game.home, row.game.away] : [row.view];
+  const syncs = [...new Set(views.filter((view) => view.sync).map((view) => syncText(view.sync)))];
+  // gameCell may give both sides' values: h() flattens one level only.
+  return [gameCell(row, 'ending', (ending) => ENDINGS[ending] || ending), ...syncs.map((text) => h('span', { class: 'sub' }, text))].flat();
 }
 
 /** A value both sides reported: once when they agree, else each side's. */
@@ -1020,7 +1137,7 @@ function renderMatch(data, now) {
   const gameOf = (event) => games.find((game) => game.number === event.game);
 
   return [
-    matchBanner(match, now),
+    matchBanner(match, now, match.state === 'abandoned' ? stopCause(detail) : null),
     card(
       'Players',
       'Each side as its own game reported it',
@@ -1056,7 +1173,7 @@ function renderMatch(data, now) {
           { label: 'Score', num: true, cell: (row) => `${row.view.score.home} – ${row.view.score.away}` },
           { label: 'Captains', cell: (row) => gameCell(row, 'captains', (c) => `${captainName(c.home)} vs ${captainName(c.away)}`) },
           { label: 'Stadium', cell: (row) => gameCell(row, 'stadium', (name) => STADIUM_NAMES[name] || name) },
-          { label: 'Ending', cell: (row) => gameCell(row, 'ending', (ending) => ENDINGS[ending] || ending) },
+          { label: 'Ending', cell: endingCell },
           { label: 'Length', cell: (row) => gameCell(row, 'seconds', gameLength) },
         ],
         gameRows(games),
@@ -1083,6 +1200,158 @@ function renderMatch(data, now) {
         ],
         events,
         'No reports.',
+      ),
+    ),
+  ];
+}
+
+// --- Monitoring ----------------------------------------------------------
+
+/** What a DWC error code means; null for other codes. */
+function errorMeaning(code) {
+  if (code < 60000 || code > 99999) return null;
+  const parts = [DWC_SEQUENCES[Math.floor(code / 10000)], DWC_PARTS[Math.floor((code % 10000) / 1000)], DWC_KINDS[code % 1000]];
+  return parts.filter(Boolean).join(' · ') || null;
+}
+
+/** `part` of `whole` as a share, for a sub line. */
+function share(part, whole) {
+  return whole ? percent.format(part / whole) : '—';
+}
+
+/** A count that is not 0 stands out. */
+function flagged(value, tone) {
+  return value ? h('strong', { 'data-tone': tone, class: 'flag' }, integer.format(value)) : h('span', { class: 'zero' }, '0');
+}
+
+function incidentWhat(incident) {
+  const [name, tone] = INCIDENTS[incident.kind] || [incident.kind, null];
+  let detail = null;
+  if (incident.kind === 'desync') {
+    detail = incident.sync_check ? `Game ${incident.game} · ${syncText({ check: incident.sync_check, frame: incident.sync_frame })}` : `Game ${incident.game}`;
+  } else if (incident.kind === 'disconnect') {
+    detail = `Game ${incident.game}`;
+  } else if (incident.kind === 'left') {
+    detail = LEFT_HOW[incident.how] || incident.how;
+  }
+  return [badge(tone, name), detail && h('span', { class: 'sub' }, detail)];
+}
+
+function renderMonitoring(data, now) {
+  const content = data.content;
+  if (!content) return [unreachable(data.error)];
+  const { days, by_day: byDay, by_build: byBuild, by_stadium: byStadium, incidents, errors, refusals } = content;
+  const sum = (field) => byDay.reduce((total, day) => total + day[field], 0);
+  const [matches, games] = [sum('matches'), sum('games')];
+  const recent = refusals.filter((refusal) => since(refusal.last_at, now) < days * 86400);
+  const window = `Last ${days} days`;
+  const build = (name) => (name ? h('code', null, name) : h('span', { class: 'sub' }, 'Not named'));
+
+  return [
+    h(
+      'section',
+      { class: 'tiles', 'aria-label': 'Key figures' },
+      tile('Games', count(games), `${count(matches)} matches · ${window.toLowerCase()}`),
+      tile('Out of sync', count(sum('desyncs')), `${share(sum('desyncs'), games)} of games`),
+      tile('Lost connection', count(sum('disconnects')), `${share(sum('disconnects'), games)} of games`),
+      tile('Abandoned', count(sum('abandoned')), `${share(sum('abandoned'), matches)} of matches`),
+      tile('Left WFC mid-match', count(sum('left')), 'Games that left before their end'),
+      tile('Error codes', count(sum('errors')), `${count(errors.length)} different`),
+      tile('Refused reports', count(recent.length), `${recent.length === 1 ? 'Profile' : 'Profiles'} refused lately`),
+    ),
+    card(
+      'Incidents',
+      `${window}, the newest first: what went wrong for a side of a match`,
+      table(
+        [
+          { label: 'When', cell: (i) => [h('time', { datetime: i.at, title: dateTime.format(new Date(i.at)) }, ago(i.at, now))] },
+          { label: 'What', cell: incidentWhat },
+          { label: 'Player', cell: (i) => [i.mii, h('span', { class: 'sub' }, h('a', { href: playerPath(i.profile_id) }, `Profile ${i.profile_id}`))] },
+          { label: 'Match', cell: (i) => [h('a', { href: `/admin/matches/${i.match_id}` }, `Match ${i.match_id}`), h('span', { class: 'sub' }, i.side === 'home' ? 'Home' : 'Away')] },
+          { label: 'Build', cell: (i) => build(i.build) },
+        ],
+        incidents,
+        `Nothing went wrong in the last ${days} days.`,
+      ),
+    ),
+    card(
+      'Error codes',
+      `${window}: the numbers error popups showed players, the most frequent first`,
+      table(
+        [
+          { label: 'Code', cell: (e) => [h('code', null, String(e.code)), errorMeaning(e.code) && h('span', { class: 'sub' }, errorMeaning(e.code))] },
+          { label: 'Times', num: true, cell: (e) => integer.format(e.count) },
+          { label: 'Players', num: true, cell: (e) => [integer.format(e.players), h('span', { class: 'sub' }, `${integer.format(e.addresses)} ${e.addresses === 1 ? 'address' : 'addresses'}`)] },
+          { label: 'When', class: 'wrap', cell: (e) => (e.phases.length ? e.phases.map((phase) => PHASES[phase] || phase).join(', ') : h('span', { class: 'sub' }, 'unknown')) },
+          { label: 'Builds', class: 'wrap', cell: (e) => (e.builds.length ? e.builds.flatMap((name, index) => [index ? ', ' : null, h('code', null, name)]) : h('span', { class: 'sub' }, 'not named')) },
+          { label: 'Last', cell: (e) => ago(e.last_at, now) },
+        ],
+        errors,
+        `No error codes in the last ${days} days.`,
+      ),
+    ),
+    card(
+      'By day',
+      'UTC days; a game counts once, however many sides reported it',
+      table(
+        [
+          { label: 'Day', cell: (d) => calendarDay.format(new Date(d.day)) },
+          { label: 'Matches', num: true, cell: (d) => integer.format(d.matches) },
+          { label: 'Abandoned', num: true, cell: (d) => flagged(d.abandoned, 'warning') },
+          { label: 'Games', num: true, cell: (d) => integer.format(d.games) },
+          { label: 'Out of sync', num: true, cell: (d) => flagged(d.desyncs, 'serious') },
+          { label: 'Lost connection', num: true, cell: (d) => flagged(d.disconnects, 'warning') },
+          { label: 'Left WFC', num: true, cell: (d) => flagged(d.left, 'warning') },
+          { label: 'Errors', num: true, cell: (d) => flagged(d.errors, 'warning') },
+        ],
+        byDay,
+        'No days.',
+      ),
+    ),
+    card(
+      'By build',
+      "Each build's own series and the games it reported; a build from before reports named it shows as not named",
+      table(
+        [
+          { label: 'Build', cell: (b) => build(b.build) },
+          { label: 'Series', num: true, cell: (b) => integer.format(b.sides) },
+          { label: 'Games', num: true, cell: (b) => integer.format(b.games) },
+          { label: 'Out of sync', num: true, cell: (b) => [flagged(b.desyncs, 'serious'), h('span', { class: 'sub' }, share(b.desyncs, b.games))] },
+          { label: 'Lost connection', num: true, cell: (b) => [flagged(b.disconnects, 'warning'), h('span', { class: 'sub' }, share(b.disconnects, b.games))] },
+          { label: 'Left WFC', num: true, cell: (b) => flagged(b.left, 'warning') },
+          { label: 'Last seen', cell: (b) => ago(b.last_seen, now) },
+        ],
+        byBuild,
+        `No series reported in the last ${days} days.`,
+      ),
+    ),
+    card(
+      'By stadium',
+      'Where games go out of sync',
+      table(
+        [
+          { label: 'Stadium', cell: (s) => STADIUM_NAMES[s.stadium] || s.stadium },
+          { label: 'Games', num: true, cell: (s) => integer.format(s.games) },
+          { label: 'Out of sync', num: true, cell: (s) => [flagged(s.desyncs, 'serious'), h('span', { class: 'sub' }, share(s.desyncs, s.games))] },
+          { label: 'Lost connection', num: true, cell: (s) => [flagged(s.disconnects, 'warning'), h('span', { class: 'sub' }, share(s.disconnects, s.games))] },
+        ],
+        byStadium,
+        `No games reported in the last ${days} days.`,
+      ),
+    ),
+    card(
+      'Refused reports',
+      'Reports of known profiles the server did not take, the latest first: a game whose matches show no reports from its side is often here',
+      table(
+        [
+          { label: 'Player', cell: (r) => [r.mii || 'Unknown', h('span', { class: 'sub' }, h('a', { href: playerPath(r.profile_id) }, `Profile ${r.profile_id}`))] },
+          { label: 'Why', cell: (r) => [REFUSALS[r.kind] || r.kind, h('span', { class: 'sub' }, r.problem)] },
+          { label: 'Reports', num: true, cell: (r) => integer.format(r.count) },
+          { label: 'From', cell: (r) => h('code', null, r.address) },
+          { label: 'Last', cell: (r) => [ago(r.last_at, now), h('span', { class: 'sub' }, `first ${ago(r.first_at, now).textContent}`)] },
+        ],
+        refusals,
+        'No report was refused.',
       ),
     ),
   ];

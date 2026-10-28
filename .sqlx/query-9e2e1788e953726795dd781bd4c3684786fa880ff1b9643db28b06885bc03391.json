@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE client_errors SET received_at = now() - interval '31 days'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "9e2e1788e953726795dd781bd4c3684786fa880ff1b9643db28b06885bc03391"
+}

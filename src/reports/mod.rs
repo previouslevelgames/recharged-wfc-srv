@@ -3,8 +3,10 @@
 //! the server. Both games of a match report, each from the address it is
 //! logged in to GPCM from; the server pairs their sides into one match and
 //! works its result out from the games both saw the same ([`store`],
-//! [`outcome`]).
+//! [`outcome`]). They also tell what went wrong; with the error codes the
+//! games showed ([`errors`]), the Monitoring page of `/admin` shows it.
 
+mod errors;
 pub(crate) mod outcome;
 pub(crate) mod report;
 mod store;
@@ -25,7 +27,7 @@ use tracing::{debug, info, trace, warn};
 
 use crate::gpcm::Gpcm;
 use report::Report;
-pub(crate) use store::{settle_idle, sides};
+pub(crate) use store::{left, settle_idle, sides};
 
 /// A report is a few hundred bytes.
 const MAX_BODY: usize = 16 * 1024;
@@ -35,16 +37,24 @@ struct ReportsState {
     pool: PgPool,
     /// Who is logged in where: the reports they may send.
     gpcm: Arc<Gpcm>,
+    /// The errors each address sent lately.
+    limits: Arc<errors::Limits>,
 }
 
-/// `POST /api/v1/wfc/reports`, for any host name: the game sends it to its
-/// server's address. It needs the caller's address: serve it with
+/// `POST /api/v1/wfc/reports` and `POST /api/v1/wfc/errors`, for any host
+/// name: the game sends them to its server's address. They need the
+/// caller's address: serve them with
 /// `into_make_service_with_connect_info::<SocketAddr>()`.
 pub fn router(pool: PgPool, gpcm: Arc<Gpcm>) -> Router {
     Router::new()
         .route("/api/v1/wfc/reports", post(receive))
+        .route("/api/v1/wfc/errors", post(receive_error))
         .layer(DefaultBodyLimit::max(MAX_BODY))
-        .with_state(ReportsState { pool, gpcm })
+        .with_state(ReportsState {
+            pool,
+            gpcm,
+            limits: Arc::default(),
+        })
 }
 
 async fn receive(
@@ -60,7 +70,18 @@ async fn receive(
     trace!(target: "raw::reports", %peer, body = %text, "report");
     let report = match Report::parse(&body) {
         Ok(report) => report,
-        Err(problem) => return refuse(peer, &problem),
+        Err(problem) => {
+            // Counted for a game logged in from here only: a stranger could
+            // name any profile.
+            if let Some(profile_id) = profile_id(&body)
+                && state.gpcm.logged_in_from(profile_id) == Some(peer.ip())
+            {
+                state
+                    .count_refusal(profile_id, "invalid", &problem, peer)
+                    .await;
+            }
+            return refuse(peer, &problem);
+        }
     };
 
     // As for gamestats2's puts (docs/gamestats2.md, "Trust"): a profile id
@@ -68,6 +89,13 @@ async fn receive(
     let logged_in_from = state.gpcm.logged_in_from(report.profile_id);
     if logged_in_from != Some(peer.ip()) {
         warn!(target: "reports", profile_id = report.profile_id, %peer, ?logged_in_from, "report from elsewhere");
+        let problem = match logged_in_from {
+            Some(address) => format!("logged in from {address}"),
+            None => "not logged in".to_owned(),
+        };
+        state
+            .count_refusal(report.profile_id, "elsewhere", &problem, peer)
+            .await;
         return json_error(
             StatusCode::FORBIDDEN,
             "profile not logged in from this address",
@@ -93,6 +121,64 @@ async fn receive(
             )
         }
     }
+}
+
+/// An error code a game showed its player.
+async fn receive_error(
+    State(state): State<ReportsState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    let body = match body {
+        Ok(body) => body,
+        Err(rejection) => return refuse(peer, &rejection.body_text()),
+    };
+    trace!(target: "raw::reports", %peer, body = %String::from_utf8_lossy(&body), "error");
+    let error = match errors::ClientError::parse(&body) {
+        Ok(error) => error,
+        Err(problem) => return refuse(peer, &problem),
+    };
+    if !state.limits.allow(peer.ip()) {
+        debug!(target: "reports", %peer, code = error.code, "error dropped: too many");
+        return json_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many errors from this address",
+        );
+    }
+    // Only a profile logged in from where the error came is kept.
+    let profile_id = error
+        .profile_id
+        .filter(|&id| state.gpcm.logged_in_from(id) == Some(peer.ip()));
+    let address = peer.ip().to_string();
+    match errors::store(&state.pool, &error, profile_id, &address).await {
+        Ok(()) => {
+            info!(target: "reports", code = error.code, phase = error.phase, ?profile_id, %peer, build = error.build, "error code reported");
+            Json(json!({})).into_response()
+        }
+        Err(failure) => {
+            warn!(target: "reports", error = %failure, "database error");
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "the server's database failed",
+            )
+        }
+    }
+}
+
+impl ReportsState {
+    /// Keeps a refusal for the Monitoring page; the log has it anyway.
+    async fn count_refusal(&self, profile_id: i32, kind: &str, problem: &str, peer: SocketAddr) {
+        let address = peer.ip().to_string();
+        if let Err(error) = store::refused(&self.pool, profile_id, kind, problem, &address).await {
+            warn!(target: "reports", %error, "database error");
+        }
+    }
+}
+
+/// The profile a body that is not a report names, if it names one.
+fn profile_id(body: &[u8]) -> Option<i32> {
+    let body: serde_json::Value = serde_json::from_slice(body).ok()?;
+    i32::try_from(body.get("profile_id")?.as_i64()?).ok()
 }
 
 fn refuse(peer: SocketAddr, problem: &str) -> Response {
@@ -151,9 +237,18 @@ mod tests {
         /// POSTs `body` to the reports from `address`, to the server's bare
         /// IP as the game does. The status and the JSON answered.
         async fn post(&self, address: [u8; 4], body: impl Into<Body>) -> (StatusCode, Value) {
+            self.post_to("/api/v1/wfc/reports", address, body).await
+        }
+
+        async fn post_to(
+            &self,
+            path: &str,
+            address: [u8; 4],
+            body: impl Into<Body>,
+        ) -> (StatusCode, Value) {
             let app = router(self.pool.clone(), self.gpcm.clone())
                 .layer(MockConnectInfo(SocketAddr::from((address, 51000))));
-            let request = Request::post("/api/v1/wfc/reports")
+            let request = Request::post(path)
                 .header(header::HOST, "2.31.48.136")
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(body.into())
@@ -189,6 +284,99 @@ mod tests {
             "stadium": "unknown", "ending": "normal", "seconds": 180,
         });
         body
+    }
+
+    #[sqlx::test]
+    async fn refusals_are_kept_for_the_monitoring(pool: PgPool) {
+        let server = Server::new(pool.clone());
+        let anosch = server.log_in(1, "Anosch", ANOSCH_HOME).await;
+        let mut body = start();
+        body["profile_id"] = json!(anosch);
+        assert_eq!(
+            server.report(SAM_HOME, &body).await.0,
+            StatusCode::FORBIDDEN
+        );
+        body["mode"] = json!("casual");
+        assert_eq!(
+            server.report(ANOSCH_HOME, &body).await.0,
+            StatusCode::BAD_REQUEST
+        );
+
+        let rows = sqlx::query!(
+            "SELECT kind, count, problem, address FROM report_refusals WHERE profile_id = $1
+             ORDER BY kind",
+            anosch,
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        let rows: Vec<_> = rows
+            .iter()
+            .map(|row| {
+                (
+                    row.kind.as_str(),
+                    row.count,
+                    row.problem.as_str(),
+                    row.address.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                ("elsewhere", 1, "logged in from 203.0.113.4", "198.51.100.7"),
+                ("invalid", 1, "mode: one of ranked, friends", "203.0.113.4"),
+            ]
+        );
+    }
+
+    #[sqlx::test]
+    async fn an_error_keeps_its_profile_only_from_its_login(pool: PgPool) {
+        let server = Server::new(pool.clone());
+        let anosch = server.log_in(1, "Anosch", ANOSCH_HOME).await;
+        let error = json!({
+            "release": "R4QE", "build": "1.1.0+g0123456789ab", "code": 86420,
+            "phase": "matchmaking", "profile_id": anosch,
+        });
+        for address in [ANOSCH_HOME, SAM_HOME] {
+            let answer = server
+                .post_to("/api/v1/wfc/errors", address, error.to_string())
+                .await;
+            assert_eq!(answer, (StatusCode::OK, json!({})));
+        }
+        let (status, _) = server
+            .post_to(
+                "/api/v1/wfc/errors",
+                ANOSCH_HOME,
+                r#"{"release":"R4QE","code":0}"#,
+            )
+            .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        let rows = sqlx::query!(
+            "SELECT code, phase, build, profile_id, address FROM client_errors ORDER BY error_id"
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        let rows: Vec<_> = rows
+            .iter()
+            .map(|row| {
+                (
+                    row.code,
+                    row.phase.as_deref(),
+                    row.profile_id,
+                    row.address.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                (86420, Some("matchmaking"), Some(anosch), "203.0.113.4"),
+                (86420, Some("matchmaking"), None, "198.51.100.7"),
+            ]
+        );
     }
 
     #[sqlx::test]

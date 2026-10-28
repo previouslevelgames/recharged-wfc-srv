@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE online_match_sides SET left_at = now(), left_how = $2\n         WHERE profile_id = $1 AND ended_at IS NULL AND left_at IS NULL\n           AND last_report_at > now() - interval '30 minutes'\n         RETURNING match_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "match_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "online_match_sides",
+            "name": "match_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "347dcd196251edceeeef47d39667ccd620b9a5c1d80b044768e255828b218e6a"
+}

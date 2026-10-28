@@ -274,6 +274,45 @@ async fn a_logged_in_game_reports_its_series(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn a_game_that_leaves_wfc_in_a_match_is_noted(pool: PgPool) {
+    let server = Server::start(pool.clone()).await;
+    for (user_id, how) in [(42, "logout"), (43, "closed")] {
+        let mut player = Player::log_in(&server, user_id).await;
+        let profile_id: i32 = player.profile_id.parse().unwrap();
+        let report = serde_json::json!({
+            "profile_id": profile_id, "release": "R4QE", "event": "start",
+            "series": 1_792_000_000_i64, "mode": "friends", "best_of": 1, "side": "home",
+            "mii": "Mario", "opponent_mii": "Luigi", "captains": {"home": "mario", "away": "luigi"},
+        })
+        .to_string();
+        assert_eq!(server.report(&report).await.0, 200);
+
+        if how == "logout" {
+            player.client.send(r"\logout\\final\").await;
+            assert!(player.client.closed().await);
+        } else {
+            // The game is closed: its connection ends without a logout.
+            drop(player);
+        }
+        let mut noted = None;
+        for _ in 0..50 {
+            noted = sqlx::query_scalar::<_, Option<String>>(
+                "SELECT left_how FROM online_match_sides WHERE profile_id = $1",
+            )
+            .bind(profile_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            if noted.is_some() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(noted.as_deref(), Some(how));
+    }
+}
+
+#[sqlx::test]
 async fn a_login_needs_the_token_and_its_proof(pool: PgPool) {
     let server = Server::start(pool).await;
     let (token, challenge) = server.nas_login(42).await;

@@ -9,7 +9,7 @@ use std::{cmp::Ordering, collections::BTreeMap};
 use serde::Serialize;
 use time::OffsetDateTime;
 
-use super::report::{Side, Teams, UNKNOWN};
+use super::report::{Side, SyncError, Teams, UNKNOWN};
 
 /// A game as one side saw it.
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -19,6 +19,8 @@ pub struct View {
     pub stadium: String,
     pub ending: String,
     pub seconds: i32,
+    /// For a `desync`, what the game knew of it.
+    pub sync: Option<SyncError>,
 }
 
 impl View {
@@ -140,6 +142,14 @@ pub struct Reporter {
     pub sidekicks: Teams<Vec<String>>,
     /// The end's: `decided` or `abandoned`.
     pub reason: Option<String>,
+    /// Why the series ended, as the end said: `decided`, `desync`,
+    /// `disconnect` or `offline`.
+    pub cause: Option<String>,
+    /// The build that reported, when it said.
+    pub build: Option<String>,
+    /// When its game's GPCM login ended before the end came, and how.
+    pub left_at: Option<OffsetDateTime>,
+    pub left_how: Option<String>,
     pub opened_at: OffsetDateTime,
     pub last_report_at: OffsetDateTime,
     pub ended_at: Option<OffsetDateTime>,
@@ -257,6 +267,7 @@ mod tests {
             stadium: "the_palace".into(),
             ending: "normal".into(),
             seconds: 180,
+            sync: None,
         }
     }
 
@@ -273,6 +284,10 @@ mod tests {
             },
             sidekicks: Teams::default(),
             reason: None,
+            cause: None,
+            build: None,
+            left_at: None,
+            left_how: None,
             opened_at: now,
             last_report_at: now,
             ended_at: None,

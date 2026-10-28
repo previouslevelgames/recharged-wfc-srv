@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT match_id, side, profile_id, series, mii, opponent_mii, home_captain,\n                away_captain, home_sidekicks, away_sidekicks, reason, opened_at,\n                last_report_at, ended_at\n         FROM online_match_sides\n         WHERE match_id = ANY($1)",
+  "query": "SELECT match_id, side, profile_id, series, mii, opponent_mii, home_captain,\n                away_captain, home_sidekicks, away_sidekicks, reason, cause, build, left_at,\n                left_how, opened_at, last_report_at, ended_at\n         FROM online_match_sides\n         WHERE match_id = ANY($1)",
   "describe": {
     "columns": [
       {
@@ -126,6 +126,50 @@
       },
       {
         "ordinal": 11,
+        "name": "cause",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_match_sides",
+            "name": "cause"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "build",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_match_sides",
+            "name": "build"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "left_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "online_match_sides",
+            "name": "left_at"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "left_how",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_match_sides",
+            "name": "left_how"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
         "name": "opened_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -136,7 +180,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 16,
         "name": "last_report_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -147,7 +191,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 17,
         "name": "ended_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -175,10 +219,14 @@
       false,
       false,
       true,
+      true,
+      true,
+      true,
+      true,
       false,
       false,
       true
     ]
   },
-  "hash": "350ef213e6ae00014e2a1d8f7a81f518a5ba2c64d6d8c2b7d7e03f1045d518ba"
+  "hash": "937d9c9f13cdc4ef130a44545c0a3c469349ac66e11f615c61e3374a5de671e6"
 }
