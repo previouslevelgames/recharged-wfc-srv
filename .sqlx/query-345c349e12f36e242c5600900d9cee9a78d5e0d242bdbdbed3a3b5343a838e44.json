@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT player_id FROM players\n         WHERE heartbeat_at > now() - make_interval(secs => $2) AND player_id <> $1\n         ORDER BY lower(display_name), player_id\n         LIMIT 100",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "player_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "player_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "345c349e12f36e242c5600900d9cee9a78d5e0d242bdbdbed3a3b5343a838e44"
+}

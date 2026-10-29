@@ -105,6 +105,12 @@ pub(crate) fn router(
         .route("/api/v1/matches/{id}/decline", post(play::decline))
         .route("/api/v1/matches/{id}/cancel", post(play::cancel))
         .route("/api/v1/matches/{id}/ready", post(play::ready))
+        .route(
+            "/api/v1/matches/{id}/ready-to-play",
+            post(play::ready_to_play),
+        )
+        .route("/api/v1/matches/{id}/rematch", post(play::rematch))
+        .route("/api/v1/players", get(play::players))
         .route("/api/v1/matches/{id}/report", post(play::report))
         .route("/sign-in", get(sign_in_page))
         .route("/sign-in/test", post(page_test_sign_in))
@@ -133,7 +139,8 @@ fn database_error(error: sqlx::Error) -> Response {
 }
 
 impl ProfilesState {
-    /// The player of the request's bearer token, or the 401 to answer.
+    /// The player of the request's bearer token, or the 401 to answer. The
+    /// request is the player's heartbeat: their Recharged is open.
     async fn signed_in(&self, headers: &HeaderMap) -> Result<Player, Response> {
         let unauthorized = || json_error(StatusCode::UNAUTHORIZED, "signed out");
         let token = bearer(headers).ok_or_else(unauthorized)?;
@@ -141,6 +148,9 @@ impl ProfilesState {
             .await
             .map_err(database_error)?
             .ok_or_else(unauthorized)?;
+        players::heartbeat(&self.pool, player_id)
+            .await
+            .map_err(database_error)?;
         players::player(&self.pool, player_id)
             .await
             .map_err(database_error)?
@@ -335,16 +345,22 @@ async fn sign_out(State(state): State<Arc<ProfilesState>>, headers: HeaderMap) -
     }
 }
 
-/// The player, with the WFC profiles proven theirs.
+/// The player, with the WFC profiles proven theirs and their Discord
+/// account id.
 async fn me(State(state): State<Arc<ProfilesState>>, headers: HeaderMap) -> Response {
     let player = match state.signed_in(&headers).await {
         Ok(player) => player,
         Err(response) => return response,
     };
+    let discord_id = match players::discord_id(&state.pool, player.id).await {
+        Ok(discord_id) => discord_id,
+        Err(error) => return database_error(error),
+    };
     match players::wfc_profiles(&state.pool, player.id).await {
         Ok(wfc) => {
             let mut me = serde_json::to_value(&player).expect("a player serializes");
             me["wfc"] = json!(wfc);
+            me["discord_id"] = json!(discord_id);
             Json(me).into_response()
         }
         Err(error) => database_error(error),

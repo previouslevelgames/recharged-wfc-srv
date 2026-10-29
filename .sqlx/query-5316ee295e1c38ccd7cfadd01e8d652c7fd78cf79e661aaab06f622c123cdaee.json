@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE matches SET home_ready_at = NULL, away_ready_at = NULL, go_at = NULL,\n                            updated_at = now()\n         WHERE state = 'accepted' AND playing_at IS NULL\n           AND go_at < now() - make_interval(secs => $1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Float8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5316ee295e1c38ccd7cfadd01e8d652c7fd78cf79e661aaab06f622c123cdaee"
+}

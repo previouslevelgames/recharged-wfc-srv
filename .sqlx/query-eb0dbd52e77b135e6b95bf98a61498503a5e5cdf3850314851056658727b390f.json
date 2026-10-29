@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE players SET heartbeat_at = now()\n         WHERE player_id = $1 AND (heartbeat_at IS NULL OR heartbeat_at < now() - interval '5 seconds')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "eb0dbd52e77b135e6b95bf98a61498503a5e5cdf3850314851056658727b390f"
+}

@@ -37,7 +37,8 @@ pub struct Player {
 }
 
 /// Signs in with `identity`: its player, made at the first sign-in. The
-/// player's name and picture follow the account's.
+/// player's name and picture follow the account's, and the sign-in is a
+/// heartbeat (the launcher is open).
 pub async fn sign_in(pool: &PgPool, identity: &Identity<'_>) -> Result<i64, sqlx::Error> {
     loop {
         let mut transaction = pool.begin().await?;
@@ -54,7 +55,8 @@ pub async fn sign_in(pool: &PgPool, identity: &Identity<'_>) -> Result<i64, sqlx
         .await?
         {
             sqlx::query!(
-                "UPDATE players SET display_name = $2, last_seen_at = now() WHERE player_id = $1",
+                "UPDATE players SET display_name = $2, last_seen_at = now(), heartbeat_at = now()
+                 WHERE player_id = $1",
                 player_id,
                 identity.display_name,
             )
@@ -65,7 +67,7 @@ pub async fn sign_in(pool: &PgPool, identity: &Identity<'_>) -> Result<i64, sqlx
         }
 
         let player_id = sqlx::query_scalar!(
-            "INSERT INTO players (display_name) VALUES ($1) RETURNING player_id",
+            "INSERT INTO players (display_name, heartbeat_at) VALUES ($1, now()) RETURNING player_id",
             identity.display_name,
         )
         .fetch_one(&mut *transaction)
@@ -115,6 +117,127 @@ pub async fn player(pool: &PgPool, player_id: i64) -> Result<Option<Player>, sql
         discord: row.discord,
         test: row.test.is_some(),
     }))
+}
+
+/// The player's Discord account id (the long number), which never changes;
+/// none for test players. The launcher makes the player's Mii from it.
+pub async fn discord_id(pool: &PgPool, player_id: i64) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar!(
+        "SELECT external_id FROM player_identities WHERE player_id = $1 AND provider = 'discord'",
+        player_id,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
+/// `player_id`'s launcher or game made a request: they have Recharged open
+/// (written at most every few seconds).
+pub async fn heartbeat(pool: &PgPool, player_id: i64) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "UPDATE players SET heartbeat_at = now()
+         WHERE player_id = $1 AND (heartbeat_at IS NULL OR heartbeat_at < now() - interval '5 seconds')",
+        player_id,
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Whether `player_id` has Recharged open.
+pub async fn is_online(pool: &PgPool, player_id: i64) -> Result<bool, sqlx::Error> {
+    Ok(sqlx::query_scalar!(
+        "SELECT 1 AS \"online!\" FROM players
+         WHERE player_id = $1 AND heartbeat_at > now() - make_interval(secs => $2)",
+        player_id,
+        f64::from(super::matches::HEARTBEAT_TIMEOUT_SECS),
+    )
+    .fetch_optional(pool)
+    .await?
+    .is_some())
+}
+
+/// A player in the launcher's lists: whether they have Recharged open and a
+/// set to play.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Listed {
+    #[serde(flatten)]
+    pub player: Player,
+    pub online: bool,
+    pub busy: bool,
+}
+
+/// Who has Recharged open, but `player_id`, by name.
+pub async fn online(pool: &PgPool, player_id: i64) -> Result<Vec<Listed>, sqlx::Error> {
+    let ids = sqlx::query_scalar!(
+        "SELECT player_id FROM players
+         WHERE heartbeat_at > now() - make_interval(secs => $2) AND player_id <> $1
+         ORDER BY lower(display_name), player_id
+         LIMIT 100",
+        player_id,
+        f64::from(super::matches::HEARTBEAT_TIMEOUT_SECS),
+    )
+    .fetch_all(pool)
+    .await?;
+    listed(pool, &ids).await
+}
+
+/// The last 10 players `player_id` played a set with, the latest first.
+pub async fn recent_opponents(pool: &PgPool, player_id: i64) -> Result<Vec<Listed>, sqlx::Error> {
+    let ids = sqlx::query_scalar!(
+        r#"SELECT opponent AS "opponent!" FROM (
+               SELECT CASE WHEN home = $1 THEN away ELSE home END AS opponent, updated_at
+               FROM matches
+               WHERE (home = $1 OR away = $1) AND state IN ('finished', 'disputed')
+           ) AS played
+           GROUP BY opponent
+           ORDER BY max(updated_at) DESC
+           LIMIT 10"#,
+        player_id,
+    )
+    .fetch_all(pool)
+    .await?;
+    listed(pool, &ids).await
+}
+
+/// The players `ids`, in that order.
+async fn listed(pool: &PgPool, ids: &[i64]) -> Result<Vec<Listed>, sqlx::Error> {
+    let rows = sqlx::query!(
+        r#"SELECT players.player_id, players.display_name,
+                  discord.username AS "discord?", discord.avatar_url AS "avatar_url?",
+                  test.username AS "test?",
+                  coalesce(players.heartbeat_at > now() - make_interval(secs => $2), false)
+                      AS "online!",
+                  EXISTS (SELECT 1 FROM matches
+                          WHERE state IN ('challenged', 'accepted')
+                            AND (home = players.player_id OR away = players.player_id))
+                      AS "busy!"
+           FROM players
+           LEFT JOIN player_identities discord
+                  ON discord.player_id = players.player_id AND discord.provider = 'discord'
+           LEFT JOIN player_identities test
+                  ON test.player_id = players.player_id AND test.provider = 'test'
+           WHERE players.player_id = ANY($1)"#,
+        ids,
+        f64::from(super::matches::HEARTBEAT_TIMEOUT_SECS),
+    )
+    .fetch_all(pool)
+    .await?;
+    let mut listed: Vec<Listed> = rows
+        .into_iter()
+        .map(|row| Listed {
+            player: Player {
+                id: row.player_id,
+                name: row.display_name,
+                avatar_url: row.avatar_url,
+                discord: row.discord,
+                test: row.test.is_some(),
+            },
+            online: row.online,
+            busy: row.busy,
+        })
+        .collect();
+    listed.sort_by_key(|entry| ids.iter().position(|id| *id == entry.player.id));
+    Ok(listed)
 }
 
 /// The player who signs in with `name`: a Discord username, or on a test

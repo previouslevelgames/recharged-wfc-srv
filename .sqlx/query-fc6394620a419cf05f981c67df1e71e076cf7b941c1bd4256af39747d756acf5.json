@@ -1,0 +1,91 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT players.player_id, players.display_name,\n                  discord.username AS \"discord?\", discord.avatar_url AS \"avatar_url?\",\n                  test.username AS \"test?\",\n                  coalesce(players.heartbeat_at > now() - make_interval(secs => $2), false)\n                      AS \"online!\",\n                  EXISTS (SELECT 1 FROM matches\n                          WHERE state IN ('challenged', 'accepted')\n                            AND (home = players.player_id OR away = players.player_id))\n                      AS \"busy!\"\n           FROM players\n           LEFT JOIN player_identities discord\n                  ON discord.player_id = players.player_id AND discord.provider = 'discord'\n           LEFT JOIN player_identities test\n                  ON test.player_id = players.player_id AND test.provider = 'test'\n           WHERE players.player_id = ANY($1)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "player_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "player_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "display_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "discord?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "player_identities",
+            "name": "username"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "avatar_url?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "player_identities",
+            "name": "avatar_url"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "test?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "player_identities",
+            "name": "username"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "online!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "busy!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8Array",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true,
+      null,
+      null
+    ]
+  },
+  "hash": "fc6394620a419cf05f981c67df1e71e076cf7b941c1bd4256af39747d756acf5"
+}

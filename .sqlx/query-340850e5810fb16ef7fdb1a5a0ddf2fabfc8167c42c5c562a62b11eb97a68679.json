@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT match_id, state, home, away, rule_set, rules, rules_hash, winner, created_at\n         FROM matches WHERE match_id = $1 AND (home = $2 OR away = $2)",
+  "query": "SELECT match_id, state, home, away, rule_set, rules, rules_hash, winner, created_at,\n                home_ready_at, away_ready_at, go_at, playing_at, rematch_of\n         FROM matches WHERE match_id = $1 AND (home = $2 OR away = $2)",
   "describe": {
     "columns": [
       {
@@ -101,6 +101,61 @@
             "name": "created_at"
           }
         }
+      },
+      {
+        "ordinal": 9,
+        "name": "home_ready_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "home_ready_at"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "away_ready_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "away_ready_at"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "go_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "go_at"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "playing_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "playing_at"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "rematch_of",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "rematch_of"
+          }
+        }
       }
     ],
     "parameters": {
@@ -118,8 +173,13 @@
       false,
       false,
       true,
-      false
+      false,
+      true,
+      true,
+      true,
+      true,
+      true
     ]
   },
-  "hash": "45d0d4e07b846289378cce6989262a81b25da43ff5bed880a62e8c5cafa3ffbd"
+  "hash": "340850e5810fb16ef7fdb1a5a0ddf2fabfc8167c42c5c562a62b11eb97a68679"
 }

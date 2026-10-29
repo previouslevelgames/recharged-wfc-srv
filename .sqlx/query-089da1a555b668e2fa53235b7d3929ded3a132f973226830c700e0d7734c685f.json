@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE matches SET go_at = now() - interval '6 minutes' WHERE match_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "089da1a555b668e2fa53235b7d3929ded3a132f973226830c700e0d7734c685f"
+}

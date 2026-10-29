@@ -4,9 +4,10 @@ Recharged's launcher signs players in to a **Recharged profile** for
 competitive play. A profile is a player, not a console: it is made the first
 time someone signs in with Discord, and it is no part of WFC. The game's own
 logins stay NAS and GPCM's ([login.md](login.md)). Signed in, a player
-challenges another to a test match by a rule set the server's admins keep; the
-port proves which friend code its game plays as, the two games find only each
-other in RANKED, and both report the result.
+challenges another to a set by a rule set the server's admins keep; both press
+**Ready to play!**, their launchers start the games, the port proves which
+friend code its game plays as, the two games find only each other in RANKED,
+and both report the result.
 
 The service is off unless it is configured, and the routes below then answer
 404.
@@ -80,8 +81,13 @@ days. The database keeps only the token's SHA-256.
 | Route | Answer |
 |---|---|
 | `GET /api/v1/server` | `{"version", "revision", "sign_in": {"discord": true, "test": false}}`, without a session: what the launcher can offer |
-| `GET /api/v1/me` | the player, as in a sign-in |
+| `GET /api/v1/me` | the player, as in a sign-in, with `wfc` (see "Friend codes") and `discord_id`: the Discord account id (a string; `null` for test players), from which the launcher makes the player's Mii |
 | `POST /api/v1/sign-out` | 204; the session is closed |
+
+Every request with a session is also the player's heartbeat, as is a
+sign-in: their Recharged (the launcher, or the game it started) is open. A
+player without one for 60 seconds has closed it ("Online now", and the sets
+it ends, see "Sets").
 
 Errors are JSON, `{"error": "<what went wrong>"}`. Every response is
 `no-store`; the pages allow no scripts and no framing.
@@ -89,7 +95,8 @@ Errors are JSON, `{"error": "<what went wrong>"}`. Every response is
 ## Players
 
 `players` has one row per player, with the name to show: the Discord display
-name (or the username) at the last sign-in. `player_identities` holds the
+name (or the username) at the last sign-in, and the time of the last
+heartbeat. `player_identities` holds the
 accounts a player signs in with, one per provider (`discord`, `test`), with
 the username other players look them up by and the avatar.
 `player_sessions` holds the sessions, `player_wfc_profiles` the friend codes
@@ -140,12 +147,15 @@ with no Mega Strikes, fast terrain and Thunder Island walls).
 
 | Route | |
 |---|---|
-| `POST /api/v1/matches` | `{"opponent": "<Discord username>", "rule_set": <id>}`: a challenge, 201. 404 for nobody of that name, 409 when either already has a match to play. |
-| `GET /api/v1/matches/current` | `{"match": …}`: the match still to be played, or the last one that ended within the hour, or `null` |
+| `GET /api/v1/players` | `{"online": [...], "recent": [...]}`: who has Recharged open (by name, at most 100), and the last 10 players played a set with. Each is a player as in a sign-in, with `online` and `busy` (has a set to play). |
+| `POST /api/v1/matches` | `{"opponent": "<Discord username>", "rule_set": <id>}`, or `"opponent_id": <player id>` instead of the name: a challenge, 201. 404 for nobody of that name, 409 when either already has a match to play or the opponent doesn't have Recharged open. |
+| `GET /api/v1/matches/current` | `{"match": …, "poll_interval": 2, "server_time": <unix seconds>}`: the match still to be played, or the last one that ended within the hour, or `null`; `poll_interval` is how soon to ask again (2 while the set waits for its players, 10 while they play, 5 otherwise) |
 | `POST /api/v1/matches/<id>/accept`, `…/decline` | The challenged player's answer |
 | `POST /api/v1/matches/<id>/cancel` | Either player, before the result |
-| `POST /api/v1/matches/<id>/ready` | `{"profile_id", "rules_hash"}`, see below |
+| `POST /api/v1/matches/<id>/ready-to-play` | `{"ready": true}` or `false`: the launcher's Ready to play!, see "Sets" |
+| `POST /api/v1/matches/<id>/ready` | `{"profile_id", "rules_hash"}`: the game's, see below |
 | `POST /api/v1/matches/<id>/report` | `{"games": [...]}`, see below |
+| `POST /api/v1/matches/<id>/rematch` | After a finished or disputed set: the same opponent and rules again, see "Sets" |
 
 A match as the player sees it:
 
@@ -154,21 +164,50 @@ A match as the player sees it:
  "opponent": {"id": 8, "name": "Sam", "avatar_url": "…", "discord": "sam",
               "wfc": [{"profile_id": 1000000001, "game": "R4QE", "friend_code": "…", "mii": "Sam"}]},
  "rule_set": "Competitive", "rules": {…}, "rules_hash": "…",
- "paired": false, "reported": false, "winner": null, "games": [], "created_at": 1792771200}
+ "paired": false, "reported": false, "winner": null, "games": [], "created_at": 1792771200,
+ "stage": "open", "reason": null, "you_ready": true, "opponent_ready": false,
+ "opponent_online": true, "go_at": null, "playing_at": null, "rematch_of": null}
 ```
 
 `state` is `challenged`, `accepted`, `declined`, `cancelled`, `expired` (a
-challenge unanswered for 10 minutes, or an accepted match without a result
-for 2 hours), `finished` or `disputed`. Each player has one match to play at a
-time.
+challenge unanswered for 10 minutes, or an accepted match unchanged for 2
+hours), `dissolved` (a player closed Recharged, see "Sets"), `finished` or
+`disputed`. Each player has one match to play at a time.
+
+### Sets
+
+A match is a **set**: the series both players play by its rules. `stage`
+says where it is, and older launchers and games, which only know `state`,
+still work:
+
+| `stage` | `state` | |
+|---|---|---|
+| `invited` | `challenged` | Waiting for the challenged player's answer |
+| `open` | `accepted` | Both are in; each presses **Ready to play!** (`you_ready`, `opponent_ready`) and may take it back |
+| `go` | `accepted` | Both are ready (`go_at`): both launchers start their games |
+| `playing` | `accepted` | The games found each other in RANKED (`playing_at`) |
+| `finished`, `disputed` | the same | The result |
+| `dissolved` | `declined`, `cancelled`, `expired` or `dissolved` | Ended without a result; `reason` is the state |
+
+- A set whose games haven't met 5 minutes after the go waits for Ready to
+  play! again.
+- A player without a heartbeat for 60 seconds has closed Recharged: their
+  sets without a report of theirs end (`dissolved`). So a challenger set
+  lasts while both have Recharged open, and only a player with Recharged
+  open can be challenged.
+- A game saying it is ready (below) counts as its player's Ready to play!,
+  for launchers without the button.
+- `rematch`: the first player to ask challenges the other with the ended
+  set's rules (`rematch_of` names it); the other's **Rematch** accepts it.
 
 ### Meeting in RANKED
 
-Once the match is accepted, the port says every few seconds that its game is
+Once the match is accepted, the port says every 10 seconds that its game is
 ready: logged in to WFC as `profile_id`, one of the player's profiles, and
 applying the rules with `rules_hash`. Readiness lasts 30 seconds without being
 said again, so a game that went away stops being kept. The answer is
-`{"paired", "other_release"}`: `paired` once both games are ready.
+`{"paired", "other_release"}`: `paired` once both games are ready, and the
+set's stage is then `playing`.
 
 While a game is ready, RANKED in WFC Central works differently for it
 ([login.md](login.md), "Server browser"): its search lists only its
@@ -185,7 +224,8 @@ After the series, each game reports what it saw, game by game:
             "opponent_captain": "bowser", "stadium": "the_palace"}]}
 ```
 
-A report holds 1 to `games` games; captains and stadiums are lowercase names.
+A report holds 1 to `games` games (the whole series, decided or not, e.g.
+when it ended early); captains and stadiums are lowercase names.
 The second report settles the match: `finished` with the series' winner (more
 games won; `winner` is `you`, `opponent` or `draw`) when both saw the same
 games, `disputed` otherwise. A player reports once. The view then shows the

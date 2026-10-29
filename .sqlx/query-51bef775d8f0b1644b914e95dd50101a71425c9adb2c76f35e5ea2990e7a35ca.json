@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE matches SET\n             home_ready_at = CASE WHEN home = $2\n                                  THEN CASE WHEN $3 THEN coalesce(home_ready_at, now()) END\n                                  ELSE home_ready_at END,\n             away_ready_at = CASE WHEN away = $2\n                                  THEN CASE WHEN $3 THEN coalesce(away_ready_at, now()) END\n                                  ELSE away_ready_at END,\n             go_at = CASE WHEN (CASE WHEN home = $2 THEN $3 ELSE home_ready_at IS NOT NULL END)\n                           AND (CASE WHEN away = $2 THEN $3 ELSE away_ready_at IS NOT NULL END)\n                          THEN coalesce(go_at, now()) END,\n             updated_at = now()\n         WHERE match_id = $1 AND (home = $2 OR away = $2)\n           AND state = 'accepted' AND playing_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "51bef775d8f0b1644b914e95dd50101a71425c9adb2c76f35e5ea2990e7a35ca"
+}
