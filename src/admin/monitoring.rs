@@ -3,7 +3,8 @@
 //! the Recharged builds reported them; games that left WFC in the middle of
 //! a match, as GPCM saw it; the error codes the games showed; and the
 //! reports the server refused. Over the last [`DAYS`] days (UTC), by day,
-//! build, stadium and code.
+//! build, stadium and code, and the last [`TIMELINE_HOURS`] hours as a
+//! timeline.
 
 use serde::Serialize;
 use sqlx::{PgConnection, PgPool};
@@ -16,6 +17,11 @@ use crate::reports;
 const DAYS: i64 = 14;
 /// Incidents and refusals shown, the newest first.
 const SHOWN: i64 = 50;
+/// The timeline's span, and the width of its columns.
+const TIMELINE_HOURS: i64 = 48;
+const COLUMN_MINUTES: i32 = 30;
+/// Matches on the timeline at most: far more than two days have had.
+const TIMELINE_MATCHES: i64 = 5000;
 
 #[derive(Serialize)]
 pub struct Monitoring {
@@ -27,6 +33,43 @@ pub struct Monitoring {
     incidents: Vec<Incident>,
     errors: Vec<ErrorCode>,
     refusals: Vec<Refusal>,
+    timeline: Timeline,
+}
+
+/// The last [`TIMELINE_HOURS`] hours: the matches in progress, and what went
+/// wrong by column.
+#[derive(Serialize)]
+struct Timeline {
+    #[serde(with = "time::serde::rfc3339")]
+    from: OffsetDateTime,
+    column_minutes: i32,
+    /// Every match in progress at some point since `from`.
+    matches: Vec<Span>,
+    /// By column and kind, the oldest first; an error code's by code.
+    problems: Vec<Problem>,
+}
+
+#[derive(Serialize)]
+struct Span {
+    #[serde(with = "time::serde::rfc3339")]
+    started_at: OffsetDateTime,
+    /// When play stopped: an abandoned match's last report. None while in
+    /// progress.
+    #[serde(with = "time::serde::rfc3339::option")]
+    ended_at: Option<OffsetDateTime>,
+}
+
+#[derive(Serialize)]
+struct Problem {
+    /// The column's start: every [`COLUMN_MINUTES`] from midnight UTC.
+    #[serde(with = "time::serde::rfc3339")]
+    at: OffsetDateTime,
+    /// `desync` or `disconnect` (a game, counted once like [`Day`]'s),
+    /// `left` (a side's game left WFC) or `error` (an error code shown).
+    kind: String,
+    /// For `error`.
+    code: Option<i32>,
+    count: i64,
 }
 
 /// A game counts once, however many sides reported it: out of sync when a
@@ -135,6 +178,7 @@ pub async fn read(pool: &PgPool) -> Result<Monitoring, sqlx::Error> {
         incidents: incidents(&mut tx, since).await?,
         errors: errors(&mut tx, since).await?,
         refusals: refusals(&mut tx).await?,
+        timeline: timeline(&mut tx).await?,
     };
     tx.commit().await?;
     Ok(monitoring)
@@ -294,6 +338,63 @@ async fn errors(
     .await
 }
 
+async fn timeline(conn: &mut PgConnection) -> Result<Timeline, sqlx::Error> {
+    let from = OffsetDateTime::now_utc() - Duration::hours(TIMELINE_HOURS);
+    let matches = sqlx::query_as!(
+        Span,
+        r#"SELECT started_at,
+                  CASE WHEN state = 'abandoned' THEN last_report_at ELSE ended_at END AS ended_at
+           FROM online_matches
+           WHERE state = 'in_progress' OR ended_at >= $1
+           ORDER BY started_at DESC
+           LIMIT $2"#,
+        from,
+        TIMELINE_MATCHES,
+    )
+    .fetch_all(&mut *conn)
+    .await?
+    .into_iter()
+    .filter(|span| span.ended_at.is_none_or(|ended_at| ended_at >= from))
+    .collect();
+    // The first column starts before `from`: it counts all of its time.
+    let problems = sqlx::query_as!(
+        Problem,
+        r#"WITH bounds AS (
+               SELECT make_interval(mins => $2) AS width,
+                      date_bin(make_interval(mins => $2), $1::timestamptz,
+                               TIMESTAMPTZ '1970-01-01 00:00:00+00') AS first),
+           games AS (
+               SELECT min(reported_at) AS at,
+                      CASE WHEN bool_or(ending = 'desync') THEN 'desync'
+                           WHEN bool_or(ending = 'disconnect') THEN 'disconnect' END AS kind
+               FROM online_match_games, bounds WHERE reported_at >= bounds.first
+               GROUP BY match_id, number),
+           events AS (
+               SELECT at, kind, NULL::integer AS code FROM games WHERE kind IS NOT NULL
+               UNION ALL
+               SELECT left_at, 'left', NULL FROM online_match_sides, bounds
+               WHERE left_at >= bounds.first
+               UNION ALL
+               SELECT received_at, 'error', code FROM client_errors, bounds
+               WHERE received_at >= bounds.first)
+           SELECT date_bin(bounds.width, at, TIMESTAMPTZ '1970-01-01 00:00:00+00') AS "at!",
+                  kind AS "kind!", code, count(*) AS "count!"
+           FROM events, bounds
+           GROUP BY 1, 2, 3
+           ORDER BY 1, 2, 3"#,
+        from,
+        COLUMN_MINUTES,
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    Ok(Timeline {
+        from,
+        column_minutes: COLUMN_MINUTES,
+        matches,
+        problems,
+    })
+}
+
 async fn refusals(conn: &mut PgConnection) -> Result<Vec<Refusal>, sqlx::Error> {
     sqlx::query_as!(
         Refusal,
@@ -380,5 +481,83 @@ mod tests {
                 ("left", None, Some("closed")),
             ]
         );
+    }
+
+    #[sqlx::test]
+    async fn the_timeline_has_the_matches_and_what_went_wrong(pool: PgPool) {
+        let games = Games::new(pool.clone()).await;
+        games
+            .send(&games.report(games.anosch, 1, "home", "start"))
+            .await;
+        games
+            .send(&games.report(games.sam, 2, "away", "start"))
+            .await;
+        let mut lost = Games::game(games.report(games.anosch, 1, "home", "game"), 1, 0, 0);
+        lost["game"]["ending"] = json!("disconnect");
+        games.send(&lost).await;
+        sqlx::query(
+            "INSERT INTO client_errors (code, release, address)
+             VALUES (86420, 'R4QE', '10.0.0.1'), (86420, 'R4QE', '10.0.0.2'),
+                    (86070, 'R4QE', '10.0.0.1')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        // Abandoned matches end at their last report: one 47 hours ago is on
+        // the timeline, one whose play stopped before it is not, and neither
+        // is one that finished three days ago.
+        for (last_report, state) in [
+            ("47 hours", "abandoned"),
+            ("48 hours 10 minutes", "abandoned"),
+            ("3 days", "finished"),
+        ] {
+            sqlx::query(
+                "INSERT INTO online_matches (release, mode, best_of, state, home_mii, away_mii,
+                                             home_captain, away_captain, started_at,
+                                             last_report_at, ended_at)
+                 VALUES ('R4QE', 'ranked', 3, $2, 'A', 'B', 'mario', 'luigi',
+                         now() - $1::interval - interval '20 minutes', now() - $1::interval,
+                         now() - $1::interval
+                             + CASE WHEN $2 = 'abandoned' THEN interval '30 minutes'
+                                    ELSE interval '0' END)",
+            )
+            .bind(last_report)
+            .bind(state)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let timeline = read(&pool).await.unwrap().timeline;
+        let mut ended: Vec<_> = timeline
+            .matches
+            .iter()
+            .map(|span| span.ended_at.map(|ended_at| (span.started_at, ended_at)))
+            .collect();
+        ended.sort();
+        assert_eq!(ended.len(), 2, "{ended:?}");
+        assert_eq!(ended[0], None, "the match in progress");
+        let (started, stopped) = ended[1].unwrap();
+        assert_eq!(stopped - started, Duration::minutes(20));
+        assert!(stopped > timeline.from);
+
+        let problems: Vec<_> = timeline
+            .problems
+            .iter()
+            .map(|p| (p.kind.as_str(), p.code, p.count))
+            .collect();
+        assert_eq!(problems.len(), 3, "three rows: {problems:?}");
+        for row in [
+            ("disconnect", None, 1),
+            ("error", Some(86070), 1),
+            ("error", Some(86420), 2),
+        ] {
+            assert!(problems.contains(&row), "{row:?} in {problems:?}");
+        }
+        let column = Duration::minutes(i64::from(timeline.column_minutes));
+        for problem in &timeline.problems {
+            assert_eq!(problem.at.unix_timestamp() % column.whole_seconds(), 0);
+            assert!(problem.at > timeline.from - column);
+        }
     }
 }
