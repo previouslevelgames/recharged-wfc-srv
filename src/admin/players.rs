@@ -71,6 +71,9 @@ struct Online {
     #[serde(with = "time::serde::rfc3339")]
     since: OffsetDateTime,
     status: Option<u8>,
+    /// When `status` began.
+    #[serde(with = "time::serde::rfc3339::option")]
+    status_since: Option<OffsetDateTime>,
     friend_requests: usize,
     mutual_friends: usize,
 }
@@ -80,6 +83,7 @@ impl From<&Presence> for Online {
         Self {
             since: presence.logged_in_at,
             status: presence.status,
+            status_since: presence.status_since,
             friend_requests: presence.friend_requests,
             mutual_friends: presence.mutual_friends,
         }

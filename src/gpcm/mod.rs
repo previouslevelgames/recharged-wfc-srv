@@ -102,6 +102,8 @@ struct Session {
     status: Option<String>,
     /// That `\status\`'s DWC status, for `/admin`.
     dwc_status: Option<u8>,
+    /// When the DWC status last changed.
+    status_since: Option<OffsetDateTime>,
     /// The login ticket (`lt`) the login got. The game's own use of it is
     /// SAKE, which this game does not have; the port shows it to the profile
     /// service to prove which login is its own (docs/profiles.md).
@@ -114,6 +116,8 @@ pub struct Presence {
     /// DWC's status from the last `\status\`: 1 online, 2 playing, 3 to 6
     /// matchmaking.
     pub status: Option<u8>,
+    /// When that status began: a `\status\` that repeats it keeps the time.
+    pub status_since: Option<OffsetDateTime>,
     /// Friend codes asked for in this login, and how many of them are mutual.
     pub friend_requests: usize,
     pub mutual_friends: usize,
@@ -137,6 +141,7 @@ impl Session {
             mutual: HashSet::new(),
             status: None,
             dwc_status: None,
+            status_since: None,
             login_ticket,
         }
     }
@@ -147,6 +152,14 @@ impl Session {
             return false;
         }
         self.friends.insert(friend)
+    }
+
+    /// Records the DWC status of a `\status\`, and when it changed.
+    fn set_dwc_status(&mut self, status: Option<u8>) {
+        if self.status_since.is_none() || status != self.dwc_status {
+            self.status_since = Some(OffsetDateTime::now_utc());
+        }
+        self.dwc_status = status;
     }
 }
 
@@ -170,6 +183,7 @@ impl Gpcm {
                 let presence = Presence {
                     logged_in_at: session.logged_in_at,
                     status: session.dwc_status,
+                    status_since: session.status_since,
                     friend_requests: session.friends.len(),
                     mutual_friends: session.mutual.len(),
                 };
@@ -607,7 +621,7 @@ impl Gpcm {
             return;
         };
         session.status = Some(status.clone());
-        session.dwc_status = message.get("status").and_then(|status| status.parse().ok());
+        session.set_dwc_status(message.get("status").and_then(|status| status.parse().ok()));
         for friend in session.mutual.clone() {
             if let Some(friend) = sessions
                 .get(&friend)
@@ -846,12 +860,14 @@ mod tests {
         );
         session.add_friend(1_000_000_001);
         session.mutual.insert(1_000_000_001);
-        session.dwc_status = Some(2);
+        session.set_dwc_status(Some(2));
+        let status_since = session.status_since;
         gpcm.sessions.lock().unwrap().insert(1_000_000_000, session);
 
         let presence = gpcm.presence();
         let online = &presence[&1_000_000_000];
         assert_eq!(online.status, Some(2));
+        assert_eq!(online.status_since, status_since);
         assert_eq!((online.friend_requests, online.mutual_friends), (1, 1));
         assert!(!presence.contains_key(&1_000_000_001));
         assert_eq!(
@@ -877,6 +893,26 @@ mod tests {
         }
         assert!(!session.add_friend(2_000_000_000));
         assert_eq!(session.friends.len(), MAX_FRIENDS);
+    }
+
+    #[test]
+    fn a_status_keeps_its_time_until_it_changes() {
+        let mut session = Session::new(
+            1,
+            IpAddr::from([10, 0, 0, 1]),
+            Arc::new(Notify::new()),
+            mpsc::unbounded_channel().0,
+            String::new(),
+        );
+        assert_eq!(session.status_since, None);
+        session.set_dwc_status(Some(2));
+        let playing = OffsetDateTime::UNIX_EPOCH;
+        session.status_since = Some(playing);
+        session.set_dwc_status(Some(2));
+        assert_eq!(session.status_since, Some(playing));
+        session.set_dwc_status(Some(1));
+        assert!(session.status_since > Some(playing));
+        assert_eq!(session.dwc_status, Some(1));
     }
 
     #[cfg(target_os = "linux")]
