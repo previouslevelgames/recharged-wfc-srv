@@ -411,6 +411,9 @@ function h(tag, props, ...children) {
   for (const [key, value] of Object.entries(props || {})) {
     if (value == null || value === false) continue;
     if (key === 'class') node.className = value;
+    // The pages' policy (style-src 'self') drops style attributes: styles
+    // are an object of properties, set through the CSSOM.
+    else if (key === 'style') Object.assign(node.style, value);
     else if (key.startsWith('on')) node.addEventListener(key.slice(2), value);
     else node.setAttribute(key, value === true ? '' : value);
   }
@@ -1379,7 +1382,7 @@ function timelineChart(timeline, now) {
   const endDot = h('span', { class: 'tl-dot' });
   endDot.style.top = `${matchAxis.y(model.current)}px`;
   const matchCross = h('span', { class: 'tl-cross' });
-  const matchPlot = h('div', { class: 'tl-plot', style: `height:${MATCHES_HEIGHT}px` }, matchAxis.grid, h('div', { class: 'tl-clip' }, area), endDot, matchCross);
+  const matchPlot = h('div', { class: 'tl-plot', style: { height: `${MATCHES_HEIGHT}px` } }, matchAxis.grid, h('div', { class: 'tl-clip' }, area), endDot, matchCross);
 
   // What went wrong: one stacked column per period, 2px apart.
   const problemTicks = niceTicks(model.worst);
@@ -1397,7 +1400,7 @@ function timelineChart(timeline, now) {
       // The 2px gaps come out of the segments above the first, so the stack
       // stays as tall as its total.
       const height = Math.max(2, value * unit - (shown ? 2 : 0));
-      stack.append(h('span', { class: 'tl-seg', 'data-kind': kind, style: `height:${height.toFixed(1)}px` }));
+      stack.append(h('span', { class: 'tl-seg', 'data-kind': kind, style: { height: `${height.toFixed(1)}px` } }));
       shown += 1;
     }
     const node = h('div', { class: 'tl-col' }, stack);
@@ -1409,7 +1412,7 @@ function timelineChart(timeline, now) {
   const problemCross = h('span', { class: 'tl-cross' });
   const problemPlot = h(
     'div',
-    { class: 'tl-plot', style: `height:${PROBLEMS_HEIGHT}px` },
+    { class: 'tl-plot', style: { height: `${PROBLEMS_HEIGHT}px` } },
     problemAxis.grid,
     bars,
     !model.worst && h('div', { class: 'tl-none' }, h('span', null, `Nothing went wrong in the last ${hours} hours.`)),
