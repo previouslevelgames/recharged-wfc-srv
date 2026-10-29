@@ -18,6 +18,7 @@ mod config;
 mod discord;
 #[cfg(test)]
 mod flow_tests;
+mod friends;
 mod matches;
 mod play;
 mod players;
@@ -32,7 +33,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware,
     response::{Html, IntoResponse, Redirect, Response},
-    routing::{get, post},
+    routing::{delete, get, post},
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -111,6 +112,8 @@ pub(crate) fn router(
         )
         .route("/api/v1/matches/{id}/rematch", post(play::rematch))
         .route("/api/v1/players", get(play::players))
+        .route("/api/v1/friends", post(play::add_friend))
+        .route("/api/v1/friends/{id}", delete(play::remove_friend))
         .route("/api/v1/matches/{id}/report", post(play::report))
         .route("/sign-in", get(sign_in_page))
         .route("/sign-in/test", post(page_test_sign_in))

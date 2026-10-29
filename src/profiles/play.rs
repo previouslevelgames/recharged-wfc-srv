@@ -13,10 +13,10 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use time::OffsetDateTime;
-use tracing::info;
+use tracing::{info, warn};
 
 use super::{
-    ProfilesState, database_error, json_error,
+    ProfilesState, database_error, friends, json_error,
     matches::{self, Game, Match, Refusal},
     players::{self, Player},
     rules,
@@ -136,6 +136,7 @@ pub(super) async fn challenge(
     match matches::challenge(&state.pool, player.id, opponent, &rule_set, None).await {
         Ok(Ok(found)) => {
             info!(target: "profiles", match_id = found.id, home = player.id, away = opponent, rule_set = found.rule_set, "challenge");
+            befriend(&state, player.id, opponent).await;
             state.respond(StatusCode::CREATED, &found, &player).await
         }
         Ok(Err(refusal)) => refused(refusal),
@@ -181,7 +182,8 @@ pub(super) async fn current(
     }
 }
 
-/// Who has Recharged open, and the players last played with.
+/// Who has Recharged open, the players last played with, and the player's
+/// friends.
 pub(super) async fn players(
     State(state): State<Arc<ProfilesState>>,
     headers: HeaderMap,
@@ -197,9 +199,116 @@ pub(super) async fn players(
         Ok(online) => online,
         Err(error) => return database_error(error),
     };
-    match players::recent_opponents(&state.pool, player.id).await {
-        Ok(recent) => Json(json!({ "online": online, "recent": recent })).into_response(),
+    let recent = match players::recent_opponents(&state.pool, player.id).await {
+        Ok(recent) => recent,
+        Err(error) => return database_error(error),
+    };
+    match friends::list(&state.pool, player.id).await {
+        Ok(friends) => {
+            Json(json!({ "online": online, "recent": recent, "friends": friends })).into_response()
+        }
         Err(error) => database_error(error),
+    }
+}
+
+#[derive(Deserialize)]
+pub(super) struct Friend {
+    /// A player id from the lists of `GET /api/v1/players`...
+    #[serde(default)]
+    player_id: Option<i64>,
+    /// ...or a Discord username (or test name).
+    #[serde(default)]
+    name: Option<String>,
+}
+
+/// Adds a player to the friends of the one who asks; the answer is the list.
+pub(super) async fn add_friend(
+    State(state): State<Arc<ProfilesState>>,
+    headers: HeaderMap,
+    Json(request): Json<Friend>,
+) -> Response {
+    let player = match state.signed_in(&headers).await {
+        Ok(player) => player,
+        Err(response) => return response,
+    };
+    let friend = match (request.player_id, &request.name) {
+        (Some(id), _) => match players::player(&state.pool, id).await {
+            Ok(Some(found)) => found.id,
+            Ok(None) => return json_error(StatusCode::NOT_FOUND, "no such player"),
+            Err(error) => return database_error(error),
+        },
+        (None, Some(name)) => match players::find(&state.pool, name).await {
+            Ok(Some(found)) => found,
+            Ok(None) => {
+                return json_error(
+                    StatusCode::NOT_FOUND,
+                    &format!("nobody called {} has signed in to Recharged", name.trim()),
+                );
+            }
+            Err(error) => return database_error(error),
+        },
+        (None, None) => return json_error(StatusCode::BAD_REQUEST, "whom to add?"),
+    };
+    if friend == player.id {
+        return json_error(StatusCode::BAD_REQUEST, "you can't add yourself");
+    }
+    match friends::add(&state.pool, player.id, friend).await {
+        Ok(true) => {
+            info!(target: "profiles", player_id = player.id, friend_id = friend, "friend added")
+        }
+        Ok(false) => {
+            // Already a friend, or the list is full.
+            match friends::list(&state.pool, player.id).await {
+                Ok(list) if !list.iter().any(|listed| listed.player.id == friend) => {
+                    return json_error(
+                        StatusCode::CONFLICT,
+                        &format!(
+                            "you have {} friends already: remove one first",
+                            friends::MAX_FRIENDS
+                        ),
+                    );
+                }
+                Ok(_) => {}
+                Err(error) => return database_error(error),
+            }
+        }
+        Err(error) => return database_error(error),
+    }
+    friends_answer(&state, player.id).await
+}
+
+/// Takes a player off the friends of the one who asks; the answer is the list.
+pub(super) async fn remove_friend(
+    State(state): State<Arc<ProfilesState>>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+) -> Response {
+    let player = match state.signed_in(&headers).await {
+        Ok(player) => player,
+        Err(response) => return response,
+    };
+    match friends::remove(&state.pool, player.id, id).await {
+        Ok(true) => {
+            info!(target: "profiles", player_id = player.id, friend_id = id, "friend removed")
+        }
+        Ok(false) => {}
+        Err(error) => return database_error(error),
+    }
+    friends_answer(&state, player.id).await
+}
+
+async fn friends_answer(state: &ProfilesState, player_id: i64) -> Response {
+    match friends::list(&state.pool, player_id).await {
+        Ok(list) => Json(json!({ "friends": list })).into_response(),
+        Err(error) => database_error(error),
+    }
+}
+
+/// A challenge or an accepted one makes the two players friends of the one
+/// who acted; a failure here costs only that.
+async fn befriend(state: &ProfilesState, player_id: i64, friend_id: i64) {
+    if let Err(error) = friends::add(&state.pool, player_id, friend_id).await {
+        warn!(target: "profiles", player_id, friend_id, %error, "keeping a friend failed");
     }
 }
 
@@ -235,7 +344,9 @@ async fn answer(
     match matches::answer(&state.pool, id, player.id, accept).await {
         Ok(Ok(found)) => {
             info!(target: "profiles", match_id = id, state = found.state, "answered");
-            if !accept {
+            if accept {
+                befriend(&state, player.id, found.home).await;
+            } else {
                 state.pairings.end(id);
             }
             state.respond(StatusCode::OK, &found, &player).await

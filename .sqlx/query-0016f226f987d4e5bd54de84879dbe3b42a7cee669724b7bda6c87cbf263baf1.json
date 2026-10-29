@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM friends WHERE player_id = $1 AND friend_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0016f226f987d4e5bd54de84879dbe3b42a7cee669724b7bda6c87cbf263baf1"
+}

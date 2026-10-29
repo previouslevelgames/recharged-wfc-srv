@@ -104,6 +104,21 @@ proven theirs, `rule_sets` the rules, `matches` and `match_reports` the
 matches and what each game reported. The series every Recharged build reports
 online are separate ([reports.md](reports.md)).
 
+## Friends
+
+Each player keeps a list of friends on the server, so it follows them to
+every computer they sign in on. It is their own list, without requests: a
+challenge adds its opponent, accepting a challenge adds the challenger, and the
+launcher adds and removes players by hand. The players of earlier sets came in
+the same way when the list began. A list holds at most 200 friends. The
+launcher shows them online first, by name, then the others by when they were
+last online.
+
+| Route | |
+|---|---|
+| `POST /api/v1/friends` | `{"player_id": <id>}`, or `{"name": "<Discord username>"}` instead: adds them, and answers `{"friends": [...]}` as in `GET /api/v1/players`. One already there changes nothing. 400 for yourself, 404 for nobody of that name, 409 with the list full. |
+| `DELETE /api/v1/friends/<id>` | Removes them (one not there is no error) and answers the list the same way |
+
 ## Friend codes
 
 `POST /api/v1/wfc` with `{"profile_id": 1000000000, "login_ticket": "<lt>"}`:
@@ -147,7 +162,7 @@ with no Mega Strikes, fast terrain and Thunder Island walls).
 
 | Route | |
 |---|---|
-| `GET /api/v1/players` | `{"online": [...], "recent": [...]}`: who has Recharged open (by name, at most 100), and the last 10 players played a set with. Each is a player as in a sign-in, with `online` and `busy` (has a set to play). |
+| `GET /api/v1/players` | `{"online": [...], "recent": [...], "friends": [...]}`: who has Recharged open (by name, at most 100), the last 10 players played a set with, and the player's friends (see "Friends"). Each is a player as in a sign-in, with `online`, `busy` (has a set to play), `last_online` (their last heartbeat in Unix seconds, `null` before the first) and `friend` (the player keeps them as one). |
 | `POST /api/v1/matches` | `{"opponent": "<Discord username>", "rule_set": <id>}`, or `"opponent_id": <player id>` instead of the name: a challenge, 201. 404 for nobody of that name, 409 when either already has a match to play or the opponent doesn't have Recharged open. |
 | `GET /api/v1/matches/current` | `{"match": …, "poll_interval": 2, "server_time": <unix seconds>}`: the match still to be played, or the last one that ended within the hour, or `null`; `poll_interval` is how soon to ask again (2 while the set waits for its players, 10 while they play, 5 otherwise) |
 | `POST /api/v1/matches/<id>/accept`, `…/decline` | The challenged player's answer |

@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT friends.friend_id AS \"friend_id!\"\n           FROM friends JOIN players ON players.player_id = friends.friend_id\n           WHERE friends.player_id = $1\n           ORDER BY coalesce(players.heartbeat_at > now() - make_interval(secs => $2), false) DESC,\n                    CASE WHEN players.heartbeat_at > now() - make_interval(secs => $2)\n                         THEN lower(players.display_name) END,\n                    players.heartbeat_at DESC NULLS LAST, friends.added_at DESC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "friend_id!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "friends",
+            "name": "friend_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "6f7d596b59cbfec6908b580db65099d338ab4ffb0c725ebcf21a80d64c03e433"
+}

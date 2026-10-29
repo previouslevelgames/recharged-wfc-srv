@@ -461,3 +461,136 @@ async fn a_set_from_the_lobby_to_a_rematch(pool: PgPool) {
         (&json!("dissolved"), &json!("dissolved"))
     );
 }
+
+#[sqlx::test]
+async fn friends_come_from_challenges_and_follow_the_player(pool: PgPool) {
+    let world = World::new(pool);
+    let mario = world.sign_in("Mario").await;
+    let luigi = world.sign_in("Luigi").await;
+    let peach = world.sign_in("Peach").await;
+    let friends = |token: String| {
+        let world = &world;
+        async move {
+            let (status, lists) = world
+                .send("GET", "/api/v1/players", &token, Value::Null)
+                .await;
+            assert_eq!(status, StatusCode::OK, "{lists}");
+            lists["friends"].as_array().unwrap().clone()
+        }
+    };
+    let names = |list: &[Value]| -> Vec<String> {
+        list.iter()
+            .map(|friend| friend["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert!(friends(mario.clone()).await.is_empty());
+
+    // A challenge keeps its opponent; the one challenged keeps the
+    // challenger only once they accept.
+    let (status, challenge) = world
+        .send(
+            "POST",
+            "/api/v1/matches",
+            &mario,
+            json!({"opponent": "luigi", "rule_set": 1}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{challenge}");
+    assert_eq!(names(&friends(mario.clone()).await), ["Luigi"]);
+    assert!(friends(luigi.clone()).await.is_empty());
+    let id = challenge["id"].as_i64().unwrap();
+    world
+        .send(
+            "POST",
+            &format!("/api/v1/matches/{id}/accept"),
+            &luigi,
+            Value::Null,
+        )
+        .await;
+    let luigis = friends(luigi.clone()).await;
+    assert_eq!(names(&luigis), ["Mario"]);
+    assert_eq!(
+        (
+            &luigis[0]["online"],
+            &luigis[0]["busy"],
+            &luigis[0]["friend"]
+        ),
+        (&json!(true), &json!(true), &json!(true))
+    );
+    assert!(luigis[0]["last_online"].as_i64().unwrap() > 0);
+
+    // By hand: by name, then by id; online friends first, the others by
+    // when they were last online; the other lists mark friends.
+    let (status, added) = world
+        .send("POST", "/api/v1/friends", &mario, json!({"name": "PEACH"}))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{added}");
+    assert_eq!(
+        names(added["friends"].as_array().unwrap()),
+        ["Luigi", "Peach"]
+    );
+    sqlx::query(
+        "UPDATE players SET heartbeat_at = now() - interval '3 hours'
+         WHERE player_id = (SELECT player_id FROM player_identities WHERE lower(username) = 'luigi')",
+    )
+    .execute(&world.pool)
+    .await
+    .unwrap();
+    let marios = friends(mario.clone()).await;
+    assert_eq!(names(&marios), ["Peach", "Luigi"]);
+    assert_eq!(marios[1]["online"], json!(false));
+    let (_, lists) = world
+        .send("GET", "/api/v1/players", &mario, Value::Null)
+        .await;
+    assert_eq!(lists["online"][0]["name"], "Peach");
+    assert_eq!(lists["online"][0]["friend"], json!(true));
+    let (_, lists) = world
+        .send("GET", "/api/v1/players", &peach, Value::Null)
+        .await;
+    assert_eq!(lists["online"][0]["name"], "Mario");
+    assert_eq!(lists["online"][0]["friend"], json!(false));
+
+    // Adding again changes nothing; nobody adds themselves or an unknown name.
+    let peach_id = marios[0]["id"].as_i64().unwrap();
+    let (status, again) = world
+        .send(
+            "POST",
+            "/api/v1/friends",
+            &mario,
+            json!({"player_id": peach_id}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(again["friends"].as_array().unwrap().len(), 2);
+    for (body, expected) in [
+        (json!({"name": "mario"}), StatusCode::BAD_REQUEST),
+        (json!({"name": "wario"}), StatusCode::NOT_FOUND),
+        (json!({}), StatusCode::BAD_REQUEST),
+    ] {
+        let (status, answer) = world.send("POST", "/api/v1/friends", &mario, body).await;
+        assert_eq!(status, expected, "{answer}");
+    }
+
+    // Removing: gone, and gone again is no error.
+    for _ in 0..2 {
+        let (status, removed) = world
+            .send(
+                "DELETE",
+                &format!("/api/v1/friends/{peach_id}"),
+                &mario,
+                Value::Null,
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{removed}");
+        assert_eq!(names(removed["friends"].as_array().unwrap()), ["Luigi"]);
+    }
+    let (status, _) = world
+        .send(
+            "POST",
+            "/api/v1/friends",
+            "",
+            json!({"player_id": peach_id}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
