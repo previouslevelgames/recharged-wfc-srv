@@ -9,7 +9,7 @@
 
 use std::{
     collections::HashMap,
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr, SocketAddrV4},
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicU32, Ordering},
@@ -142,13 +142,34 @@ impl Master {
         false
     }
 
-    /// The sessions of the games heard from lately.
     /// The live session of the game at `address`.
     pub fn session(&self, address: SocketAddr) -> Option<Session> {
         let session = self.sessions.lock().unwrap().get(&address)?.clone();
         session.live(Instant::now()).then_some(session)
     }
 
+    /// Where the heartbeats of the game socket at `local` behind `ip` come
+    /// from: the live session from that IP whose heartbeats name `local`
+    /// (`localip0`, `localport`).
+    pub fn heard_at(&self, ip: IpAddr, local: SocketAddrV4) -> Option<SocketAddr> {
+        let (local_ip, local_port) = (local.ip().to_string(), local.port().to_string());
+        let now = Instant::now();
+        let sessions = self.sessions.lock().unwrap();
+        sessions
+            .iter()
+            .find(|(address, session)| {
+                address.ip() == ip
+                    && session.live(now)
+                    && session.field("localport") == Some(local_port.as_str())
+                    && session
+                        .fields
+                        .iter()
+                        .any(|(name, value)| name.starts_with("localip") && *value == local_ip)
+            })
+            .map(|(&address, _)| address)
+    }
+
+    /// The sessions of the games heard from lately.
     pub fn sessions(&self) -> Vec<(SocketAddr, Session)> {
         let now = Instant::now();
         let sessions = self.sessions.lock().unwrap();
@@ -377,6 +398,24 @@ mod tests {
         shutdown[at + 13] = b'2';
         assert_eq!(master.answer(&shutdown, peer()), None);
         assert!(master.sessions().is_empty());
+    }
+
+    #[test]
+    fn a_game_socket_is_found_by_its_local_address() {
+        let master = Master::default();
+        master.answer(HOSTING_PACKET, peer());
+        let local = "192.168.1.131:51021".parse().unwrap();
+        assert_eq!(master.heard_at(peer().ip(), local), Some(peer()));
+        assert_eq!(
+            master.heard_at("198.51.100.9".parse().unwrap(), local),
+            None,
+            "another IP"
+        );
+        assert_eq!(
+            master.heard_at(peer().ip(), "192.168.1.131:51022".parse().unwrap()),
+            None,
+            "another socket"
+        );
     }
 
     #[test]

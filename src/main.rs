@@ -71,6 +71,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let admin = recharged_wfc_srv::admin::Config::from_env()?;
     let profiles = recharged_wfc_srv::profiles::Config::from_env()?;
+    let relay = recharged_wfc_srv::relay::Config::from_env()?;
 
     // DATABASE_URL in local development; the container provides PG* instead.
     let database = match env::var("DATABASE_URL") {
@@ -124,6 +125,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
         ),
     }
 
+    match &relay {
+        Some(config) => info!(
+            "NAT negotiation relay at {}:{} ({}, at most {} matches at once)",
+            config.address,
+            config.port,
+            match config.mode {
+                recharged_wfc_srv::relay::Mode::Auto => "for games that cannot reach each other",
+                recharged_wfc_srv::relay::Mode::Always => "for every match",
+            },
+            config.max
+        ),
+        None => info!("NAT negotiation relay off: set NATNEG_RELAY_ADDRESS to enable it"),
+    }
+
     let app = App::new(pool);
     let router = app.router(admin, profiles);
     // HTTP stops gracefully on a signal; the others stop with it.
@@ -133,7 +148,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         result = app.serve_gpcm(gpcm) => result?,
         result = app.serve_master(master) => result?,
         result = app.serve_server_browser(browser) => result?,
-        result = app.serve_natneg(natneg) => result?,
+        result = app.serve_natneg(natneg, relay) => result?,
     }
     Ok(())
 }

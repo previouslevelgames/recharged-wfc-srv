@@ -865,7 +865,8 @@ function eventWhat(event) {
   if (failed) state = badge('critical', 'NAT negotiation failed');
   else if (done) state = badge('good', 'NAT negotiation ok');
   else state = badge('warning', event.connected ? 'NAT negotiation connecting' : 'NAT negotiation started');
-  return [state, h('span', { class: 'sub' }, `Cookie ${event.cookie} · ${event.reports.length} of 2 reports`)];
+  const relayed = event.relayed ? ' · through the relay' : '';
+  return [state, h('span', { class: 'sub' }, `Cookie ${event.cookie}${relayed} · ${event.reports.length} of 2 reports`)];
 }
 
 function eventWho(event, names) {

@@ -57,6 +57,8 @@ pub enum What {
         games: Vec<Party>,
         /// Whether both got the other's address.
         connected: bool,
+        /// Whether that address was the relay's (src/relay.rs).
+        relayed: bool,
         reports: Vec<Report>,
     },
 }
@@ -144,7 +146,7 @@ impl Activity {
 
     /// A game's socket in the negotiation `cookie`, which starts it.
     pub fn negotiation(&self, cookie: u32, game: Option<SocketAddr>) {
-        self.update_negotiation(cookie, |games, _, _| {
+        self.update_negotiation(cookie, |games, _, _, _| {
             if let Some(game) = game.map(|game| game.to_string())
                 && !games.iter().any(|party| party.address == game)
             {
@@ -156,12 +158,16 @@ impl Activity {
         });
     }
 
-    pub fn connected(&self, cookie: u32) {
-        self.update_negotiation(cookie, |_, connected, _| *connected = true);
+    /// Both games got the other's address, or the relay's.
+    pub fn connected(&self, cookie: u32, relay: bool) {
+        self.update_negotiation(cookie, |_, connected, relayed, _| {
+            *connected = true;
+            *relayed = relay;
+        });
     }
 
     pub fn report(&self, cookie: u32, index: Option<u8>, result: Option<u8>) {
-        self.update_negotiation(cookie, |_, _, reports| {
+        self.update_negotiation(cookie, |_, _, _, reports| {
             reports.retain(|report| report.index != index);
             reports.push(Report { index, result });
         });
@@ -170,7 +176,7 @@ impl Activity {
     fn update_negotiation(
         &self,
         cookie: u32,
-        update: impl Fn(&mut Vec<Party>, &mut bool, &mut Vec<Report>),
+        update: impl Fn(&mut Vec<Party>, &mut bool, &mut bool, &mut Vec<Report>),
     ) {
         let cookie = format!("{cookie:08x}");
         self.record(
@@ -179,20 +185,23 @@ impl Activity {
                     cookie: was,
                     games,
                     connected,
+                    relayed,
                     reports,
                 } if *was == cookie => {
-                    update(games, connected, reports);
+                    update(games, connected, relayed, reports);
                     true
                 }
                 _ => false,
             },
             || {
-                let (mut games, mut connected, mut reports) = (Vec::new(), false, Vec::new());
-                update(&mut games, &mut connected, &mut reports);
+                let (mut games, mut connected, mut relayed, mut reports) =
+                    (Vec::new(), false, false, Vec::new());
+                update(&mut games, &mut connected, &mut relayed, &mut reports);
                 What::Negotiation {
                     cookie: cookie.clone(),
                     games,
                     connected,
+                    relayed,
                     reports,
                 }
             },
@@ -308,7 +317,7 @@ mod tests {
         activity.negotiation(0x65e4ca01, None);
         activity.negotiation(0x65e4ca01, two);
         activity.negotiation(0x65e4ca01, one);
-        activity.connected(0x65e4ca01);
+        activity.connected(0x65e4ca01, true);
         activity.report(0x65e4ca01, Some(1), Some(1));
         activity.report(0x65e4ca01, Some(0), Some(1));
         activity.report(0x65e4ca01, Some(1), Some(1));
@@ -320,6 +329,7 @@ mod tests {
             cookie,
             games,
             connected,
+            relayed,
             reports,
         } = &event.what
         else {
@@ -328,7 +338,7 @@ mod tests {
         assert_eq!(cookie, "65e4ca01");
         let addresses: Vec<&str> = games.iter().map(|party| party.address.as_str()).collect();
         assert_eq!(addresses, ["172.17.0.1:52263", "192.168.1.131:53103"]);
-        assert!(*connected);
+        assert!(*connected && *relayed);
         assert_eq!(reports.len(), 2);
     }
 

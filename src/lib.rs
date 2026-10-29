@@ -16,6 +16,7 @@ mod nas;
 mod natneg;
 mod pairing;
 pub mod profiles;
+pub mod relay;
 mod reports;
 mod serverbrowser;
 
@@ -116,11 +117,20 @@ impl App {
         .await
     }
 
-    /// NAT negotiation on `socket` (UDP 27901).
-    pub async fn serve_natneg(&self, socket: UdpSocket) -> std::io::Result<()> {
-        Arc::new(natneg::Natneg::new(self.activity.clone()))
-            .serve(socket)
-            .await
+    /// NAT negotiation on `socket` (UDP 27901), with the relay for games
+    /// that cannot reach each other if `relay` has its settings.
+    pub async fn serve_natneg(
+        &self,
+        socket: UdpSocket,
+        relay: Option<relay::Config>,
+    ) -> std::io::Result<()> {
+        Arc::new(natneg::Natneg::new(
+            self.activity.clone(),
+            self.master.clone(),
+            relay,
+        ))
+        .serve(socket)
+        .await
     }
 
     /// The QR2 master server on `socket` (UDP 27900).
