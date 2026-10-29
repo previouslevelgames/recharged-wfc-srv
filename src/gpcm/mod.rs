@@ -19,10 +19,12 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
+    time::Duration,
 };
 
 use md5::{Digest, Md5};
 use rand::distr::{Alphanumeric, SampleString};
+use socket2::{SockRef, TcpKeepalive};
 use sqlx::PgPool;
 use time::OffsetDateTime;
 use tokio::{
@@ -42,6 +44,15 @@ use message::{Message, split};
 
 /// A client sends short messages: more than this unread means it is not one.
 const MAX_BUFFER: usize = 0x4000;
+/// The game sends nothing while it idles, and the server writes to a login
+/// only to pass on a friend's message, so a console that went to sleep or lost
+/// its network would stay logged in. After this long without traffic the
+/// system probes it with TCP keepalives…
+const KEEPALIVE_IDLE: Duration = Duration::from_secs(60);
+/// …this often…
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
+/// …and ends the login when this many go unanswered.
+const KEEPALIVE_PROBES: u32 = 3;
 /// DWC's partner id: Nintendo.
 const PARTNER_ID: u32 = 11;
 /// The game's friend roster holds 64 friend codes (`DWC_InitFriendsMatch` in
@@ -199,6 +210,9 @@ impl Gpcm {
         stream: TcpStream,
         peer: SocketAddr,
     ) -> std::io::Result<()> {
+        if let Err(error) = keep_alive(&stream) {
+            warn!(target: "gpcm", %peer, %error, "no keepalive");
+        }
         let (mut reader, writer) = stream.into_split();
         let (outbox, mut inbox) = mpsc::unbounded_channel();
         let mut connection = Connection {
@@ -775,6 +789,23 @@ fn md5_hex(data: impl AsRef<[u8]>) -> String {
         .collect()
 }
 
+/// Makes the system end the connection of a console that stopped answering
+/// ([`KEEPALIVE_IDLE`]).
+fn keep_alive(stream: &TcpStream) -> std::io::Result<()> {
+    let socket = SockRef::from(stream);
+    socket.set_tcp_keepalive(
+        &TcpKeepalive::new()
+            .with_time(KEEPALIVE_IDLE)
+            .with_interval(KEEPALIVE_INTERVAL)
+            .with_retries(KEEPALIVE_PROBES),
+    )?;
+    // No probe goes out while a friend's message waits for its ack: the
+    // same limit then ends the login, instead of minutes of retransmission.
+    #[cfg(target_os = "linux")]
+    socket.set_tcp_user_timeout(Some(KEEPALIVE_IDLE + KEEPALIVE_INTERVAL * KEEPALIVE_PROBES))?;
+    Ok(())
+}
+
 fn uppercase(len: usize) -> String {
     (0..len)
         .map(|_| char::from(rand::random_range(b'A'..=b'Z')))
@@ -846,6 +877,27 @@ mod tests {
         }
         assert!(!session.add_friend(2_000_000_000));
         assert_eq!(session.friends.len(), MAX_FRIENDS);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn logins_are_probed_when_idle() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let _client = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+        keep_alive(&stream).unwrap();
+
+        let socket = SockRef::from(&stream);
+        assert!(socket.keepalive().unwrap());
+        assert_eq!(socket.tcp_keepalive_time().unwrap(), KEEPALIVE_IDLE);
+        assert_eq!(socket.tcp_keepalive_interval().unwrap(), KEEPALIVE_INTERVAL);
+        assert_eq!(socket.tcp_keepalive_retries().unwrap(), KEEPALIVE_PROBES);
+        assert_eq!(
+            socket.tcp_user_timeout().unwrap(),
+            Some(Duration::from_secs(90))
+        );
     }
 
     #[test]
