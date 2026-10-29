@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE matches SET state = 'dissolved', updated_at = now()\n             WHERE state IN ('challenged', 'accepted')\n               AND EXISTS (\n                   SELECT 1 FROM players\n                   WHERE players.player_id IN (matches.home, matches.away)\n                     AND coalesce(players.heartbeat_at, matches.created_at)\n                         < now() - make_interval(secs => $1)\n                     AND NOT EXISTS (\n                         SELECT 1 FROM match_reports\n                         WHERE match_reports.match_id = matches.match_id\n                           AND match_reports.player_id = players.player_id))\n             RETURNING match_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "match_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "match_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Float8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "4b3f107c82da3568616a429c4f3a7a478ab5a200929762467289d6a123f2e21c"
+}

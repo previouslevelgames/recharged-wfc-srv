@@ -85,9 +85,12 @@ async fn the_launcher_signs_in_with_discord(pool: PgPool) {
     let (status, _, body) = send(&app, Request::get("/api/v1/me"), Some(token)).await;
     assert_eq!(status, 200);
     let mut me: Value = serde_json::from_str(&body).unwrap();
-    // With the WFC profiles proven the player's: none yet.
+    // With the WFC profiles proven the player's (none yet) and the Discord
+    // account id, which the launcher makes the player's Mii from.
     assert_eq!(me["wfc"], json!([]));
+    assert_eq!(me["discord_id"], "80351110224678912");
     me.as_object_mut().unwrap().remove("wfc");
+    me.as_object_mut().unwrap().remove("discord_id");
     assert_eq!(me, signed_in["player"]);
 
     // Signing in again with the same account: the same player.

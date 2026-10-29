@@ -1,6 +1,6 @@
 //! The launcher's and the port's requests for playing (docs/profiles.md):
-//! the rule sets, proving a WFC login, and test matches from the challenge
-//! to the result.
+//! the rule sets, proving a WFC login, who is online, and sets from the
+//! challenge through Ready to play! to the result.
 
 use std::sync::Arc;
 
@@ -12,6 +12,7 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
+use time::OffsetDateTime;
 use tracing::info;
 
 use super::{
@@ -74,8 +75,12 @@ pub(super) async fn bind(
 
 #[derive(Deserialize)]
 pub(super) struct Challenge {
-    /// The Discord username (or test name) of the player challenged.
-    opponent: String,
+    /// The Discord username (or test name) of the player challenged...
+    #[serde(default)]
+    opponent: Option<String>,
+    /// ...or their player id, from the lists of `GET /api/v1/players`.
+    #[serde(default)]
+    opponent_id: Option<i64>,
     rule_set: i64,
 }
 
@@ -88,31 +93,47 @@ pub(super) async fn challenge(
         Ok(player) => player,
         Err(response) => return response,
     };
-    if let Err(response) = state.expire().await {
+    if let Err(response) = state.sweep().await {
         return response;
     }
-    let opponent = match players::find(&state.pool, &request.opponent).await {
-        Ok(Some(opponent)) => opponent,
-        Ok(None) => {
-            return json_error(
-                StatusCode::NOT_FOUND,
-                &format!(
-                    "nobody called {} has signed in to Recharged",
-                    request.opponent.trim()
-                ),
-            );
-        }
-        Err(error) => return database_error(error),
+    let opponent = match (&request.opponent_id, &request.opponent) {
+        (Some(id), _) => match players::player(&state.pool, *id).await {
+            Ok(Some(found)) => found.id,
+            Ok(None) => return json_error(StatusCode::NOT_FOUND, "no such player"),
+            Err(error) => return database_error(error),
+        },
+        (None, Some(name)) => match players::find(&state.pool, name).await {
+            Ok(Some(opponent)) => opponent,
+            Ok(None) => {
+                return json_error(
+                    StatusCode::NOT_FOUND,
+                    &format!("nobody called {} has signed in to Recharged", name.trim()),
+                );
+            }
+            Err(error) => return database_error(error),
+        },
+        (None, None) => return json_error(StatusCode::BAD_REQUEST, "whom to challenge?"),
     };
     if opponent == player.id {
         return json_error(StatusCode::BAD_REQUEST, "you can't challenge yourself");
+    }
+    // A set lasts while both have Recharged open.
+    match players::is_online(&state.pool, opponent).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return json_error(
+                StatusCode::CONFLICT,
+                "that player doesn't have Recharged open right now",
+            );
+        }
+        Err(error) => return database_error(error),
     }
     let rule_set = match rules::get(&state.pool, request.rule_set).await {
         Ok(Some(rule_set)) => rule_set,
         Ok(None) => return json_error(StatusCode::NOT_FOUND, "no such rule set"),
         Err(error) => return database_error(error),
     };
-    match matches::challenge(&state.pool, player.id, opponent, &rule_set).await {
+    match matches::challenge(&state.pool, player.id, opponent, &rule_set, None).await {
         Ok(Ok(found)) => {
             info!(target: "profiles", match_id = found.id, home = player.id, away = opponent, rule_set = found.rule_set, "challenge");
             state.respond(StatusCode::CREATED, &found, &player).await
@@ -122,7 +143,8 @@ pub(super) async fn challenge(
     }
 }
 
-/// The player's match still to be played, or the last one that ended.
+/// The player's match still to be played, or the last one that ended, with
+/// how soon to ask again (seconds) and the server's clock.
 pub(super) async fn current(
     State(state): State<Arc<ProfilesState>>,
     headers: HeaderMap,
@@ -131,15 +153,52 @@ pub(super) async fn current(
         Ok(player) => player,
         Err(response) => return response,
     };
-    if let Err(response) = state.expire().await {
+    if let Err(response) = state.sweep().await {
         return response;
     }
+    let server_time = OffsetDateTime::now_utc().unix_timestamp();
     match matches::current(&state.pool, player.id).await {
-        Ok(Some(found)) => match state.view(&found, &player).await {
-            Ok(view) => Json(json!({ "match": view })).into_response(),
-            Err(error) => database_error(error),
-        },
-        Ok(None) => Json(json!({ "match": null })).into_response(),
+        Ok(Some(found)) => {
+            // The lobby follows a set waiting for its players closely.
+            let poll_interval = match found.stage() {
+                "invited" | "open" | "go" => 2,
+                "playing" => 10,
+                _ => 5,
+            };
+            match state.view(&found, &player).await {
+                Ok(view) => Json(json!({
+                    "match": view,
+                    "poll_interval": poll_interval,
+                    "server_time": server_time,
+                }))
+                .into_response(),
+                Err(error) => database_error(error),
+            }
+        }
+        Ok(None) => Json(json!({ "match": null, "poll_interval": 5, "server_time": server_time }))
+            .into_response(),
+        Err(error) => database_error(error),
+    }
+}
+
+/// Who has Recharged open, and the players last played with.
+pub(super) async fn players(
+    State(state): State<Arc<ProfilesState>>,
+    headers: HeaderMap,
+) -> Response {
+    let player = match state.signed_in(&headers).await {
+        Ok(player) => player,
+        Err(response) => return response,
+    };
+    if let Err(response) = state.sweep().await {
+        return response;
+    }
+    let online = match players::online(&state.pool, player.id).await {
+        Ok(online) => online,
+        Err(error) => return database_error(error),
+    };
+    match players::recent_opponents(&state.pool, player.id).await {
+        Ok(recent) => Json(json!({ "online": online, "recent": recent })).into_response(),
         Err(error) => database_error(error),
     }
 }
@@ -170,6 +229,9 @@ async fn answer(
         Ok(player) => player,
         Err(response) => return response,
     };
+    if let Err(response) = state.sweep().await {
+        return response;
+    }
     match matches::answer(&state.pool, id, player.id, accept).await {
         Ok(Ok(found)) => {
             info!(target: "profiles", match_id = id, state = found.state, "answered");
@@ -196,6 +258,59 @@ pub(super) async fn cancel(
         Ok(Ok(found)) => {
             info!(target: "profiles", match_id = id, player_id = player.id, "cancelled");
             state.pairings.end(id);
+            state.respond(StatusCode::OK, &found, &player).await
+        }
+        Ok(Err(refusal)) => refused(refusal),
+        Err(error) => database_error(error),
+    }
+}
+
+#[derive(Deserialize)]
+pub(super) struct ReadyToPlay {
+    ready: bool,
+}
+
+/// The player presses (or takes back) Ready to play! in the launcher. Once
+/// both are, the set's stage is `go` and both launchers start their games.
+pub(super) async fn ready_to_play(
+    State(state): State<Arc<ProfilesState>>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    Json(request): Json<ReadyToPlay>,
+) -> Response {
+    let player = match state.signed_in(&headers).await {
+        Ok(player) => player,
+        Err(response) => return response,
+    };
+    if let Err(response) = state.sweep().await {
+        return response;
+    }
+    match matches::ready_to_play(&state.pool, id, player.id, request.ready).await {
+        Ok(Ok(found)) => {
+            info!(target: "profiles", match_id = id, player_id = player.id, ready = request.ready, stage = found.stage(), "ready to play");
+            state.respond(StatusCode::OK, &found, &player).await
+        }
+        Ok(Err(refusal)) => refused(refusal),
+        Err(error) => database_error(error),
+    }
+}
+
+/// The player plays the ended set again with the same opponent and rules.
+pub(super) async fn rematch(
+    State(state): State<Arc<ProfilesState>>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+) -> Response {
+    let player = match state.signed_in(&headers).await {
+        Ok(player) => player,
+        Err(response) => return response,
+    };
+    if let Err(response) = state.sweep().await {
+        return response;
+    }
+    match matches::rematch(&state.pool, id, player.id).await {
+        Ok(Ok(found)) => {
+            info!(target: "profiles", match_id = found.id, rematch_of = id, player_id = player.id, stage = found.stage(), "rematch");
             state.respond(StatusCode::OK, &found, &player).await
         }
         Ok(Err(refusal)) => refused(refusal),
@@ -255,6 +370,11 @@ pub(super) async fn ready(
     let pairing = state
         .pairings
         .ready(found.id, side, profile.profile_id, &profile.game);
+    if let Err(error) =
+        matches::game_ready(&state.pool, found.id, side, pairing == Pairing::Paired).await
+    {
+        return database_error(error);
+    }
     Json(json!({
         "paired": pairing == Pairing::Paired,
         "other_release": pairing == Pairing::OtherRelease,
@@ -292,9 +412,10 @@ pub(super) async fn report(
 }
 
 impl ProfilesState {
-    /// Ends the matches that waited too long, and their pairings.
-    async fn expire(&self) -> Result<(), Response> {
-        for match_id in matches::expire(&self.pool).await.map_err(database_error)? {
+    /// Ends the sets that waited too long or lost a player, and their
+    /// pairings.
+    async fn sweep(&self) -> Result<(), Response> {
+        for match_id in matches::sweep(&self.pool).await.map_err(database_error)? {
             self.pairings.end(match_id);
         }
         Ok(())
@@ -312,6 +433,7 @@ impl ProfilesState {
         let opponent_id = found.opponent(player.id);
         let opponent = players::player(&self.pool, opponent_id).await?;
         let opponent_wfc = players::wfc_profiles(&self.pool, opponent_id).await?;
+        let opponent_online = players::is_online(&self.pool, opponent_id).await?;
         let reported = matches::reported(&self.pool, found.id, player.id).await?;
         let ended = matches!(found.state.as_str(), "finished" | "disputed");
         let games = if ended {
@@ -325,9 +447,14 @@ impl ProfilesState {
             ("finished", None) => json!("draw"),
             _ => Value::Null,
         };
+        let side = found.side(player.id).unwrap_or(0);
+        let unix = |time: Option<OffsetDateTime>| time.map(OffsetDateTime::unix_timestamp);
+        let stage = found.stage();
         Ok(json!({
             "id": found.id,
             "state": found.state,
+            "stage": stage,
+            "reason": (stage == "dissolved").then_some(found.state.as_str()),
             "side": if found.home == player.id { "challenger" } else { "challenged" },
             "opponent": opponent.map(|opponent| json!({
                 "id": opponent.id,
@@ -344,6 +471,12 @@ impl ProfilesState {
             "winner": winner,
             "games": games,
             "created_at": found.created_at.unix_timestamp(),
+            "you_ready": found.ready_at[side].is_some(),
+            "opponent_ready": found.ready_at[1 - side].is_some(),
+            "opponent_online": opponent_online,
+            "go_at": unix(found.go_at),
+            "playing_at": unix(found.playing_at),
+            "rematch_of": found.rematch_of,
         }))
     }
 }

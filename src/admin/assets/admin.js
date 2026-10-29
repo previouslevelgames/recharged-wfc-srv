@@ -231,6 +231,7 @@ const MATCH_STATES = {
   declined: ['Declined', null],
   cancelled: ['Cancelled', null],
   expired: ['Expired', null],
+  dissolved: ['Dissolved', null],
 };
 
 const ICONS = {
@@ -2119,7 +2120,7 @@ function renderCompetitive(data, now) {
   );
   const played = card(
     'Matches',
-    'The latest test matches between players who signed in.',
+    'The latest sets between players who signed in.',
     table(
       [
         { label: 'Made', cell: (match) => ago(match.created_at, now) },
