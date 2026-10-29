@@ -376,6 +376,8 @@ const clock = new Intl.DateTimeFormat(undefined, { timeStyle: 'medium' });
 const dateTime = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 // Calendar days, as the server sends them ("2026-10-15"): no time zone to shift them.
 const calendarDay = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeZone: 'UTC' });
+const hourMinute = new Intl.DateTimeFormat(undefined, { timeStyle: 'short' });
+const weekdayDay = new Intl.DateTimeFormat(undefined, { weekday: 'short', day: 'numeric' });
 
 // The page for this path: a section, or a row of one that opens a page of
 // its own (/admin/matches/12).
@@ -395,6 +397,10 @@ let previous = null; // The last transaction counters.
 let samples = []; // { at, rate } for the sparkline.
 let hover = null; // The pointer's position across the sparkline, 0 to 1.
 let category = 0; // The board whose leaders are shown.
+// The Monitoring timeline across polls: the column picked by the pointer or
+// the keyboard (its start, in ms), whether the chart has the keyboard focus,
+// and whether its table is open.
+const timelineView = { column: null, focused: false, table: false };
 let polls = 0; // Polls started, so a slow answer never replaces a newer one.
 
 // --- DOM helpers ---------------------------------------------------------
@@ -1244,6 +1250,310 @@ function incidentWhat(incident) {
   return [badge(tone, name), detail && h('span', { class: 'sub' }, detail)];
 }
 
+// --- Monitoring timeline -------------------------------------------------
+
+// What went wrong, in the timeline's order: the stack from its baseline up,
+// each kind with its series color (admin.css, --series-2 to --series-5).
+const PROBLEM_KINDS = [
+  { kind: 'desync', name: 'Out of sync' },
+  { kind: 'disconnect', name: 'Lost connection' },
+  { kind: 'left', name: 'Left WFC' },
+  { kind: 'error', name: 'Error codes' },
+];
+// The plots' heights in pixels, as admin.css sets them.
+const MATCHES_HEIGHT = 80;
+const PROBLEMS_HEIGHT = 120;
+// Hours between the time axis' labels.
+const AXIS_HOURS = 6;
+
+/** 0, then whole steps of 1, 2 or 5 × 10^n up to at least `max`. */
+function niceTicks(max) {
+  const rough = Math.max(1, max) / 2;
+  const power = 10 ** Math.floor(Math.log10(rough));
+  const step = Math.max(1, [1, 2, 5, 10].map((m) => m * power).find((value) => value >= rough));
+  const ticks = [0];
+  while (ticks[ticks.length - 1] < max || ticks.length < 2) ticks.push(ticks[ticks.length - 1] + step);
+  return ticks;
+}
+
+/** The timeline's columns from the server's rows, and the matches in progress
+ * as a step function: `levels` holds [time, matches from then on]. */
+function timelineModel(timeline, now) {
+  const start = Date.parse(timeline.from);
+  const step = timeline.column_minutes * 60000;
+  const columns = [];
+  const byStart = new Map();
+  for (let at = Math.floor(start / step) * step; at < now; at += step) {
+    const column = { at, end: at + step, kinds: {}, codes: new Map(), total: 0, peak: 0 };
+    for (const { kind } of PROBLEM_KINDS) column.kinds[kind] = 0;
+    columns.push(column);
+    byStart.set(at, column);
+  }
+  const totals = Object.fromEntries(PROBLEM_KINDS.map(({ kind }) => [kind, 0]));
+  for (const problem of timeline.problems) {
+    const column = byStart.get(Date.parse(problem.at));
+    if (!column || !(problem.kind in column.kinds)) continue;
+    column.kinds[problem.kind] += problem.count;
+    column.total += problem.count;
+    totals[problem.kind] += problem.count;
+    if (problem.code != null) column.codes.set(problem.code, (column.codes.get(problem.code) || 0) + problem.count);
+  }
+
+  // +1 where a match starts, -1 where it stops; ends first at a tie.
+  let level = 0;
+  const changes = [];
+  for (const match of timeline.matches) {
+    const begun = Date.parse(match.started_at);
+    const stopped = match.ended_at ? Date.parse(match.ended_at) : now;
+    if (stopped <= start || begun >= now || stopped <= begun) continue;
+    if (begun <= start) level += 1;
+    else changes.push([begun, 1]);
+    if (stopped < now) changes.push([stopped, -1]);
+  }
+  changes.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const levels = [[start, level]];
+  for (const [at, delta] of changes) {
+    level += delta;
+    levels.push([at, level]);
+  }
+  // Each column's peak: its level at its start, then every change inside it.
+  let index = 0;
+  for (const column of columns) {
+    while (index + 1 < levels.length && levels[index + 1][0] <= column.at) index += 1;
+    let peak = levels[index][1];
+    for (let next = index + 1; next < levels.length && levels[next][0] < column.end; next += 1) peak = Math.max(peak, levels[next][1]);
+    column.peak = peak;
+  }
+  return {
+    start,
+    now,
+    step,
+    columns,
+    totals,
+    levels,
+    current: level,
+    most: Math.max(0, ...levels.map(([, value]) => value)),
+    worst: Math.max(0, ...columns.map((column) => column.total)),
+  };
+}
+
+/** A plot's horizontal hairlines and the y-axis labels for `ticks`. */
+function yAxis(ticks, height) {
+  const top = ticks[ticks.length - 1];
+  const y = (value) => height - (value / top) * height;
+  const labels = h('div', { class: 'tl-y', 'aria-hidden': 'true' });
+  const grid = h('div', { class: 'tl-grid', 'aria-hidden': 'true' });
+  for (const value of ticks) {
+    const label = h('span', null, count(value));
+    label.style.top = `${y(value)}px`;
+    labels.append(label);
+    const line = h('span', { class: value === 0 ? 'tl-base' : null });
+    line.style.top = `${Math.min(height - 1, y(value))}px`;
+    grid.append(line);
+  }
+  return { labels, grid, y };
+}
+
+function timelineChart(timeline, now) {
+  const model = timelineModel(timeline, now);
+  const { start, step, columns, totals } = model;
+  const span = now - start;
+  const x = (at) => ((at - start) / span) * 100;
+  const hours = Math.round(span / 3600000);
+
+  // Matches in progress: a step area, its line 2px whatever the width.
+  const matchTicks = niceTicks(model.most);
+  const matchAxis = yAxis(matchTicks, MATCHES_HEIGHT);
+  const vx = (at) => ((at - start) / span) * 1000;
+  // 1px in from the plot's edges, so a 2px line at 0 or the top shows whole.
+  const vy = (value) => Math.min(MATCHES_HEIGHT - 1, Math.max(1, matchAxis.y(value))).toFixed(1);
+  let path = `M0,${vy(model.levels[0][1])}`;
+  for (const [at, value] of model.levels.slice(1)) path += ` H${vx(at).toFixed(2)} V${vy(value)}`;
+  path += ' H1000';
+  const area = svg('svg', { viewBox: `0 0 1000 ${MATCHES_HEIGHT}`, preserveAspectRatio: 'none', 'aria-hidden': 'true' });
+  area.append(
+    svg('path', { class: 'tl-area', d: `${path} V${MATCHES_HEIGHT} H0 Z` }),
+    svg('path', { class: 'tl-line', d: path, 'vector-effect': 'non-scaling-stroke' }),
+  );
+  const endDot = h('span', { class: 'tl-dot' });
+  endDot.style.top = `${matchAxis.y(model.current)}px`;
+  const matchCross = h('span', { class: 'tl-cross' });
+  const matchPlot = h('div', { class: 'tl-plot', style: `height:${MATCHES_HEIGHT}px` }, matchAxis.grid, h('div', { class: 'tl-clip' }, area), endDot, matchCross);
+
+  // What went wrong: one stacked column per period, 2px apart.
+  const problemTicks = niceTicks(model.worst);
+  const problemAxis = yAxis(problemTicks, PROBLEMS_HEIGHT);
+  const unit = PROBLEMS_HEIGHT / problemTicks[problemTicks.length - 1];
+  const bars = h('div', { class: 'tl-clip' });
+  const columnNodes = new Map();
+  for (const column of columns) {
+    if (!column.total) continue;
+    const stack = h('div', { class: 'tl-stack' });
+    let shown = 0;
+    for (const { kind } of PROBLEM_KINDS) {
+      const value = column.kinds[kind];
+      if (!value) continue;
+      // The 2px gaps come out of the segments above the first, so the stack
+      // stays as tall as its total.
+      const height = Math.max(2, value * unit - (shown ? 2 : 0));
+      stack.append(h('span', { class: 'tl-seg', 'data-kind': kind, style: `height:${height.toFixed(1)}px` }));
+      shown += 1;
+    }
+    const node = h('div', { class: 'tl-col' }, stack);
+    node.style.left = `${x(column.at)}%`;
+    node.style.width = `${(step / span) * 100}%`;
+    bars.append(node);
+    columnNodes.set(column.at, node);
+  }
+  const problemCross = h('span', { class: 'tl-cross' });
+  const problemPlot = h(
+    'div',
+    { class: 'tl-plot', style: `height:${PROBLEMS_HEIGHT}px` },
+    problemAxis.grid,
+    bars,
+    !model.worst && h('div', { class: 'tl-none' }, h('span', null, `Nothing went wrong in the last ${hours} hours.`)),
+    problemCross,
+  );
+
+  // Local time: a label every AXIS_HOURS hours, the day's name at midnight.
+  const axis = h('div', { class: 'tl-x', 'aria-hidden': 'true' });
+  const tick = new Date(start);
+  tick.setMinutes(0, 0, 0);
+  while (tick.getTime() <= start || tick.getHours() % AXIS_HOURS) tick.setHours(tick.getHours() + 1);
+  for (; tick.getTime() < now; tick.setHours(tick.getHours() + AXIS_HOURS)) {
+    const left = x(tick.getTime());
+    if (left > 94) break;
+    const label = h('span', null, tick.getHours() === 0 ? weekdayDay.format(tick) : hourMinute.format(tick));
+    label.style.left = `${left}%`;
+    axis.append(label);
+    for (const plot of [matchPlot, problemPlot]) {
+      const line = h('span', { class: 'tl-vline', 'aria-hidden': 'true' });
+      line.style.left = `${left}%`;
+      plot.prepend(line);
+    }
+  }
+  axis.append(h('span', { class: 'tl-now' }, 'now'));
+
+  // The readout for the picked column: every series, values first.
+  const tip = h('div', { class: 'tl-tip', 'aria-hidden': 'true' });
+  const chart = h(
+    'div',
+    {
+      class: 'tl-chart',
+      tabindex: '0',
+      role: 'group',
+      'aria-label': `Last ${hours} hours: ${model.current} matches in progress now, at most ${model.most} at once; ${count(columns.reduce((sum, column) => sum + column.total, 0))} problems. Arrow keys step through the half hours; the table below lists them.`,
+    },
+    h('div', { class: 'tl-head' }, h('span', { class: 'tl-key', 'data-kind': 'matches' }), h('strong', null, 'Matches in progress'), h('span', { class: 'sub' }, `${count(model.current)} now · ${count(model.most)} at most`)),
+    h('div', { class: 'tl-row' }, matchAxis.labels, matchPlot),
+    h(
+      'div',
+      { class: 'tl-head' },
+      h('strong', null, 'What went wrong'),
+      PROBLEM_KINDS.map(({ kind, name }) => h('span', { class: 'tl-legend' }, h('span', { class: 'tl-swatch', 'data-kind': kind }), name, h('span', { class: 'sub' }, count(totals[kind])))),
+    ),
+    h('div', { class: 'tl-row' }, problemAxis.labels, problemPlot),
+    h('div', { class: 'tl-row' }, h('span'), axis),
+    tip,
+  );
+
+  const show = () => {
+    for (const node of columnNodes.values()) node.classList.remove('is-active');
+    const column = columns.find((candidate) => candidate.at === timelineView.column);
+    if (!column) {
+      timelineView.column = null;
+      chart.classList.remove('is-picking');
+      return;
+    }
+    chart.classList.add('is-picking');
+    columnNodes.get(column.at)?.classList.add('is-active');
+    const middle = Math.min(100, Math.max(0, x(column.at + step / 2)));
+    for (const cross of [matchCross, problemCross]) cross.style.left = `${middle}%`;
+    const value = (number) => h('strong', { class: number ? null : 'zero' }, count(number));
+    const codes = [...column.codes].sort((a, b) => b[1] - a[1] || a[0] - b[0]);
+    tip.replaceChildren(
+      ...[
+        h('span', { class: 'tl-tip-when' }, `${weekdayDay.format(column.at)} ${hourMinute.format(column.at)}–${hourMinute.format(column.end)}`),
+        h('span', { class: 'tl-tip-row' }, h('span', { class: 'tl-key', 'data-kind': 'matches' }), value(column.peak), 'matches at most'),
+        ...PROBLEM_KINDS.map(({ kind, name }) => h('span', { class: 'tl-tip-row' }, h('span', { class: 'tl-key', 'data-kind': kind }), value(column.kinds[kind]), name)),
+        codes.length > 0 && h('span', { class: 'tl-tip-codes' }, codes.map(([code, times]) => (times > 1 ? `${code} ×${times}` : `${code}`)).join(' · ')),
+      ].filter(Boolean),
+    );
+    // Beside the crosshair, on the side with room.
+    tip.style.left = `calc(var(--tl-gutter) + (100% - var(--tl-gutter)) * ${middle / 100})`;
+    tip.dataset.side = middle > 60 ? 'left' : 'right';
+  };
+  const pick = (event) => {
+    const rect = problemPlot.getBoundingClientRect();
+    const fraction = (event.clientX - rect.left) / rect.width;
+    timelineView.column = fraction < 0 || fraction > 1 ? null : Math.floor((start + fraction * span) / step) * step;
+    show();
+  };
+  chart.addEventListener('pointermove', pick);
+  chart.addEventListener('pointerdown', pick);
+  chart.addEventListener('pointerleave', () => {
+    if (timelineView.focused) return;
+    timelineView.column = null;
+    show();
+  });
+  chart.addEventListener('keydown', (event) => {
+    const index = columns.findIndex((column) => column.at === timelineView.column);
+    const last = columns.length - 1;
+    const moves = { ArrowLeft: Math.max(0, index - 1), ArrowRight: index < 0 ? last : Math.min(last, index + 1), Home: 0, End: last };
+    if (event.key === 'Escape') timelineView.column = null;
+    else if (event.key in moves) timelineView.column = columns[moves[event.key]].at;
+    else return;
+    event.preventDefault();
+    show();
+  });
+  chart.addEventListener('focus', () => {
+    timelineView.focused = true;
+    if (timelineView.column == null) timelineView.column = columns[columns.length - 1].at;
+    show();
+  });
+  // A poll replaces the chart: only a blur that leaves it in the page is
+  // the reader moving on.
+  chart.addEventListener('blur', () => {
+    setTimeout(() => {
+      if (!chart.isConnected || document.activeElement === chart) return;
+      timelineView.focused = false;
+      timelineView.column = null;
+      show();
+    });
+  });
+  // Back to the new chart once render() has put it in the page.
+  if (timelineView.focused) queueMicrotask(() => chart.isConnected && chart.focus({ preventScroll: true }));
+  show();
+
+  // The same numbers without the chart: every half hour with something in it.
+  const rows = columns.filter((column) => column.total || column.peak).reverse();
+  const details = h(
+    'details',
+    { class: 'tl-table', open: timelineView.table },
+    h('summary', null, 'Show as a table'),
+    table(
+      [
+        { label: 'From', cell: (c) => `${weekdayDay.format(c.at)} ${hourMinute.format(c.at)}` },
+        { label: 'Matches at most', num: true, cell: (c) => integer.format(c.peak) },
+        ...PROBLEM_KINDS.map(({ kind, name }) => ({ label: name, num: true, cell: (c) => flagged(c.kinds[kind], kind === 'desync' ? 'serious' : 'warning') })),
+        { label: 'Codes', class: 'wrap', cell: (c) => [...c.codes].map(([code, times]) => (times > 1 ? `${code} ×${times}` : `${code}`)).join(', ') },
+      ],
+      rows,
+      `No matches and nothing wrong in the last ${hours} hours.`,
+    ),
+  );
+  details.addEventListener('toggle', () => {
+    timelineView.table = details.open;
+  });
+
+  return h(
+    'section',
+    { class: 'card' },
+    h('header', { class: 'card-head' }, h('h2', null, `Last ${hours} hours`), h('p', null, `Matches Recharged builds reported, and what went wrong, by ${timeline.column_minutes} minutes; your local time`)),
+    h('div', { class: 'timeline' }, chart, details),
+  );
+}
+
 function renderMonitoring(data, now) {
   const content = data.content;
   if (!content) return [unreachable(data.error)];
@@ -1255,6 +1565,7 @@ function renderMonitoring(data, now) {
   const build = (name) => (name ? h('code', null, name) : h('span', { class: 'sub' }, 'Not named'));
 
   return [
+    timelineChart(content.timeline, now),
     h(
       'section',
       { class: 'tiles', 'aria-label': 'Key figures' },
