@@ -57,6 +57,9 @@ enter the **Key** and **Value** from the table, and set **Password Mask: Yes** f
 | `MASTER_PORT` | no | UDP port of the master server inside the container. Default: `27900`. |
 | `SERVER_BROWSER_PORT` | no | TCP port of the server browser inside the container. Default: `28910`. |
 | `NATNEG_PORT` | no | UDP port of NAT negotiation inside the container. Default: `27901`. |
+| `NATNEG_RELAY_ADDRESS` | for the relay | The IPv4 address the players' games reach this server at, as in their `online.server` (a host name works too), e.g. `203.0.113.10`. It switches on the relay for games that cannot reach each other; see [NAT relay](#nat-relay). Unset, there is no relay. |
+| `NATNEG_RELAY` | no | Which matches the relay carries: `auto` (default) only those whose games cannot reach each other, `always` every match (to try it out), `off` none. |
+| `NATNEG_RELAY_MAX` | no | Relayed matches at once, at most. Default: `16`. Further matches try without the relay. |
 | `PUBLIC_URL` | for `/admin` and profiles | The HTTPS address browsers use for this server, without a path, e.g. `https://wfc.example.com`. See [Admin dashboard](#admin-dashboard). |
 | `GOOGLE_CLIENT_ID` | for `/admin` | Client ID of the Google OAuth client. |
 | `GOOGLE_CLIENT_SECRET` | for `/admin` | Client secret of the Google OAuth client. Set **Password Mask: Yes**. |
@@ -113,6 +116,30 @@ on the router, or run the container on a server with its own public address.
 The traffic is plain HTTP and GameSpy's own protocols, so it cannot go through a
 Cloudflare Tunnel. On its first login the game registers the console and keeps
 the userid in `data/shared2/DWC_AUTHDATA`.
+
+## NAT relay
+
+Two games normally reach each other directly: NAT negotiation tells each the
+other's public address. Some internet connections give a game a new public
+port for every address it sends to, carrier-grade NAT (one public address
+shared by many customers) above all. The other game's packets then never
+arrive, and the game stops with error 86070 ("Disconnected from network during
+data transmission"), whoever hosts.
+
+With `NATNEG_RELAY_ADDRESS` set, NAT negotiation gives such a pair this
+server's address instead, and the server passes every packet of their match on
+to the other game. It takes a pair when one game's router gives it a new port
+per address (its heartbeats and its negotiation come from different ports), or
+when the same two public addresses failed without it in the last 24 hours, so
+the second try works. It needs no other port: the games send to UDP 27901,
+which they already reach. Set the address the games use, exactly: the relay
+only recognises a game by the address its packets to that IP come from.
+
+A relayed match costs the server its traffic twice, in and out, and the players
+the way through the server, which adds to their lag. The log has one line per
+negotiation (`connect`, with each game's `nat` and the `relay` decision) and
+one per relayed match when it ends (`relay ended`, with its `packets` and
+`kib`); the dashboard's **Matchmaking** shows "through the relay".
 
 ## Admin dashboard
 

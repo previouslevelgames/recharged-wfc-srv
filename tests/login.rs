@@ -443,7 +443,7 @@ async fn nat_negotiation_gives_each_game_the_others_address() {
         .connect_lazy_with(sqlx::postgres::PgConnectOptions::new());
     let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let natneg = server.local_addr().unwrap();
-    tokio::spawn(async move { App::new(pool).serve_natneg(server).await });
+    tokio::spawn(async move { App::new(pool).serve_natneg(server, None).await });
 
     let packet = |kind: u8, body: &[u8]| {
         let mut packet = b"\xFD\xFC\x1E\x66\x6A\xB2\x03".to_vec();
@@ -508,6 +508,98 @@ async fn nat_negotiation_gives_each_game_the_others_address() {
         ack = recv(first).await;
     }
     assert_eq!(ack[7], 0x0E);
+}
+
+#[tokio::test]
+async fn the_relay_carries_the_pings_and_the_match() {
+    use recharged_wfc_srv::relay::{Config, Mode};
+    use tokio::net::UdpSocket;
+
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .connect_lazy_with(sqlx::postgres::PgConnectOptions::new());
+    let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let natneg = server.local_addr().unwrap();
+    let relay = Config {
+        mode: Mode::Always,
+        address: "127.0.0.1".into(),
+        max: 4,
+        port: natneg.port(),
+    };
+    tokio::spawn(async move { App::new(pool).serve_natneg(server, Some(relay)).await });
+
+    let packet = |kind: u8, body: &[u8]| {
+        let mut packet = b"\xFD\xFC\x1E\x66\x6A\xB2\x03".to_vec();
+        packet.push(kind);
+        packet.extend_from_slice(&0xC0FF_EE01u32.to_be_bytes());
+        packet.extend_from_slice(body);
+        packet
+    };
+    async fn recv(socket: &UdpSocket) -> (Vec<u8>, SocketAddr) {
+        let mut packet = [0; 2048];
+        let (len, from) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            socket.recv_from(&mut packet),
+        )
+        .await
+        .expect("a packet")
+        .unwrap();
+        (packet[..len].to_vec(), from)
+    }
+
+    let mut games = Vec::new();
+    for index in 0..2u8 {
+        let game = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let negotiate = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        for port_type in 0..4u8 {
+            let socket = if port_type == 0 { &game } else { &negotiate };
+            let init = packet(0, &[port_type, index, 1, 127, 0, 0, 1, 0, 0, b'm', 0]);
+            socket.send_to(&init, natneg).await.unwrap();
+        }
+        games.push((game, negotiate));
+    }
+
+    // Each CONNECT names the relay: this server's NAT negotiation port.
+    for (index, (game, negotiate)) in games.iter().enumerate() {
+        assert_eq!(recv(game).await.0[7], 1);
+        loop {
+            let (connect, _) = recv(negotiate).await;
+            if connect[7] == 5 {
+                assert_eq!(connect[12..16], [127, 0, 0, 1]);
+                assert_eq!(connect[16..18], natneg.port().to_be_bytes());
+                break;
+            }
+        }
+        negotiate
+            .send_to(&packet(6, &[0, index as u8]), natneg)
+            .await
+            .unwrap();
+    }
+
+    // The pings, as natneg.c sends them, reach the other game from the relay.
+    let (first, second) = (&games[0].0, &games[1].0);
+    let ping = packet(7, &[127, 0, 0, 1, 0, 0, 0, 0]);
+    first.send_to(&ping, natneg).await.unwrap();
+    assert_eq!(recv(second).await, (ping.clone(), natneg));
+    second.send_to(&ping, natneg).await.unwrap();
+    assert_eq!(recv(first).await, (ping, natneg));
+
+    // Then the match: GT2 packets, either way.
+    let mut match_packet = b"\xFE\xFE".to_vec();
+    match_packet.resize(1400, 0x5A);
+    first.send_to(&match_packet, natneg).await.unwrap();
+    assert_eq!(recv(second).await, (match_packet.clone(), natneg));
+    second.send_to(b"\xFE\xFE\x01", natneg).await.unwrap();
+    assert_eq!(recv(first).await.0, b"\xFE\xFE\x01");
+
+    // A negotiation socket is no relayed game: its report is answered.
+    let mut report = vec![1, 0, 1, 2, 0, 0, 0, 1, 0, 0, 0];
+    report.extend_from_slice(&[0; 50]);
+    let negotiate = &games[0].1;
+    negotiate
+        .send_to(&packet(0x0D, &report), natneg)
+        .await
+        .unwrap();
+    assert_eq!(recv(negotiate).await.0[7], 0x0E);
 }
 
 /// The master server on a local UDP port with its server browser on a TCP
