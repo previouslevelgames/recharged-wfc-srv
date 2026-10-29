@@ -1,0 +1,36 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT started_at,\n                  CASE WHEN state = 'abandoned' THEN last_report_at ELSE ended_at END AS ended_at\n           FROM online_matches\n           WHERE state = 'in_progress' OR ended_at >= $1\n           ORDER BY started_at DESC\n           LIMIT $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "started_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "online_matches",
+            "name": "started_at"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "ended_at",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "c0df4fc7371e19961d3393096301c000e91e487c9b51b9801981f125536b7965"
+}

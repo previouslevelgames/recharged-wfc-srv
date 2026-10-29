@@ -1282,7 +1282,7 @@ dependencies = [
 
 [[package]]
 name = "recharged-wfc-srv"
-version = "1.0.9"
+version = "1.0.10"
 dependencies = [
  "axum",
  "axum-extra",
@@ -1295,6 +1295,7 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2 0.11.1",
+ "socket2",
  "sqlx",
  "time",
  "tokio",
