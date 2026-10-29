@@ -157,13 +157,17 @@ pub async fn is_online(pool: &PgPool, player_id: i64) -> Result<bool, sqlx::Erro
 }
 
 /// A player in the launcher's lists: whether they have Recharged open and a
-/// set to play.
+/// set to play, when they last had it open, and whether the player who asks
+/// keeps them as a friend.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Listed {
     #[serde(flatten)]
     pub player: Player,
     pub online: bool,
     pub busy: bool,
+    /// Their last heartbeat in Unix seconds; none before the first.
+    pub last_online: Option<i64>,
+    pub friend: bool,
 }
 
 /// Who has Recharged open, but `player_id`, by name.
@@ -178,7 +182,7 @@ pub async fn online(pool: &PgPool, player_id: i64) -> Result<Vec<Listed>, sqlx::
     )
     .fetch_all(pool)
     .await?;
-    listed(pool, &ids).await
+    listed(pool, player_id, &ids).await
 }
 
 /// The last 10 players `player_id` played a set with, the latest first.
@@ -196,11 +200,15 @@ pub async fn recent_opponents(pool: &PgPool, player_id: i64) -> Result<Vec<Liste
     )
     .fetch_all(pool)
     .await?;
-    listed(pool, &ids).await
+    listed(pool, player_id, &ids).await
 }
 
-/// The players `ids`, in that order.
-async fn listed(pool: &PgPool, ids: &[i64]) -> Result<Vec<Listed>, sqlx::Error> {
+/// The players `ids`, in that order, as `viewer` sees them.
+pub(super) async fn listed(
+    pool: &PgPool,
+    viewer: i64,
+    ids: &[i64],
+) -> Result<Vec<Listed>, sqlx::Error> {
     let rows = sqlx::query!(
         r#"SELECT players.player_id, players.display_name,
                   discord.username AS "discord?", discord.avatar_url AS "avatar_url?",
@@ -210,7 +218,11 @@ async fn listed(pool: &PgPool, ids: &[i64]) -> Result<Vec<Listed>, sqlx::Error> 
                   EXISTS (SELECT 1 FROM matches
                           WHERE state IN ('challenged', 'accepted')
                             AND (home = players.player_id OR away = players.player_id))
-                      AS "busy!"
+                      AS "busy!",
+                  extract(epoch FROM players.heartbeat_at)::bigint AS last_online,
+                  EXISTS (SELECT 1 FROM friends
+                          WHERE friends.player_id = $3 AND friends.friend_id = players.player_id)
+                      AS "friend!"
            FROM players
            LEFT JOIN player_identities discord
                   ON discord.player_id = players.player_id AND discord.provider = 'discord'
@@ -219,6 +231,7 @@ async fn listed(pool: &PgPool, ids: &[i64]) -> Result<Vec<Listed>, sqlx::Error> 
            WHERE players.player_id = ANY($1)"#,
         ids,
         f64::from(super::matches::HEARTBEAT_TIMEOUT_SECS),
+        viewer,
     )
     .fetch_all(pool)
     .await?;
@@ -234,6 +247,8 @@ async fn listed(pool: &PgPool, ids: &[i64]) -> Result<Vec<Listed>, sqlx::Error> 
             },
             online: row.online,
             busy: row.busy,
+            last_online: row.last_online,
+            friend: row.friend,
         })
         .collect();
     listed.sort_by_key(|entry| ids.iter().position(|id| *id == entry.player.id));
