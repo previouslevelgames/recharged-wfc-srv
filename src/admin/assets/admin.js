@@ -296,15 +296,6 @@ const SECTIONS = [
     detail: renderMatch,
   },
   {
-    path: '/admin/monitoring',
-    group: 'Game',
-    name: 'Monitoring',
-    icon: 'monitoring',
-    intro: 'How online matches go wrong: games out of sync, lost connections, games that left WFC mid-match, and reports the server refused.',
-    api: 'monitoring',
-    render: renderMonitoring,
-  },
-  {
     path: '/admin/leaderboards',
     group: 'Game',
     name: 'Leaderboards',
@@ -337,6 +328,15 @@ const SECTIONS = [
       ],
       needs: 'the Players and Matchmaking sections',
     },
+  },
+  {
+    path: '/admin/monitoring',
+    group: 'System',
+    name: 'Monitoring',
+    icon: 'monitoring',
+    intro: 'How online matches go wrong: games out of sync, lost connections, games that left WFC mid-match, and reports the server refused.',
+    api: 'monitoring',
+    render: renderMonitoring,
   },
   {
     path: '/admin/database',

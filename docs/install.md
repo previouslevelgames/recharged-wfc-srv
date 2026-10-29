@@ -144,8 +144,9 @@ one per relayed match when it ends (`relay ended`, with its `packets` and
 ## Admin dashboard
 
 `/admin` shows the server to admins who sign in with Google: an **Overview**,
-then **Players**, **Matchmaking**, **Matches**, **Monitoring**, **Leaderboards**,
-**Competitive**, **Database** and **Logs**, each at its own address (e.g.
+then **Players**, **Matchmaking**, **Matches**, **Leaderboards** and
+**Competitive** under Game, and **Monitoring**, **Database** and **Logs** under
+System, each at its own address (e.g.
 `/admin/database`), refreshed every 5 seconds. **Matches** lists the series
 Recharged builds report ([reports.md](reports.md)), in progress first; a match
 opens its own page (e.g. `/admin/matches/12`) with both players, each game as
