@@ -386,6 +386,17 @@ server sees it (IP and port big-endian, then `42` and `00`: no error), again
 each half second until it acks. The games then ping each other there and
 report. A negotiation is forgotten after 30 seconds.
 
+The relay (`src/relay.rs`, [install.md](install.md#nat-relay)) changes one
+thing: for two games that will not reach each other, both CONNECTs carry this
+server's address and port 27901, the address the game sockets sent their INITs
+to. Each game then pings there (`07` CONNECT_PING, from its game socket), and
+every packet from a relayed game socket that is not a NAT negotiation packet
+of its own, the pings and the match's GT2 packets (`FE FE` first), goes on to
+the other game's game socket, from this port. The games take the address the
+pings come from as each other's, so the match goes the same way. A ping from
+another port of a relayed game's IP moves that game there. A relayed match not
+heard from for 60 seconds is over.
+
 ## Not served yet
 
 Matchmaking with anybody (the server browser's other filters), NAT detection

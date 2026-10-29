@@ -21,6 +21,10 @@ reference, and runs as a single Docker container with its own database.
 - **Friend battles.** Host a match and invite a friend, or join one.
 - **Ranked matches.** **RANKED** in WFC Central pairs players who search at the
   same time, and helps the two games reach each other through home routers.
+- **Games that cannot reach each other.** Some internet connections, often
+  those that share one public address between many customers, keep two games
+  from reaching each other directly: the game shows error 86070. With the relay
+  switched on, the server passes the match on between the two itself.
 - **Leaderboards.** Ranked results count towards the season and *Striker of the
   day* boards, plus the boards only the European release has. A score is only
   accepted from the player who is signed in. As in the original game, seasons
