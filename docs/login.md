@@ -112,6 +112,14 @@ token's userid and gsbrcd (making it on the first login), and answers:
 A login to a profile logged in elsewhere disconnects the other connection
 (error 6).
 
+A login also ends when its console stops answering. The game sends nothing
+while it idles (GP's own keep-alive is never sent: `KEEPALIVE_TIMEOUT` in
+`gpi.c` is unused), so a console that went to sleep or lost its network
+would stay logged in, with its last status, until its next login. The server
+turns on TCP keepalive instead: after 60 seconds without traffic the system
+probes the console every 10 seconds and ends the login after 3 unanswered
+probes, or after 90 seconds of a message without ack (Linux).
+
 | Command | Answer |
 |---|---|
 | `getprofile` | `\pi\` with `profileid`, `nick`, `userid`, `email`, `sig`, `uniquenick`, `firstname`, `lastname`, `loc`; another profile's names are masked as `000000000R4QE0000000` |

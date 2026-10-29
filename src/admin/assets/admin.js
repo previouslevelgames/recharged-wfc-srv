@@ -677,7 +677,9 @@ function presence(player, now) {
   if (player.cpu_buddy) return [badge('accent', 'Server'), h('span', { class: 'sub' }, 'Accepts every request')];
   if (!player.online) return badge(null, 'Offline');
   const [name, tone] = STATUSES[player.online.status] || ['Logged in', 'good'];
-  return [badge(tone, name), h('span', { class: 'sub' }, ['since ', ago(player.online.since, now)])];
+  // A status counts from when the game sent it, the login from its start.
+  const start = player.online.status_since || player.online.since;
+  return [badge(tone, name), h('span', { class: 'sub' }, ['since ', ago(start, now)])];
 }
 
 function renderPlayers(data, now) {
@@ -754,7 +756,11 @@ function renderPlayer(data, now) {
       tile(
         'Status',
         profile.cpu_buddy ? 'Server' : profile.online ? (STATUSES[profile.online.status] || ['Logged in'])[0] : 'Offline',
-        profile.online ? ['Logged in to GPCM ', ago(profile.online.since, now)] : 'Not logged in to GPCM',
+        !profile.online
+          ? 'Not logged in to GPCM'
+          : profile.online.status_since
+            ? ['Since ', ago(profile.online.status_since, now), ' · logged in to GPCM ', ago(profile.online.since, now)]
+            : ['Logged in to GPCM ', ago(profile.online.since, now)],
       ),
       tile('Release', profile.release, profile.gsbrcd),
       tile('Account', h('code', null, `${profile.user_id}`), 'The console, registered with NAS'),

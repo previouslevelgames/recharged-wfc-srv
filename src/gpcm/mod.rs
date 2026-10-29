@@ -19,10 +19,12 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
+    time::Duration,
 };
 
 use md5::{Digest, Md5};
 use rand::distr::{Alphanumeric, SampleString};
+use socket2::{SockRef, TcpKeepalive};
 use sqlx::PgPool;
 use time::OffsetDateTime;
 use tokio::{
@@ -42,6 +44,15 @@ use message::{Message, split};
 
 /// A client sends short messages: more than this unread means it is not one.
 const MAX_BUFFER: usize = 0x4000;
+/// The game sends nothing while it idles, and the server writes to a login
+/// only to pass on a friend's message, so a console that went to sleep or lost
+/// its network would stay logged in. After this long without traffic the
+/// system probes it with TCP keepalives…
+const KEEPALIVE_IDLE: Duration = Duration::from_secs(60);
+/// …this often…
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(10);
+/// …and ends the login when this many go unanswered.
+const KEEPALIVE_PROBES: u32 = 3;
 /// DWC's partner id: Nintendo.
 const PARTNER_ID: u32 = 11;
 /// The game's friend roster holds 64 friend codes (`DWC_InitFriendsMatch` in
@@ -91,6 +102,8 @@ struct Session {
     status: Option<String>,
     /// That `\status\`'s DWC status, for `/admin`.
     dwc_status: Option<u8>,
+    /// When the DWC status last changed.
+    status_since: Option<OffsetDateTime>,
     /// The login ticket (`lt`) the login got. The game's own use of it is
     /// SAKE, which this game does not have; the port shows it to the profile
     /// service to prove which login is its own (docs/profiles.md).
@@ -103,6 +116,8 @@ pub struct Presence {
     /// DWC's status from the last `\status\`: 1 online, 2 playing, 3 to 6
     /// matchmaking.
     pub status: Option<u8>,
+    /// When that status began: a `\status\` that repeats it keeps the time.
+    pub status_since: Option<OffsetDateTime>,
     /// Friend codes asked for in this login, and how many of them are mutual.
     pub friend_requests: usize,
     pub mutual_friends: usize,
@@ -126,6 +141,7 @@ impl Session {
             mutual: HashSet::new(),
             status: None,
             dwc_status: None,
+            status_since: None,
             login_ticket,
         }
     }
@@ -136,6 +152,14 @@ impl Session {
             return false;
         }
         self.friends.insert(friend)
+    }
+
+    /// Records the DWC status of a `\status\`, and when it changed.
+    fn set_dwc_status(&mut self, status: Option<u8>) {
+        if self.status_since.is_none() || status != self.dwc_status {
+            self.status_since = Some(OffsetDateTime::now_utc());
+        }
+        self.dwc_status = status;
     }
 }
 
@@ -159,6 +183,7 @@ impl Gpcm {
                 let presence = Presence {
                     logged_in_at: session.logged_in_at,
                     status: session.dwc_status,
+                    status_since: session.status_since,
                     friend_requests: session.friends.len(),
                     mutual_friends: session.mutual.len(),
                 };
@@ -199,6 +224,9 @@ impl Gpcm {
         stream: TcpStream,
         peer: SocketAddr,
     ) -> std::io::Result<()> {
+        if let Err(error) = keep_alive(&stream) {
+            warn!(target: "gpcm", %peer, %error, "no keepalive");
+        }
         let (mut reader, writer) = stream.into_split();
         let (outbox, mut inbox) = mpsc::unbounded_channel();
         let mut connection = Connection {
@@ -593,7 +621,7 @@ impl Gpcm {
             return;
         };
         session.status = Some(status.clone());
-        session.dwc_status = message.get("status").and_then(|status| status.parse().ok());
+        session.set_dwc_status(message.get("status").and_then(|status| status.parse().ok()));
         for friend in session.mutual.clone() {
             if let Some(friend) = sessions
                 .get(&friend)
@@ -775,6 +803,23 @@ fn md5_hex(data: impl AsRef<[u8]>) -> String {
         .collect()
 }
 
+/// Makes the system end the connection of a console that stopped answering
+/// ([`KEEPALIVE_IDLE`]).
+fn keep_alive(stream: &TcpStream) -> std::io::Result<()> {
+    let socket = SockRef::from(stream);
+    socket.set_tcp_keepalive(
+        &TcpKeepalive::new()
+            .with_time(KEEPALIVE_IDLE)
+            .with_interval(KEEPALIVE_INTERVAL)
+            .with_retries(KEEPALIVE_PROBES),
+    )?;
+    // No probe goes out while a friend's message waits for its ack: the
+    // same limit then ends the login, instead of minutes of retransmission.
+    #[cfg(target_os = "linux")]
+    socket.set_tcp_user_timeout(Some(KEEPALIVE_IDLE + KEEPALIVE_INTERVAL * KEEPALIVE_PROBES))?;
+    Ok(())
+}
+
 fn uppercase(len: usize) -> String {
     (0..len)
         .map(|_| char::from(rand::random_range(b'A'..=b'Z')))
@@ -815,12 +860,14 @@ mod tests {
         );
         session.add_friend(1_000_000_001);
         session.mutual.insert(1_000_000_001);
-        session.dwc_status = Some(2);
+        session.set_dwc_status(Some(2));
+        let status_since = session.status_since;
         gpcm.sessions.lock().unwrap().insert(1_000_000_000, session);
 
         let presence = gpcm.presence();
         let online = &presence[&1_000_000_000];
         assert_eq!(online.status, Some(2));
+        assert_eq!(online.status_since, status_since);
         assert_eq!((online.friend_requests, online.mutual_friends), (1, 1));
         assert!(!presence.contains_key(&1_000_000_001));
         assert_eq!(
@@ -846,6 +893,47 @@ mod tests {
         }
         assert!(!session.add_friend(2_000_000_000));
         assert_eq!(session.friends.len(), MAX_FRIENDS);
+    }
+
+    #[test]
+    fn a_status_keeps_its_time_until_it_changes() {
+        let mut session = Session::new(
+            1,
+            IpAddr::from([10, 0, 0, 1]),
+            Arc::new(Notify::new()),
+            mpsc::unbounded_channel().0,
+            String::new(),
+        );
+        assert_eq!(session.status_since, None);
+        session.set_dwc_status(Some(2));
+        let playing = OffsetDateTime::UNIX_EPOCH;
+        session.status_since = Some(playing);
+        session.set_dwc_status(Some(2));
+        assert_eq!(session.status_since, Some(playing));
+        session.set_dwc_status(Some(1));
+        assert!(session.status_since > Some(playing));
+        assert_eq!(session.dwc_status, Some(1));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn logins_are_probed_when_idle() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let _client = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+        keep_alive(&stream).unwrap();
+
+        let socket = SockRef::from(&stream);
+        assert!(socket.keepalive().unwrap());
+        assert_eq!(socket.tcp_keepalive_time().unwrap(), KEEPALIVE_IDLE);
+        assert_eq!(socket.tcp_keepalive_interval().unwrap(), KEEPALIVE_INTERVAL);
+        assert_eq!(socket.tcp_keepalive_retries().unwrap(), KEEPALIVE_PROBES);
+        assert_eq!(
+            socket.tcp_user_timeout().unwrap(),
+            Some(Duration::from_secs(90))
+        );
     }
 
     #[test]
