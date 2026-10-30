@@ -206,13 +206,16 @@ still work:
 
 | `stage` | `state` | |
 |---|---|---|
-| `invited` | `challenged` | Waiting for the challenged player's answer |
-| `open` | `accepted` | Both are in; each presses **Ready to play!** (`you_ready`, `opponent_ready`) and may take it back |
+| `invited` | `challenged` | Waiting for the challenged player's answer; the challenge is the challenger's **Ready to play!** |
+| `open` | `accepted` | Both are in, but one took **Ready to play!** back (`you_ready`, `opponent_ready`) or the set waits for it again |
 | `go` | `accepted` | Both are ready (`go_at`): both launchers start their games |
 | `playing` | `accepted` | The games found each other in RANKED (`playing_at`) |
 | `finished`, `disputed` | the same | The result |
 | `dissolved` | `declined`, `cancelled`, `expired` or `dissolved` | Ended without a result; `reason` is the state |
 
+- The accept is the challenged player's Ready to play!: with the
+  challenger's, the set goes at once. Either may take theirs back before
+  the games met (`open`) and press it again.
 - A set whose games haven't met 5 minutes after the go waits for Ready to
   play! again.
 - A player without a heartbeat for 60 seconds has closed Recharged: their

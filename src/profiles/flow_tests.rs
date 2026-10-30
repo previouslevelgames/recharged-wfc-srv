@@ -371,19 +371,26 @@ async fn a_set_from_the_lobby_to_a_rematch(pool: PgPool) {
         let token = token.to_owned();
         async move { world.send("POST", &path, &token, body).await }
     };
-    post(format!("/api/v1/matches/{id}/accept"), &bowser, Value::Null).await;
+    assert_eq!(challenge["you_ready"], json!(true));
 
-    // Both press Ready to play!: go.
-    let (status, open) = post(
+    // The accept is Bowser's Ready to play!, the challenge was Mario's: go.
+    let (status, go) = post(format!("/api/v1/matches/{id}/accept"), &bowser, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{go}");
+    assert_eq!(
+        (&go["stage"], &go["you_ready"], &go["opponent_ready"]),
+        (&json!("go"), &json!(true), &json!(true))
+    );
+    assert!(go["go_at"].is_i64());
+    // Taken back and pressed again: open, then go.
+    let (_, open) = post(
         format!("/api/v1/matches/{id}/ready-to-play"),
-        &bowser,
-        json!({"ready": true}),
+        &mario,
+        json!({"ready": false}),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{open}");
     assert_eq!(
         (&open["stage"], &open["you_ready"], &open["opponent_ready"]),
-        (&json!("open"), &json!(true), &json!(false))
+        (&json!("open"), &json!(false), &json!(true))
     );
     let (_, go) = post(
         format!("/api/v1/matches/{id}/ready-to-play"),
@@ -392,7 +399,6 @@ async fn a_set_from_the_lobby_to_a_rematch(pool: PgPool) {
     )
     .await;
     assert_eq!(go["stage"], "go");
-    assert!(go["go_at"].is_i64());
     let (_, current) = world
         .send("GET", "/api/v1/matches/current", &bowser, Value::Null)
         .await;
@@ -452,7 +458,7 @@ async fn a_set_from_the_lobby_to_a_rematch(pool: PgPool) {
     let (_, again) = post(format!("/api/v1/matches/{id}/rematch"), &mario, Value::Null).await;
     assert_eq!(
         (&again["id"], &again["stage"]),
-        (&offered["id"], &json!("open"))
+        (&offered["id"], &json!("go"))
     );
     let (_, lists) = world
         .send("GET", "/api/v1/players", &mario, Value::Null)
