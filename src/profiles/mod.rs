@@ -143,7 +143,8 @@ fn database_error(error: sqlx::Error) -> Response {
 
 impl ProfilesState {
     /// The player of the request's bearer token, or the 401 to answer. The
-    /// request is the player's heartbeat: their Recharged is open.
+    /// request is the player's heartbeat: their Recharged is open, doing what
+    /// its `Recharged-Activity` header says.
     async fn signed_in(&self, headers: &HeaderMap) -> Result<Player, Response> {
         let unauthorized = || json_error(StatusCode::UNAUTHORIZED, "signed out");
         let token = bearer(headers).ok_or_else(unauthorized)?;
@@ -151,7 +152,12 @@ impl ProfilesState {
             .await
             .map_err(database_error)?
             .ok_or_else(unauthorized)?;
-        players::heartbeat(&self.pool, player_id)
+        let activity = players::Activity::from_header(
+            headers
+                .get("recharged-activity")
+                .and_then(|value| value.to_str().ok()),
+        );
+        players::heartbeat(&self.pool, player_id, activity)
             .await
             .map_err(database_error)?;
         players::player(&self.pool, player_id)

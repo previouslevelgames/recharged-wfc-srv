@@ -55,7 +55,7 @@ pub async fn sign_in(pool: &PgPool, identity: &Identity<'_>) -> Result<i64, sqlx
         .await?
         {
             sqlx::query!(
-                "UPDATE players SET display_name = $2, last_seen_at = now(), heartbeat_at = now()
+                "UPDATE players SET display_name = $2, last_seen_at = now(), heartbeat_at = now(), activity = NULL
                  WHERE player_id = $1",
                 player_id,
                 identity.display_name,
@@ -130,13 +130,60 @@ pub async fn discord_id(pool: &PgPool, player_id: i64) -> Result<Option<String>,
     .await
 }
 
-/// `player_id`'s launcher or game made a request: they have Recharged open
-/// (written at most every few seconds).
-pub async fn heartbeat(pool: &PgPool, player_id: i64) -> Result<(), sqlx::Error> {
+/// What a player's Recharged is doing (docs/profiles.md, "Activity").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Activity {
+    Launcher,
+    /// The game, outside a match.
+    Game,
+    /// A match in the game: offline, classic online or a set's.
+    Match,
+}
+
+impl Activity {
+    /// The `Recharged-Activity` header's value; anything else (or none) is
+    /// the launcher, which never sends one.
+    pub fn from_header(value: Option<&str>) -> Self {
+        match value.map(str::trim) {
+            Some("game") => Self::Game,
+            Some("match") => Self::Match,
+            _ => Self::Launcher,
+        }
+    }
+
+    /// As stored in `players.activity`.
+    fn column(self) -> Option<&'static str> {
+        match self {
+            Self::Launcher => None,
+            Self::Game => Some("game"),
+            Self::Match => Some("match"),
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Launcher => "launcher",
+            Self::Game => "game",
+            Self::Match => "match",
+        }
+    }
+}
+
+/// `player_id`'s launcher or game made a request: they have Recharged open,
+/// doing `activity` (written at most every few seconds, and at once when the
+/// activity changes).
+pub async fn heartbeat(
+    pool: &PgPool,
+    player_id: i64,
+    activity: Activity,
+) -> Result<(), sqlx::Error> {
     sqlx::query!(
-        "UPDATE players SET heartbeat_at = now()
-         WHERE player_id = $1 AND (heartbeat_at IS NULL OR heartbeat_at < now() - interval '5 seconds')",
+        "UPDATE players SET heartbeat_at = now(), activity = $2
+         WHERE player_id = $1
+           AND (heartbeat_at IS NULL OR heartbeat_at < now() - interval '5 seconds'
+                OR activity IS DISTINCT FROM $2)",
         player_id,
+        activity.column(),
     )
     .execute(pool)
     .await?;
@@ -156,6 +203,19 @@ pub async fn is_online(pool: &PgPool, player_id: i64) -> Result<bool, sqlx::Erro
     .is_some())
 }
 
+/// What `player_id`'s Recharged is doing; none while it is closed.
+pub async fn activity(pool: &PgPool, player_id: i64) -> Result<Option<Activity>, sqlx::Error> {
+    Ok(sqlx::query!(
+        "SELECT activity FROM players
+         WHERE player_id = $1 AND heartbeat_at > now() - make_interval(secs => $2)",
+        player_id,
+        f64::from(super::matches::HEARTBEAT_TIMEOUT_SECS),
+    )
+    .fetch_optional(pool)
+    .await?
+    .map(|row| Activity::from_header(row.activity.as_deref())))
+}
+
 /// A player in the launcher's lists: whether they have Recharged open and a
 /// set to play, when they last had it open, and whether the player who asks
 /// keeps them as a friend.
@@ -165,6 +225,8 @@ pub struct Listed {
     pub player: Player,
     pub online: bool,
     pub busy: bool,
+    /// While online: "launcher", "game" or "match" (see [`Activity`]).
+    pub activity: Option<&'static str>,
     /// Their last heartbeat in Unix seconds; none before the first.
     pub last_online: Option<i64>,
     pub friend: bool,
@@ -215,6 +277,7 @@ pub(super) async fn listed(
                   test.username AS "test?",
                   coalesce(players.heartbeat_at > now() - make_interval(secs => $2), false)
                       AS "online!",
+                  players.activity,
                   EXISTS (SELECT 1 FROM matches
                           WHERE state IN ('challenged', 'accepted')
                             AND (home = players.player_id OR away = players.player_id))
@@ -247,6 +310,9 @@ pub(super) async fn listed(
             },
             online: row.online,
             busy: row.busy,
+            activity: row
+                .online
+                .then(|| Activity::from_header(row.activity.as_deref()).name()),
             last_online: row.last_online,
             friend: row.friend,
         })

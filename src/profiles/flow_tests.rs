@@ -47,12 +47,28 @@ impl World {
     }
 
     async fn send(&self, method: &str, uri: &str, token: &str, body: Value) -> (StatusCode, Value) {
+        self.send_from(method, uri, token, None, body).await
+    }
+
+    /// A request of the game doing `activity` (the `Recharged-Activity`
+    /// header); none is the launcher.
+    async fn send_from(
+        &self,
+        method: &str,
+        uri: &str,
+        token: &str,
+        activity: Option<&str>,
+        body: Value,
+    ) -> (StatusCode, Value) {
         let mut request = Request::builder()
             .method(method)
             .uri(uri)
             .header(header::CONTENT_TYPE, "application/json");
         if !token.is_empty() {
             request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        if let Some(activity) = activity {
+            request = request.header("recharged-activity", activity);
         }
         let body = if body.is_null() {
             Body::empty()
@@ -460,6 +476,76 @@ async fn a_set_from_the_lobby_to_a_rematch(pool: PgPool) {
         (&current["match"]["stage"], &current["match"]["reason"]),
         (&json!("dissolved"), &json!("dissolved"))
     );
+}
+
+#[sqlx::test]
+async fn a_match_in_the_game_shows_and_keeps_challenges_away(pool: PgPool) {
+    let world = World::new(pool);
+    let mario = world.sign_in("Mario").await;
+    let luigi = world.sign_in("Luigi").await;
+    let activity_of_luigi = || async {
+        let (_, lists) = world
+            .send("GET", "/api/v1/players", &mario, Value::Null)
+            .await;
+        lists["online"][0]["activity"].clone()
+    };
+    let challenge = || {
+        world.send(
+            "POST",
+            "/api/v1/matches",
+            &mario,
+            json!({"opponent": "luigi", "rule_set": 1}),
+        )
+    };
+    assert_eq!(activity_of_luigi().await, json!("launcher"));
+
+    // Luigi's game starts a match: shown at once, and no challenge reaches it.
+    world
+        .send_from(
+            "GET",
+            "/api/v1/matches/current",
+            &luigi,
+            Some("game"),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(activity_of_luigi().await, json!("game"));
+    world
+        .send_from(
+            "GET",
+            "/api/v1/matches/current",
+            &luigi,
+            Some("match"),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(activity_of_luigi().await, json!("match"));
+    let (status, refused) = challenge().await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    assert_eq!(refused["error"], "that player is playing a match right now");
+
+    // Back in the game's menus, Luigi can be challenged again.
+    world
+        .send_from(
+            "GET",
+            "/api/v1/matches/current",
+            &luigi,
+            Some("game"),
+            Value::Null,
+        )
+        .await;
+    let (status, created) = challenge().await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+
+    // A closed Recharged has no activity.
+    sqlx::query("UPDATE players SET heartbeat_at = now() - interval '2 minutes'")
+        .execute(&world.pool)
+        .await
+        .unwrap();
+    let (_, lists) = world
+        .send("GET", "/api/v1/players", &mario, Value::Null)
+        .await;
+    assert_eq!(lists["friends"][0]["activity"], Value::Null);
 }
 
 #[sqlx::test]

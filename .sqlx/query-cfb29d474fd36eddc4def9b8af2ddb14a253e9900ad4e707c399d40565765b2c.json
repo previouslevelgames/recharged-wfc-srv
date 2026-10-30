@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT players.player_id, players.display_name,\n                  discord.username AS \"discord?\", discord.avatar_url AS \"avatar_url?\",\n                  test.username AS \"test?\",\n                  coalesce(players.heartbeat_at > now() - make_interval(secs => $2), false)\n                      AS \"online!\",\n                  EXISTS (SELECT 1 FROM matches\n                          WHERE state IN ('challenged', 'accepted')\n                            AND (home = players.player_id OR away = players.player_id))\n                      AS \"busy!\",\n                  extract(epoch FROM players.heartbeat_at)::bigint AS last_online,\n                  EXISTS (SELECT 1 FROM friends\n                          WHERE friends.player_id = $3 AND friends.friend_id = players.player_id)\n                      AS \"friend!\"\n           FROM players\n           LEFT JOIN player_identities discord\n                  ON discord.player_id = players.player_id AND discord.provider = 'discord'\n           LEFT JOIN player_identities test\n                  ON test.player_id = players.player_id AND test.provider = 'test'\n           WHERE players.player_id = ANY($1)",
+  "query": "SELECT players.player_id, players.display_name,\n                  discord.username AS \"discord?\", discord.avatar_url AS \"avatar_url?\",\n                  test.username AS \"test?\",\n                  coalesce(players.heartbeat_at > now() - make_interval(secs => $2), false)\n                      AS \"online!\",\n                  players.activity,\n                  EXISTS (SELECT 1 FROM matches\n                          WHERE state IN ('challenged', 'accepted')\n                            AND (home = players.player_id OR away = players.player_id))\n                      AS \"busy!\",\n                  extract(epoch FROM players.heartbeat_at)::bigint AS last_online,\n                  EXISTS (SELECT 1 FROM friends\n                          WHERE friends.player_id = $3 AND friends.friend_id = players.player_id)\n                      AS \"friend!\"\n           FROM players\n           LEFT JOIN player_identities discord\n                  ON discord.player_id = players.player_id AND discord.provider = 'discord'\n           LEFT JOIN player_identities test\n                  ON test.player_id = players.player_id AND test.provider = 'test'\n           WHERE players.player_id = ANY($1)",
   "describe": {
     "columns": [
       {
@@ -66,18 +66,29 @@
       },
       {
         "ordinal": 6,
+        "name": "activity",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "activity"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
         "name": "busy!",
         "type_info": "Bool",
         "origin": "Expression"
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "last_online",
         "type_info": "Int8",
         "origin": "Expression"
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "friend!",
         "type_info": "Bool",
         "origin": "Expression"
@@ -97,10 +108,11 @@
       true,
       true,
       null,
+      true,
       null,
       null,
       null
     ]
   },
-  "hash": "9ee3c780f3234e51a68eed5d548547535a560f06dcf2302a4b5fbbaf211d4a5b"
+  "hash": "cfb29d474fd36eddc4def9b8af2ddb14a253e9900ad4e707c399d40565765b2c"
 }
