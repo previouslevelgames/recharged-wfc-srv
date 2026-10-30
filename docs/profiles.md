@@ -89,6 +89,15 @@ sign-in: their Recharged (the launcher, or the game it started) is open. A
 player without one for 60 seconds has closed it ("Online now", and the sets
 it ends, see "Sets").
 
+### Activity
+
+The game's requests say what it is doing in a `Recharged-Activity` header:
+`game` outside a match, `match` from a match's loading until it is unloaded
+(offline, classic online or a set's). The launcher sends none, and neither do
+builds before 1.2.0's games. `players.activity` keeps the value of the last
+heartbeat (`NULL` for the launcher); a changed activity is written at once.
+The lists show it, and nobody can challenge a player in a match.
+
 Errors are JSON, `{"error": "<what went wrong>"}`. Every response is
 `no-store`; the pages allow no scripts and no framing.
 
@@ -162,8 +171,8 @@ with no Mega Strikes, fast terrain and Thunder Island walls).
 
 | Route | |
 |---|---|
-| `GET /api/v1/players` | `{"online": [...], "recent": [...], "friends": [...]}`: who has Recharged open (by name, at most 100), the last 10 players played a set with, and the player's friends (see "Friends"). Each is a player as in a sign-in, with `online`, `busy` (has a set to play), `last_online` (their last heartbeat in Unix seconds, `null` before the first) and `friend` (the player keeps them as one). |
-| `POST /api/v1/matches` | `{"opponent": "<Discord username>", "rule_set": <id>}`, or `"opponent_id": <player id>` instead of the name: a challenge, 201. 404 for nobody of that name, 409 when either already has a match to play or the opponent doesn't have Recharged open. |
+| `GET /api/v1/players` | `{"online": [...], "recent": [...], "friends": [...]}`: who has Recharged open (by name, at most 100), the last 10 players played a set with, and the player's friends (see "Friends"). Each is a player as in a sign-in, with `online`, `busy` (has a set to play), `activity` (while online: `launcher`, `game` or `match`, see "Activity"), `last_online` (their last heartbeat in Unix seconds, `null` before the first) and `friend` (the player keeps them as one). |
+| `POST /api/v1/matches` | `{"opponent": "<Discord username>", "rule_set": <id>}`, or `"opponent_id": <player id>` instead of the name: a challenge, 201. 404 for nobody of that name, 409 when either already has a match to play, or the opponent doesn't have Recharged open or is playing a match (see "Activity"). |
 | `GET /api/v1/matches/current` | `{"match": …, "poll_interval": 2, "server_time": <unix seconds>}`: the match still to be played, or the last one that ended within the hour, or `null`; `poll_interval` is how soon to ask again (2 while the set waits for its players, 10 while they play, 5 otherwise) |
 | `POST /api/v1/matches/<id>/accept`, `…/decline` | The challenged player's answer |
 | `POST /api/v1/matches/<id>/cancel` | Either player, before the result |
@@ -197,13 +206,16 @@ still work:
 
 | `stage` | `state` | |
 |---|---|---|
-| `invited` | `challenged` | Waiting for the challenged player's answer |
-| `open` | `accepted` | Both are in; each presses **Ready to play!** (`you_ready`, `opponent_ready`) and may take it back |
+| `invited` | `challenged` | Waiting for the challenged player's answer; the challenge is the challenger's **Ready to play!** |
+| `open` | `accepted` | Both are in, but one took **Ready to play!** back (`you_ready`, `opponent_ready`) or the set waits for it again |
 | `go` | `accepted` | Both are ready (`go_at`): both launchers start their games |
 | `playing` | `accepted` | The games found each other in RANKED (`playing_at`) |
 | `finished`, `disputed` | the same | The result |
 | `dissolved` | `declined`, `cancelled`, `expired` or `dissolved` | Ended without a result; `reason` is the state |
 
+- The accept is the challenged player's Ready to play!: with the
+  challenger's, the set goes at once. Either may take theirs back before
+  the games met (`open`) and press it again.
 - A set whose games haven't met 5 minutes after the go waits for Ready to
   play! again.
 - A player without a heartbeat for 60 seconds has closed Recharged: their

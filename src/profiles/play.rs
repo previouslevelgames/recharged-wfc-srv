@@ -117,10 +117,17 @@ pub(super) async fn challenge(
     if opponent == player.id {
         return json_error(StatusCode::BAD_REQUEST, "you can't challenge yourself");
     }
-    // A set lasts while both have Recharged open.
-    match players::is_online(&state.pool, opponent).await {
-        Ok(true) => {}
-        Ok(false) => {
+    // A set lasts while both have Recharged open; a match in the game is
+    // played to its end first.
+    match players::activity(&state.pool, opponent).await {
+        Ok(Some(players::Activity::Match)) => {
+            return json_error(
+                StatusCode::CONFLICT,
+                "that player is playing a match right now",
+            );
+        }
+        Ok(Some(_)) => {}
+        Ok(None) => {
             return json_error(
                 StatusCode::CONFLICT,
                 "that player doesn't have Recharged open right now",

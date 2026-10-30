@@ -246,10 +246,13 @@ pub async fn challenge(
     if busy(&mut transaction, home, away).await? {
         return Ok(Err(Refusal::Busy));
     }
+    // A challenge is the challenger's Ready to play!: the accept starts the
+    // set.
     let row = sqlx::query!(
-        "INSERT INTO matches (kind, state, home, away, rule_set, rules, rules_hash, rematch_of)
-         VALUES ('test', 'challenged', $1, $2, $3, $4, $5, $6)
-         RETURNING match_id, created_at",
+        "INSERT INTO matches (kind, state, home, away, rule_set, rules, rules_hash, rematch_of,
+                              home_ready_at)
+         VALUES ('test', 'challenged', $1, $2, $3, $4, $5, $6, now())
+         RETURNING match_id, created_at, home_ready_at",
         home,
         away,
         rule_set.name,
@@ -270,7 +273,7 @@ pub async fn challenge(
         rules_hash: rule_set.hash.clone(),
         winner: None,
         created_at: row.created_at,
-        ready_at: [None, None],
+        ready_at: [row.home_ready_at, None],
         go_at: None,
         playing_at: None,
         rematch_of,
@@ -310,7 +313,8 @@ async fn busy(
     Ok(busy > 0)
 }
 
-/// The challenged player accepts or declines.
+/// The challenged player accepts (their Ready to play!: with the
+/// challenger's, the set goes) or declines.
 pub async fn answer(
     pool: &PgPool,
     match_id: i64,
@@ -324,7 +328,11 @@ pub async fn answer(
         return Ok(Err(Refusal::NotYours));
     }
     let state = if accept { "accepted" } else { "declined" };
-    move_state(pool, found, &["challenged"], state).await
+    let answered = move_state(pool, found, &["challenged"], state).await?;
+    if !accept || answered.is_err() {
+        return Ok(answered);
+    }
+    ready_to_play(pool, match_id, player_id, true).await
 }
 
 /// Either player calls the match off before it has a result.
@@ -879,13 +887,29 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+        // The challenge is the challenger's Ready to play!; the button does
+        // nothing before the challenge is accepted.
         assert_eq!(found.stage(), "invited");
-        // Not before the challenge is accepted.
+        assert!(found.ready_at[0].is_some() && found.ready_at[1].is_none());
         assert_eq!(
             ready_to_play(&pool, found.id, mario, true).await.unwrap(),
             Err(Refusal::State("invited".into()))
         );
-        answer(&pool, found.id, bowser, true)
+        // The accept is the other's: the set goes.
+        let both = answer(&pool, found.id, bowser, true)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(both.stage(), "go");
+        assert!(both.ready_at[0].is_some() && both.ready_at[1].is_some());
+        // Taken back before the games met: open again, until both are ready.
+        let back = ready_to_play(&pool, found.id, mario, false)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(back.stage(), "open");
+        assert_eq!(back.go_at, None);
+        ready_to_play(&pool, found.id, bowser, false)
             .await
             .unwrap()
             .unwrap();
@@ -895,19 +919,7 @@ mod tests {
             .unwrap();
         assert_eq!(one.stage(), "open");
         assert!(one.ready_at[0].is_some() && one.ready_at[1].is_none());
-        let both = ready_to_play(&pool, found.id, bowser, true)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(both.stage(), "go");
-        // Taken back before the games met: open again.
-        let back = ready_to_play(&pool, found.id, mario, false)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(back.stage(), "open");
-        assert_eq!(back.go_at, None);
-        ready_to_play(&pool, found.id, mario, true)
+        ready_to_play(&pool, found.id, bowser, true)
             .await
             .unwrap()
             .unwrap();
@@ -1046,8 +1058,8 @@ mod tests {
             ("invited", bowser, Some(found.id))
         );
         assert_eq!(offered.rules_hash, found.rules_hash);
-        // Mario's Rematch takes it.
+        // Mario's Rematch takes it, and the set goes (both asked).
         let next = rematch(&pool, found.id, mario).await.unwrap().unwrap();
-        assert_eq!((next.id, next.stage()), (offered.id, "open"));
+        assert_eq!((next.id, next.stage()), (offered.id, "go"));
     }
 }
