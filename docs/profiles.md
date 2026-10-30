@@ -128,6 +128,23 @@ last online.
 | `POST /api/v1/friends` | `{"player_id": <id>}`, or `{"name": "<Discord username>"}` instead: adds them, and answers `{"friends": [...]}` as in `GET /api/v1/players`. One already there changes nothing. 400 for yourself, 404 for nobody of that name, 409 with the list full. |
 | `DELETE /api/v1/friends/<id>` | Removes them (one not there is no error) and answers the list the same way |
 
+## Chat
+
+Two players who keep each other as friends can write each other: one line of
+at most 300 characters per message (line breaks become spaces), at most 20
+messages a minute. `chat_messages` keeps them 30 days, with when the
+recipient's launcher showed them. They are not encrypted on the server: its
+operator can read them in the database.
+
+In the lists of `GET /api/v1/players`, a player has `chat` (the two keep each
+other), `unread` (their messages not shown yet) and, with `chat`, `discord_id`
+(for the launcher's link to their Discord profile; `null` for test players).
+
+| Route | |
+|---|---|
+| `GET /api/v1/chat/<id>` | `{"messages": [{"id", "mine", "body", "sent_at"}], "can_send": true}`: the latest 50 with player `<id>`, oldest first, or with `?after=<message id>` only later ones; theirs count as read now. `can_send` is whether the two keep each other. |
+| `POST /api/v1/chat/<id>` | `{"body": "..."}`: a message, 201 with it as above. 400 for an empty or too long one, 403 unless the two keep each other as friends, 429 after 20 in a minute. |
+
 ## Friend codes
 
 `POST /api/v1/wfc` with `{"profile_id": 1000000000, "login_ticket": "<lt>"}`:
