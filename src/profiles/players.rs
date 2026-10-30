@@ -230,6 +230,13 @@ pub struct Listed {
     /// Their last heartbeat in Unix seconds; none before the first.
     pub last_online: Option<i64>,
     pub friend: bool,
+    /// The two keep each other as friends: they can write each other
+    /// (docs/profiles.md, "Chat").
+    pub chat: bool,
+    /// Their messages the player has not read.
+    pub unread: i64,
+    /// Their Discord account id, for a friend the player can chat with.
+    pub discord_id: Option<String>,
 }
 
 /// Who has Recharged open, but `player_id`, by name.
@@ -285,7 +292,14 @@ pub(super) async fn listed(
                   extract(epoch FROM players.heartbeat_at)::bigint AS last_online,
                   EXISTS (SELECT 1 FROM friends
                           WHERE friends.player_id = $3 AND friends.friend_id = players.player_id)
-                      AS "friend!"
+                      AS "friend!",
+                  EXISTS (SELECT 1 FROM friends
+                          WHERE friends.player_id = players.player_id AND friends.friend_id = $3)
+                      AS "keeps_you!",
+                  (SELECT count(*) FROM chat_messages
+                   WHERE chat_messages.sender = players.player_id AND chat_messages.recipient = $3
+                     AND chat_messages.read_at IS NULL) AS "unread!",
+                  discord.external_id AS "discord_id?"
            FROM players
            LEFT JOIN player_identities discord
                   ON discord.player_id = players.player_id AND discord.provider = 'discord'
@@ -315,6 +329,11 @@ pub(super) async fn listed(
                 .then(|| Activity::from_header(row.activity.as_deref()).name()),
             last_online: row.last_online,
             friend: row.friend,
+            chat: row.friend && row.keeps_you,
+            unread: row.unread,
+            discord_id: (row.friend && row.keeps_you)
+                .then_some(row.discord_id)
+                .flatten(),
         })
         .collect();
     listed.sort_by_key(|entry| ids.iter().position(|id| *id == entry.player.id));

@@ -1,0 +1,37 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO chat_messages (sender, recipient, body) VALUES ($1, $2, $3)\n           RETURNING message_id, extract(epoch FROM sent_at)::bigint AS \"sent_at!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "message_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "chat_messages",
+            "name": "message_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "sent_at!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "b028c93e3a444ee053c7ebd2057d26e8f251efc9cf0c612ace79dbb26def5bfc"
+}

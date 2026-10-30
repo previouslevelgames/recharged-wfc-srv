@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE chat_messages SET read_at = now()\n         WHERE recipient = $1 AND sender = $2 AND read_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9c69710c81fd205b71f6967e3b4a7bf6bb0be0948fe6c9c8281af483b4de8a40"
+}

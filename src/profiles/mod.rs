@@ -14,6 +14,7 @@
 //! reports the games it played ([`play`]); two ready games find only each
 //! other in RANKED ([`crate::pairing`]).
 
+mod chat;
 mod config;
 mod discord;
 #[cfg(test)]
@@ -114,6 +115,10 @@ pub(crate) fn router(
         .route("/api/v1/players", get(play::players))
         .route("/api/v1/friends", post(play::add_friend))
         .route("/api/v1/friends/{id}", delete(play::remove_friend))
+        .route(
+            "/api/v1/chat/{id}",
+            get(play::chat_messages).post(play::send_chat),
+        )
         .route("/api/v1/matches/{id}/report", post(play::report))
         .route("/sign-in", get(sign_in_page))
         .route("/sign-in/test", post(page_test_sign_in))
