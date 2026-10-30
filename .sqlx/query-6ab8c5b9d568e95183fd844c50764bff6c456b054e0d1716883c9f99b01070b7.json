@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT match_id, state, home, away, rule_set, rules, rules_hash, winner, created_at\n         FROM matches\n         WHERE (home = $1 OR away = $1)\n           AND (state IN ('challenged', 'accepted') OR updated_at > now() - interval '1 hour')\n         ORDER BY state IN ('challenged', 'accepted') DESC, created_at DESC\n         LIMIT 1",
+  "query": "SELECT match_id, state, home, away, rule_set, rules, rules_hash, winner, created_at,\n                home_ready_at, away_ready_at, go_at, playing_at, rematch_of\n         FROM matches\n         WHERE (home = $1 OR away = $1)\n           AND (state IN ('challenged', 'accepted') OR updated_at > now() - interval '1 hour')\n         ORDER BY state IN ('challenged', 'accepted') DESC, created_at DESC\n         LIMIT 1",
   "describe": {
     "columns": [
       {
@@ -101,6 +101,61 @@
             "name": "created_at"
           }
         }
+      },
+      {
+        "ordinal": 9,
+        "name": "home_ready_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "home_ready_at"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "away_ready_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "away_ready_at"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "go_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "go_at"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "playing_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "playing_at"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "rematch_of",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "rematch_of"
+          }
+        }
       }
     ],
     "parameters": {
@@ -117,8 +172,13 @@
       false,
       false,
       true,
-      false
+      false,
+      true,
+      true,
+      true,
+      true,
+      true
     ]
   },
-  "hash": "e6831eee96dc2ccf45fc3ffd99ebd3645dbe7c50ac201618279dadbdb5b7bf5a"
+  "hash": "6ab8c5b9d568e95183fd844c50764bff6c456b054e0d1716883c9f99b01070b7"
 }

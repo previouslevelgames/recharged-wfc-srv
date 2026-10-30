@@ -298,5 +298,299 @@ async fn challenges_need_a_known_opponent(pool: PgPool) {
     let (_, current) = world
         .send("GET", "/api/v1/matches/current", &mario, Value::Null)
         .await;
-    assert_eq!(current, json!({"match": null}));
+    assert_eq!(current["match"], Value::Null);
+    assert_eq!(current["poll_interval"], 5);
+
+    // A player whose Recharged is closed can't be challenged.
+    world.sign_in("Luigi").await;
+    sqlx::query!("UPDATE players SET heartbeat_at = now() - interval '2 minutes'")
+        .execute(&world.pool)
+        .await
+        .unwrap();
+    let (status, body) = world
+        .send(
+            "POST",
+            "/api/v1/matches",
+            &mario,
+            json!({"opponent": "luigi", "rule_set": 1}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+}
+
+#[sqlx::test]
+async fn a_set_from_the_lobby_to_a_rematch(pool: PgPool) {
+    let world = World::new(pool);
+    let mario = world.sign_in("Mario").await;
+    let bowser = world.sign_in("Bowser").await;
+
+    // The lobby: Bowser has Recharged open; Mario challenges him from the
+    // list, by his player id.
+    let (status, lists) = world
+        .send("GET", "/api/v1/players", &mario, Value::Null)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let online = lists["online"].as_array().unwrap();
+    assert_eq!(online.len(), 1);
+    assert_eq!(online[0]["name"], "Bowser");
+    assert_eq!(
+        (&online[0]["online"], &online[0]["busy"]),
+        (&json!(true), &json!(false))
+    );
+    let (_, me) = world.send("GET", "/api/v1/me", &mario, Value::Null).await;
+    assert_eq!(me["discord_id"], Value::Null);
+    let (status, challenge) = world
+        .send(
+            "POST",
+            "/api/v1/matches",
+            &mario,
+            json!({"opponent_id": online[0]["id"], "rule_set": 2}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{challenge}");
+    assert_eq!(challenge["stage"], "invited");
+    let id = challenge["id"].as_i64().unwrap();
+    let post = |path: String, token: &str, body: Value| {
+        let world = &world;
+        let token = token.to_owned();
+        async move { world.send("POST", &path, &token, body).await }
+    };
+    post(format!("/api/v1/matches/{id}/accept"), &bowser, Value::Null).await;
+
+    // Both press Ready to play!: go.
+    let (status, open) = post(
+        format!("/api/v1/matches/{id}/ready-to-play"),
+        &bowser,
+        json!({"ready": true}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{open}");
+    assert_eq!(
+        (&open["stage"], &open["you_ready"], &open["opponent_ready"]),
+        (&json!("open"), &json!(true), &json!(false))
+    );
+    let (_, go) = post(
+        format!("/api/v1/matches/{id}/ready-to-play"),
+        &mario,
+        json!({"ready": true}),
+    )
+    .await;
+    assert_eq!(go["stage"], "go");
+    assert!(go["go_at"].is_i64());
+    let (_, current) = world
+        .send("GET", "/api/v1/matches/current", &bowser, Value::Null)
+        .await;
+    assert_eq!(
+        (&current["match"]["stage"], &current["poll_interval"]),
+        (&json!("go"), &json!(2))
+    );
+
+    // The games log in, prove it and meet: playing.
+    for (token, user, gsbrcd) in [(&mario, 1, "R4QEaaaaaaa"), (&bowser, 2, "R4QEbbbbbbb")] {
+        let pid = world.wfc_login(user, gsbrcd).await;
+        post(
+            "/api/v1/wfc".into(),
+            token,
+            json!({"profile_id": pid, "login_ticket": format!("ticket-{pid}")}),
+        )
+        .await;
+        let (status, ready) = post(
+            format!("/api/v1/matches/{id}/ready"),
+            token,
+            json!({"profile_id": pid, "rules_hash": go["rules_hash"]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{ready}");
+    }
+    let (_, current) = world
+        .send("GET", "/api/v1/matches/current", &mario, Value::Null)
+        .await;
+    assert_eq!(current["match"]["stage"], "playing");
+    assert_eq!(current["match"]["state"], "accepted");
+
+    // Both report the same series; then both ask for a rematch.
+    let report = games([2, 1], [3, 0]);
+    post(
+        format!("/api/v1/matches/{id}/report"),
+        &mario,
+        report.clone(),
+    )
+    .await;
+    let (_, finished) = post(
+        format!("/api/v1/matches/{id}/report"),
+        &bowser,
+        mirrored(&report),
+    )
+    .await;
+    assert_eq!(finished["stage"], "finished");
+    let (_, offered) = post(
+        format!("/api/v1/matches/{id}/rematch"),
+        &bowser,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(
+        (&offered["stage"], &offered["rematch_of"]),
+        (&json!("invited"), &json!(id))
+    );
+    let (_, again) = post(format!("/api/v1/matches/{id}/rematch"), &mario, Value::Null).await;
+    assert_eq!(
+        (&again["id"], &again["stage"]),
+        (&offered["id"], &json!("open"))
+    );
+    let (_, lists) = world
+        .send("GET", "/api/v1/players", &mario, Value::Null)
+        .await;
+    assert_eq!(lists["recent"][0]["name"], "Bowser");
+    assert_eq!(lists["online"][0]["busy"], true);
+
+    // Bowser closes Recharged: the set ends for Mario.
+    let bowser_id = again["opponent"]["id"].as_i64().unwrap();
+    sqlx::query!(
+        "UPDATE players SET heartbeat_at = now() - interval '2 minutes' WHERE player_id = $1",
+        bowser_id,
+    )
+    .execute(&world.pool)
+    .await
+    .unwrap();
+    let (_, current) = world
+        .send("GET", "/api/v1/matches/current", &mario, Value::Null)
+        .await;
+    assert_eq!(
+        (&current["match"]["stage"], &current["match"]["reason"]),
+        (&json!("dissolved"), &json!("dissolved"))
+    );
+}
+
+#[sqlx::test]
+async fn friends_come_from_challenges_and_follow_the_player(pool: PgPool) {
+    let world = World::new(pool);
+    let mario = world.sign_in("Mario").await;
+    let luigi = world.sign_in("Luigi").await;
+    let peach = world.sign_in("Peach").await;
+    let friends = |token: String| {
+        let world = &world;
+        async move {
+            let (status, lists) = world
+                .send("GET", "/api/v1/players", &token, Value::Null)
+                .await;
+            assert_eq!(status, StatusCode::OK, "{lists}");
+            lists["friends"].as_array().unwrap().clone()
+        }
+    };
+    let names = |list: &[Value]| -> Vec<String> {
+        list.iter()
+            .map(|friend| friend["name"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert!(friends(mario.clone()).await.is_empty());
+
+    // A challenge keeps its opponent; the one challenged keeps the
+    // challenger only once they accept.
+    let (status, challenge) = world
+        .send(
+            "POST",
+            "/api/v1/matches",
+            &mario,
+            json!({"opponent": "luigi", "rule_set": 1}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{challenge}");
+    assert_eq!(names(&friends(mario.clone()).await), ["Luigi"]);
+    assert!(friends(luigi.clone()).await.is_empty());
+    let id = challenge["id"].as_i64().unwrap();
+    world
+        .send(
+            "POST",
+            &format!("/api/v1/matches/{id}/accept"),
+            &luigi,
+            Value::Null,
+        )
+        .await;
+    let luigis = friends(luigi.clone()).await;
+    assert_eq!(names(&luigis), ["Mario"]);
+    assert_eq!(
+        (
+            &luigis[0]["online"],
+            &luigis[0]["busy"],
+            &luigis[0]["friend"]
+        ),
+        (&json!(true), &json!(true), &json!(true))
+    );
+    assert!(luigis[0]["last_online"].as_i64().unwrap() > 0);
+
+    // By hand: by name, then by id; online friends first, the others by
+    // when they were last online; the other lists mark friends.
+    let (status, added) = world
+        .send("POST", "/api/v1/friends", &mario, json!({"name": "PEACH"}))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{added}");
+    assert_eq!(
+        names(added["friends"].as_array().unwrap()),
+        ["Luigi", "Peach"]
+    );
+    sqlx::query(
+        "UPDATE players SET heartbeat_at = now() - interval '3 hours'
+         WHERE player_id = (SELECT player_id FROM player_identities WHERE lower(username) = 'luigi')",
+    )
+    .execute(&world.pool)
+    .await
+    .unwrap();
+    let marios = friends(mario.clone()).await;
+    assert_eq!(names(&marios), ["Peach", "Luigi"]);
+    assert_eq!(marios[1]["online"], json!(false));
+    let (_, lists) = world
+        .send("GET", "/api/v1/players", &mario, Value::Null)
+        .await;
+    assert_eq!(lists["online"][0]["name"], "Peach");
+    assert_eq!(lists["online"][0]["friend"], json!(true));
+    let (_, lists) = world
+        .send("GET", "/api/v1/players", &peach, Value::Null)
+        .await;
+    assert_eq!(lists["online"][0]["name"], "Mario");
+    assert_eq!(lists["online"][0]["friend"], json!(false));
+
+    // Adding again changes nothing; nobody adds themselves or an unknown name.
+    let peach_id = marios[0]["id"].as_i64().unwrap();
+    let (status, again) = world
+        .send(
+            "POST",
+            "/api/v1/friends",
+            &mario,
+            json!({"player_id": peach_id}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(again["friends"].as_array().unwrap().len(), 2);
+    for (body, expected) in [
+        (json!({"name": "mario"}), StatusCode::BAD_REQUEST),
+        (json!({"name": "wario"}), StatusCode::NOT_FOUND),
+        (json!({}), StatusCode::BAD_REQUEST),
+    ] {
+        let (status, answer) = world.send("POST", "/api/v1/friends", &mario, body).await;
+        assert_eq!(status, expected, "{answer}");
+    }
+
+    // Removing: gone, and gone again is no error.
+    for _ in 0..2 {
+        let (status, removed) = world
+            .send(
+                "DELETE",
+                &format!("/api/v1/friends/{peach_id}"),
+                &mario,
+                Value::Null,
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{removed}");
+        assert_eq!(names(removed["friends"].as_array().unwrap()), ["Luigi"]);
+    }
+    let (status, _) = world
+        .send(
+            "POST",
+            "/api/v1/friends",
+            "",
+            json!({"player_id": peach_id}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }

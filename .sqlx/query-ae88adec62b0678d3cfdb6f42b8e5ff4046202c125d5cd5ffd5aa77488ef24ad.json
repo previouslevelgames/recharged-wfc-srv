@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE players SET heartbeat_at = now() - make_interval(secs => $1)\n             WHERE player_id = ANY($2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Float8",
+        "Int8Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ae88adec62b0678d3cfdb6f42b8e5ff4046202c125d5cd5ffd5aa77488ef24ad"
+}

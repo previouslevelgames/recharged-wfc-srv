@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT opponent AS \"opponent!\" FROM (\n               SELECT CASE WHEN home = $1 THEN away ELSE home END AS opponent, updated_at\n               FROM matches\n               WHERE (home = $1 OR away = $1) AND state IN ('finished', 'disputed')\n           ) AS played\n           GROUP BY opponent\n           ORDER BY max(updated_at) DESC\n           LIMIT 10",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "opponent!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "9cbc3c3d6d00714daebce650d033d9467f1c2312e0a3d42e6119464bf91911f1"
+}
