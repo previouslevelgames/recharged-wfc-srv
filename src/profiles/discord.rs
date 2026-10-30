@@ -125,6 +125,136 @@ pub async fn exchange(
     user.account()
 }
 
+/// What the launcher trades for the Discord Social SDK's tokens
+/// (docs/profiles.md, "Discord friends").
+pub enum SdkGrant<'a> {
+    /// The code of the SDK's own authorization, which redirected to the
+    /// SDK's local web server at `redirect_uri`.
+    Code {
+        code: &'a str,
+        verifier: &'a str,
+        redirect_uri: &'a str,
+    },
+    /// The refresh token of an earlier trade.
+    Refresh { refresh_token: &'a str },
+}
+
+/// Whether `uri` is the redirect of the SDK's authorization: its local web
+/// server, `http://127.0.0.1[:port]/callback`.
+pub fn is_sdk_redirect(uri: &str) -> bool {
+    Url::parse(uri).is_ok_and(|url| {
+        url.scheme() == "http"
+            && url.host_str() == Some("127.0.0.1")
+            && url.path() == "/callback"
+            && url.query().is_none()
+            && url.fragment().is_none()
+            && url.username().is_empty()
+            && url.password().is_none()
+    })
+}
+
+/// The Discord Social SDK's tokens, as Discord's token endpoint gives them.
+#[derive(Debug, Deserialize, serde::Serialize)]
+pub struct SdkTokens {
+    pub access_token: String,
+    pub refresh_token: String,
+    pub expires_in: i64,
+    #[serde(default)]
+    pub scope: String,
+    /// The OpenID token (scope `openid`), which names the account. Not
+    /// passed on.
+    #[serde(default, skip_serializing)]
+    pub id_token: Option<String>,
+}
+
+impl SdkTokens {
+    /// The Discord account the tokens are for: the `sub` of the OpenID token.
+    /// The token comes straight from Discord's token endpoint over TLS, so
+    /// its claims are read without checking its signature (OpenID Connect
+    /// Core 1.0, 3.1.3.7).
+    pub fn account_id(&self) -> Option<String> {
+        #[derive(Deserialize)]
+        struct Claims {
+            sub: String,
+        }
+        let payload = self.id_token.as_deref()?.split('.').nth(1)?;
+        let claims = URL_SAFE_NO_PAD.decode(payload.trim_end_matches('=')).ok()?;
+        let claims: Claims = serde_json::from_slice(&claims).ok()?;
+        (claims.sub.parse::<u64>().is_ok() && claims.sub.len() <= MAX_ID_LEN).then_some(claims.sub)
+    }
+}
+
+/// Why a trade for the SDK's tokens failed.
+#[derive(Debug)]
+pub enum TokenError {
+    /// Discord refused the grant, e.g. `invalid_grant`: a used code, or a
+    /// refresh token whose link the user ended.
+    Refused(String),
+    /// Discord failed or could not be reached.
+    Failed(String),
+}
+
+impl fmt::Display for TokenError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Refused(detail) => write!(f, "Discord refused the grant: {detail}"),
+            Self::Failed(detail) => write!(f, "the token endpoint failed: {detail}"),
+        }
+    }
+}
+
+/// Trades `grant` with Discord's token endpoint, as the confidential client
+/// the SDK can't be.
+pub async fn sdk_tokens(
+    http: &reqwest::Client,
+    discord: &DiscordClient,
+    grant: SdkGrant<'_>,
+) -> Result<SdkTokens, TokenError> {
+    let mut form = vec![
+        ("client_id", discord.client_id.as_str()),
+        ("client_secret", discord.client_secret.as_str()),
+    ];
+    match grant {
+        SdkGrant::Code {
+            code,
+            verifier,
+            redirect_uri,
+        } => form.extend([
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("code_verifier", verifier),
+            ("redirect_uri", redirect_uri),
+        ]),
+        SdkGrant::Refresh { refresh_token } => form.extend([
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token),
+        ]),
+    }
+    let response = http
+        .post(discord.endpoints.token.clone())
+        .form(&form)
+        .send()
+        .await
+        .map_err(|error| TokenError::Failed(error.to_string()))?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        let body = body.split_whitespace().collect::<Vec<_>>().join(" ");
+        let detail = format!("{status}: {body}");
+        return Err(
+            if status.is_client_error() && status != StatusCode::TOO_MANY_REQUESTS {
+                TokenError::Refused(detail)
+            } else {
+                TokenError::Failed(detail)
+            },
+        );
+    }
+    response
+        .json()
+        .await
+        .map_err(|error| TokenError::Failed(error.to_string()))
+}
+
 /// The fields of Discord's user object that a sign-in keeps.
 #[derive(Deserialize)]
 struct User {
@@ -302,5 +432,47 @@ mod tests {
             Some("https://wfc.example.com/sign-in/discord/callback")
         );
         assert_eq!(get("state"), Some("state"));
+    }
+
+    #[test]
+    fn only_the_sdks_local_redirect_is_traded() {
+        for good in [
+            "http://127.0.0.1/callback",
+            "http://127.0.0.1:52411/callback",
+        ] {
+            assert!(is_sdk_redirect(good), "{good}");
+        }
+        for bad in [
+            "https://127.0.0.1/callback",
+            "http://localhost/callback",
+            "http://127.0.0.1.example.com/callback",
+            "http://127.0.0.1/sign-in/discord/callback",
+            "http://127.0.0.1/callback?next=evil",
+            "http://user@127.0.0.1/callback",
+            "not a url",
+        ] {
+            assert!(!is_sdk_redirect(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn the_openid_token_names_the_account() {
+        let tokens = |id_token: Option<String>| SdkTokens {
+            access_token: "a".into(),
+            refresh_token: "r".into(),
+            expires_in: 1,
+            scope: String::new(),
+            id_token,
+        };
+        let claims =
+            |claims: &str| Some(format!("e30.{}.signature", URL_SAFE_NO_PAD.encode(claims)));
+        assert_eq!(
+            tokens(claims(r#"{"sub":"80351110224678912"}"#)).account_id(),
+            Some("80351110224678912".into())
+        );
+        assert_eq!(tokens(None).account_id(), None);
+        assert_eq!(tokens(claims(r#"{"sub":"nelly"}"#)).account_id(), None);
+        assert_eq!(tokens(claims("not json")).account_id(), None);
+        assert_eq!(tokens(Some("no-dots".into())).account_id(), None);
     }
 }

@@ -272,6 +272,40 @@ pub async fn recent_opponents(pool: &PgPool, player_id: i64) -> Result<Vec<Liste
     listed(pool, player_id, &ids).await
 }
 
+/// The most Discord accounts one [`by_discord`] looks up.
+pub const MAX_DISCORD_LOOKUP: usize = 200;
+
+/// The players among the Discord accounts `discord_ids` (the launcher's
+/// Discord friends), but `viewer`, by name, each with its Discord account id.
+pub async fn by_discord(
+    pool: &PgPool,
+    viewer: i64,
+    discord_ids: &[String],
+) -> Result<Vec<Listed>, sqlx::Error> {
+    let rows = sqlx::query!(
+        "SELECT player_identities.player_id, player_identities.external_id
+         FROM player_identities
+         JOIN players ON players.player_id = player_identities.player_id
+         WHERE player_identities.provider = 'discord'
+           AND player_identities.external_id = ANY($1)
+           AND player_identities.player_id <> $2
+         ORDER BY lower(players.display_name), players.player_id",
+        discord_ids,
+        viewer,
+    )
+    .fetch_all(pool)
+    .await?;
+    let ids: Vec<i64> = rows.iter().map(|row| row.player_id).collect();
+    let mut found = listed(pool, viewer, &ids).await?;
+    for entry in &mut found {
+        entry.discord_id = rows
+            .iter()
+            .find(|row| row.player_id == entry.player.id)
+            .map(|row| row.external_id.clone());
+    }
+    Ok(found)
+}
+
 /// The players `ids`, in that order, as `viewer` sees them.
 pub(super) async fn listed(
     pool: &PgPool,
