@@ -80,7 +80,7 @@ days. The database keeps only the token's SHA-256.
 
 | Route | Answer |
 |---|---|
-| `GET /api/v1/server` | `{"version", "revision", "sign_in": {"discord": true, "test": false}}`, without a session: what the launcher can offer |
+| `GET /api/v1/server` | `{"version", "revision", "sign_in": {"discord": true, "test": false}, "discord_application": "<client id>"}`, without a session: what the launcher can offer (`discord_application` is `null` without Discord sign-in; see "Discord friends") |
 | `GET /api/v1/me` | the player, as in a sign-in, with `wfc` (see "Friend codes") and `discord_id`: the Discord account id (a string; `null` for test players), from which the launcher makes the player's Mii |
 | `POST /api/v1/sign-out` | 204; the session is closed |
 
@@ -144,6 +144,24 @@ other), `unread` (their messages not shown yet) and, with `chat`, `discord_id`
 |---|---|
 | `GET /api/v1/chat/<id>` | `{"messages": [{"id", "mine", "body", "sent_at"}], "can_send": true}`: the latest 50 with player `<id>`, oldest first, or with `?after=<message id>` only later ones; theirs count as read now. `can_send` is whether the two keep each other. |
 | `POST /api/v1/chat/<id>` | `{"body": "..."}`: a message, 201 with it as above. 400 for an empty or too long one, 403 unless the two keep each other as friends, 429 after 20 in a minute. |
+
+## Discord friends
+
+The launcher can show the player's Discord friends, with who is online and
+who plays Recharged, through the Discord Social SDK. It is a separate step
+after signing in: the SDK asks Discord for its own permission (the scopes
+`openid sdk.social_layer_presence`, for the application in
+`discord_application`) and then reads the friends list from Discord itself.
+The friends list never reaches the server. The server only does what the SDK
+can't do itself, as the confidential client that holds the secret: it trades
+the SDK's code (and later its refresh token) for tokens, and it tells which
+of the friends play Recharged. It keeps neither the tokens nor the IDs it
+was asked about.
+
+| Route | |
+|---|---|
+| `POST /api/v1/discord/token` | `{"code", "code_verifier", "redirect_uri"}` from the SDK's authorization, or `{"refresh_token"}` from an earlier answer: `{"access_token", "refresh_token", "expires_in", "scope"}` from Discord. The redirect must be the SDK's local web server, `http://127.0.0.1[:port]/callback` (add `http://127.0.0.1/callback` to the Discord app's redirects). 400 when Discord refuses (a used code, a link the user ended: connect again), 403 for another Discord account than the player signed in with, 404 without Discord sign-in, 502 when Discord can't be reached. |
+| `POST /api/v1/players/discord` | `{"ids": ["<Discord account id>", ...]}`, at most 200: `{"players": [...]}`, those of them who have signed in to Recharged (not the player), by name, as in `GET /api/v1/players`, each with its `discord_id`. |
 
 ## Friend codes
 

@@ -25,6 +25,7 @@ mod play;
 mod players;
 pub(crate) mod rules;
 mod sign_in;
+mod social;
 
 use std::{sync::Arc, time::Duration};
 
@@ -113,6 +114,8 @@ pub(crate) fn router(
         )
         .route("/api/v1/matches/{id}/rematch", post(play::rematch))
         .route("/api/v1/players", get(play::players))
+        .route("/api/v1/players/discord", post(social::players_by_discord))
+        .route("/api/v1/discord/token", post(social::discord_token))
         .route("/api/v1/friends", post(play::add_friend))
         .route("/api/v1/friends/{id}", delete(play::remove_friend))
         .route(
@@ -273,6 +276,9 @@ async fn server(State(state): State<Arc<ProfilesState>>) -> Response {
             "discord": state.config.discord.is_some(),
             "test": state.config.test_sign_in,
         },
+        // The launcher's Discord Social SDK signs in to this application
+        // (docs/profiles.md, "Discord friends").
+        "discord_application": state.config.discord.as_ref().map(|discord| &discord.client_id),
     }))
     .into_response()
 }

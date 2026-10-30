@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT player_identities.player_id, player_identities.external_id\n         FROM player_identities\n         JOIN players ON players.player_id = player_identities.player_id\n         WHERE player_identities.provider = 'discord'\n           AND player_identities.external_id = ANY($1)\n           AND player_identities.player_id <> $2\n         ORDER BY lower(players.display_name), players.player_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "player_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "player_identities",
+            "name": "player_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "external_id",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "player_identities",
+            "name": "external_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "5055bc2b42b8c1e7b68253a8d8debc966b3eecc88527e3920cc81af1cf57a1e7"
+}
