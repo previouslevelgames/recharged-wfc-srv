@@ -1,34 +1,25 @@
-/* The sign-in pages the launcher opens. Same tokens as /admin: light by
-   default, dark from the OS. */
+/* The sign-in pages the launcher opens, in the launcher's look: its header
+   art and logo, night blue, electric green and the logo's sky blue. Plain
+   CSS: the pages' Content-Security-Policy allows no fonts or scripts. */
 
 :root {
-  color-scheme: light;
-  --page: #f2f2ee;
-  --surface: #fcfcfb;
-  --surface-sunken: #f4f3ef;
-  --ink: #0b0b0b;
-  --muted: #6f6d68;
-  --border: rgba(11, 11, 11, 0.1);
-  --accent: #2a78d6;
+  color-scheme: dark;
+  --night: #070a12;
+  --card: #121929;
+  --field: #182135;
+  --border: #243048;
+  --text: #eaf0fa;
+  --soft: #c3cde0;
+  --muted: #8b97b0;
+  --dim: #5e6a83;
+  --green: #4cf07a;
+  --lime: #b6ff2b;
+  --blue: #4dbdff;
+  --green-ink: #06210f;
+  --danger: #ff5a6a;
   --discord: #5865f2;
-  --critical: #d03b3b;
-  --shadow: 0 1px 2px rgba(11, 11, 11, 0.04), 0 4px 16px rgba(11, 11, 11, 0.04);
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    color-scheme: dark;
-    --page: #0d0d0d;
-    --surface: #1a1a19;
-    --surface-sunken: #222220;
-    --ink: #f0efec;
-    --muted: #9a9890;
-    --border: rgba(255, 255, 255, 0.1);
-    --accent: #3987e5;
-    --shadow: none;
-  }
 }
 
 *,
@@ -37,59 +28,117 @@
   box-sizing: border-box;
 }
 
+html {
+  background: var(--night);
+}
+
+/* The stadium at night: floodlights at the top, a green glow below. */
 body {
+  position: relative;
+  isolation: isolate;
   margin: 0;
   min-height: 100vh;
-  display: grid;
-  place-items: center;
-  padding: 24px 16px;
-  background: var(--page);
-  color: var(--ink);
-  font: 15px/1.5 var(--sans);
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 32px 16px;
+  overflow-x: hidden;
+  background:
+    radial-gradient(55% 40% at 10% -6%, rgba(77, 189, 255, 0.24), transparent 70%),
+    radial-gradient(55% 40% at 90% -6%, rgba(77, 189, 255, 0.18), transparent 70%),
+    radial-gradient(80% 55% at 50% 112%, rgba(76, 240, 122, 0.22), transparent 70%),
+    var(--night);
+  color: var(--text);
+  font: 15px/1.55 var(--sans);
 }
 
 .card {
+  position: relative;
   width: 100%;
-  max-width: 420px;
-  padding: 32px 28px;
+  max-width: 440px;
+  padding: 26px 28px 30px;
   border: 1px solid var(--border);
-  border-radius: 16px;
-  background: var(--surface);
-  box-shadow: var(--shadow);
+  border-radius: 20px;
+  background: linear-gradient(180deg, rgba(24, 33, 53, 0.94), rgba(13, 19, 32, 0.96));
+  box-shadow:
+    0 0 0 1px rgba(77, 189, 255, 0.05),
+    0 24px 64px rgba(0, 0, 0, 0.55),
+    0 0 90px rgba(76, 240, 122, 0.07);
   text-align: center;
+  animation: arrive 0.45s cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 
-.brand-mark {
-  display: inline-grid;
-  place-items: center;
-  width: 48px;
-  height: 48px;
-  border-radius: 14px;
-  background: var(--accent);
+/* The charged edge along the card's top. */
+.card::before {
+  content: "";
+  position: absolute;
+  top: -1px;
+  left: 28px;
+  right: 28px;
+  height: 2px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, transparent, var(--green), var(--lime), var(--blue), transparent);
+  box-shadow: 0 0 18px rgba(76, 240, 122, 0.55);
 }
 
-.brand-mark svg {
-  width: 26px;
-  height: 26px;
-  fill: #fff;
+.card.failed::before {
+  background: linear-gradient(90deg, transparent, #ffb443, var(--danger), transparent);
+  box-shadow: 0 0 18px rgba(255, 90, 106, 0.45);
 }
 
+/* The launcher's header art across the top, fading into the night. */
+.scene {
+  position: absolute;
+  z-index: -1;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: min(78vh, 720px);
+  background:
+    linear-gradient(to bottom, rgba(7, 10, 18, 0.1), rgba(7, 10, 18, 0.55) 55%, var(--night) 97%),
+    radial-gradient(45% 55% at 50% 42%, rgba(7, 10, 18, 0.6), transparent 75%),
+    url("/sign-in/header.webp") 74% 28% / cover no-repeat;
+  pointer-events: none;
+  animation: dawn 1.2s ease-out both;
+}
+
+.brand {
+  position: relative;
+  margin-bottom: -6px;
+}
+
+.logo {
+  display: block;
+  width: clamp(230px, 64vw, 340px);
+  height: auto;
+  filter: drop-shadow(0 6px 24px rgba(0, 0, 0, 0.7)) drop-shadow(0 0 18px rgba(77, 189, 255, 0.25));
+  animation: arrive 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
+/* A test server's label, stuck on the logo's corner. */
+.brand .server-label {
+  position: absolute;
+  top: 2px;
+  right: -10px;
+  transform: rotate(6deg);
+}
 h1 {
-  margin: 16px 0 8px;
-  font-size: 22px;
+  margin: 0 0 6px;
+  font-size: 27px;
+  font-weight: 800;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
 }
 
 p {
-  margin: 12px 0;
+  margin: 0 0 14px;
 }
 
-.code {
-  margin: 16px 0;
-  padding: 12px;
-  border-radius: 10px;
-  background: var(--surface-sunken);
-  font: 600 28px/1.2 var(--mono);
-  letter-spacing: 0.08em;
+.lead {
+  color: var(--soft);
 }
 
 .hint {
@@ -97,37 +146,138 @@ p {
   font-size: 13px;
 }
 
-.notice {
-  color: var(--critical);
+b {
+  color: var(--text);
+}
+
+/* The sign-in code, one tile per character, like a scoreboard. */
+.code {
+  display: flex;
+  justify-content: center;
+  gap: 5px;
+  margin: 20px 0 14px;
+}
+
+.code span {
+  display: grid;
+  place-items: center;
+  width: clamp(25px, 7.4vw, 38px);
+  height: clamp(38px, 11vw, 50px);
+  border: 1px solid #2c3a57;
+  border-radius: 9px;
+  background: linear-gradient(180deg, #1c2842, #101828);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 6px 14px rgba(0, 0, 0, 0.35);
+  color: var(--lime);
+  font: 700 clamp(19px, 5.6vw, 26px)/1 var(--mono);
+  text-shadow: 0 0 12px rgba(182, 255, 43, 0.45);
+}
+
+.code .dash {
+  width: 12px;
+  border: 0;
+  background: none;
+  box-shadow: none;
+}
+
+.code .dash::before {
+  content: "";
+  width: 10px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--dim);
 }
 
 .button,
 button {
-  display: inline-block;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
   width: 100%;
-  padding: 11px 16px;
+  margin-top: 22px;
+  padding: 13px 18px;
   border: 0;
-  border-radius: 10px;
-  background: var(--accent);
-  color: #fff;
-  font: 600 15px/1.3 var(--sans);
+  border-radius: 12px;
+  font: 700 15px/1.2 var(--sans);
   text-decoration: none;
   cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s, filter 0.15s;
+}
+
+.button:hover,
+button:hover {
+  transform: translateY(-1px);
+  filter: brightness(1.08);
+}
+
+.button:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 3px;
 }
 
 .button.discord {
   background: var(--discord);
+  color: #fff;
+  box-shadow: 0 8px 24px rgba(88, 101, 242, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.18);
 }
 
-form {
-  margin-top: 20px;
-  padding-top: 20px;
-  border-top: 1px solid var(--border);
+.button.discord:hover {
+  box-shadow: 0 12px 30px rgba(88, 101, 242, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
+.button svg {
+  width: 22px;
+  height: 17px;
+  fill: #fff;
+}
+
+button {
+  background: linear-gradient(180deg, var(--lime), var(--green));
+  color: var(--green-ink);
+  box-shadow: 0 8px 24px rgba(76, 240, 122, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+
+/* The test server's sign-in by name, set apart from the real one. */
+.test-only {
+  margin-top: 24px;
+  padding: 16px;
+  border: 1px dashed rgba(255, 180, 67, 0.45);
+  border-radius: 14px;
+  background: rgba(255, 180, 67, 0.05);
+  text-align: left;
+}
+
+.test-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 4px;
+  font-weight: 700;
+}
+
+.tag {
+  padding: 1px 7px;
+  border-radius: 5px;
+  background: rgba(255, 180, 67, 0.16);
+  color: #ffb443;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.test-only button {
+  margin-top: 0;
+  border: 1px solid var(--border);
+  background: var(--field);
+  color: var(--text);
+  box-shadow: none;
 }
 
 label {
   display: block;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
   color: var(--muted);
   font-size: 13px;
   text-align: left;
@@ -136,11 +286,226 @@ label {
 input {
   display: block;
   width: 100%;
-  margin-top: 4px;
-  padding: 9px 11px;
+  margin-top: 6px;
+  padding: 11px 12px;
   border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface-sunken);
-  color: var(--ink);
+  border-radius: 10px;
+  background: var(--field);
+  color: var(--text);
   font: 15px/1.3 var(--sans);
+}
+
+input:focus {
+  border-color: var(--green);
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(76, 240, 122, 0.18);
+}
+
+/* Above the title: the player's picture once signed in, or what went wrong. */
+.hero {
+  margin: 0 auto 18px;
+}
+
+.avatar {
+  position: relative;
+  width: 96px;
+  height: 96px;
+  padding: 4px;
+  border-radius: 50%;
+  background: conic-gradient(from 200deg, var(--green), var(--lime), var(--blue), var(--green));
+  box-shadow: 0 0 34px rgba(76, 240, 122, 0.35);
+  animation: pop 0.5s 0.15s cubic-bezier(0.2, 0.9, 0.3, 1.3) both;
+}
+
+.avatar img,
+.avatar .initial {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  border: 3px solid var(--card);
+  border-radius: 50%;
+  background: var(--field);
+  object-fit: cover;
+  color: var(--green);
+  font-size: 36px;
+  font-weight: 800;
+}
+
+.avatar .check {
+  position: absolute;
+  right: -2px;
+  bottom: -2px;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 3px solid var(--card);
+  border-radius: 50%;
+  background: var(--green);
+}
+
+.check svg,
+.problem svg {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.check svg {
+  width: 16px;
+  height: 16px;
+  stroke: var(--green-ink);
+  stroke-width: 3.2;
+}
+
+.problem {
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  border: 1px solid rgba(255, 90, 106, 0.45);
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 90, 106, 0.2), rgba(255, 90, 106, 0.05));
+  box-shadow: 0 0 28px rgba(255, 90, 106, 0.25);
+}
+
+.problem svg {
+  width: 30px;
+  height: 30px;
+  stroke: var(--danger);
+  stroke-width: 2.6;
+}
+
+/* On the signed-in page: the launcher picks the sign-in up by itself. */
+.linked {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 20px 0 16px;
+  padding: 12px 16px 12px 12px;
+  border: 1px solid rgba(76, 240, 122, 0.35);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(76, 240, 122, 0.11), rgba(76, 240, 122, 0.04));
+  text-align: left;
+}
+
+.linked-icon {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 11px;
+  background: rgba(76, 240, 122, 0.14);
+}
+
+.linked-icon svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: var(--green);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.linked-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.linked-text b {
+  font-size: 15px;
+}
+
+.live {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 10px rgba(76, 240, 122, 0.8);
+  animation: live 1.8s ease-out infinite;
+}
+
+.notice {
+  color: #ffd2d7;
+}
+
+.footnote {
+  margin: 0;
+  color: var(--dim);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+/* SERVER_LABEL's badge, e.g. DEV: a test server's pages. */
+.server-label {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: #c2410c;
+  box-shadow: 0 0 14px rgba(194, 65, 12, 0.5);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 1.5;
+}
+
+@keyframes arrive {
+  from {
+    opacity: 0;
+    transform: translateY(12px) scale(0.98);
+  }
+}
+
+@keyframes dawn {
+  from {
+    opacity: 0;
+    transform: scale(1.04);
+  }
+}
+
+@keyframes live {
+  0% {
+    box-shadow: 0 0 0 0 rgba(76, 240, 122, 0.6);
+  }
+
+  100% {
+    box-shadow: 0 0 0 10px rgba(76, 240, 122, 0);
+  }
+}
+
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: scale(0.7);
+  }
+}
+
+@media (max-width: 420px) {
+  .card {
+    padding: 24px 18px 26px;
+  }
+
+  h1 {
+    font-size: 24px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
 }

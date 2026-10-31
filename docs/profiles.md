@@ -17,7 +17,7 @@ The service is off unless it is configured, and the routes below then answer
 | `PUBLIC_URL` | The address launchers and browsers use, without a path, e.g. `https://wfc.example.com`, shared with `/admin`. Plain `http://` works only on a local network, for a test server. |
 | `DISCORD_CLIENT_ID` | The Discord app's client ID (Discord Developer Portal → the app → **OAuth2**). |
 | `DISCORD_CLIENT_SECRET` | Its client secret, from the same page. Set **Password Mask: Yes**. |
-| `PROFILES_TEST_SIGN_IN` | `true` lets anyone sign in with a name alone, so a second game on one PC has a player of its own. **Only on a local or test server.** |
+| `PROFILES_TEST_SIGN_IN` | `true` lets anyone sign in with a name alone, so a second game on one PC has a player of its own. **Only on a local or test server.** An owner can switch it on or off on the admin dashboard's **Maintenance** page instead; that switch wins from then on. |
 
 Discord, test sign-in, or both turn the service on, and then `PUBLIC_URL` is
 needed too. In the Discord app, add the redirect
@@ -70,7 +70,9 @@ starts again.
 On a test server, `POST /api/v1/sign-in/test` with `{"name": "Mario"}`
 signs in at once and answers like a sign-in that ended. A test name has 1 to
 16 letters, digits, `-` or `_`; the same name in other letters is the same
-player. 403 without `PROFILES_TEST_SIGN_IN`.
+player. 403 while test sign-in is off. The sign-in page shows it in a box of
+its own, marked as a test server's, below Discord: a test player has no
+Discord account, so no Discord friends, and nobody finds it by Discord name.
 
 ## Sessions
 
@@ -116,12 +118,14 @@ online are separate ([reports.md](reports.md)).
 ## Friends
 
 Each player keeps a list of friends on the server, so it follows them to
-every computer they sign in on. It is their own list, without requests: a
-challenge adds its opponent, accepting a challenge adds the challenger, and the
-launcher adds and removes players by hand. The players of earlier sets came in
-the same way when the list began. A list holds at most 200 friends. The
-launcher shows them online first, by name, then the others by when they were
-last online.
+every computer they sign in on. It is their own list, without requests: the
+player adds and removes players by hand in the launcher. Playing someone does
+not make them a friend: they show among the players last played with
+(`recent` in `GET /api/v1/players`) until the player adds them. Up to 1.2.0 a
+challenge added its opponent and an accept the challenger, and the players of
+earlier sets came in when the list began; those stay friends until removed. A
+list holds at most 200 friends. The launcher shows them online first, by name,
+then the others by when they were last online.
 
 | Route | |
 |---|---|

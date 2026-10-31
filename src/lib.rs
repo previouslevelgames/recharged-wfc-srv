@@ -19,6 +19,7 @@ pub mod profiles;
 pub mod relay;
 mod reports;
 mod serverbrowser;
+mod switches;
 
 pub const REVISION: &str = env!("BUILD_REVISION");
 /// The release, from `Cargo.toml`.
@@ -79,6 +80,8 @@ impl App {
             .merge(nas::router(self.pool.clone(), self.tickets.clone()))
             .merge(gamestats::router(self.pool.clone(), self.gpcm.clone()))
             .merge(reports::router(self.pool.clone(), self.gpcm.clone()));
+        // The Maintenance page switches test sign-in while profiles run.
+        let test_sign_in = profiles.as_ref().map(|config| config.test_sign_in);
         if let Some(config) = admin {
             router = router.merge(admin::router(
                 self.pool.clone(),
@@ -86,6 +89,7 @@ impl App {
                 self.master.clone(),
                 self.activity.clone(),
                 config,
+                test_sign_in,
             ));
         }
         if let Some(config) = profiles {
