@@ -136,10 +136,11 @@ other.
 ## Mii profiles
 
 The game's own online players without a Recharged launcher show in the
-launcher by their Mii, never by a friend code: the WFC profiles logged in to
-GPCM, as `{"profile_id", "mii", "game", "online", "status", "last_online",
-"friend"}`. `mii` is the Mii name of the profile's last login, `game` the
-release (`R4QE`, `R4QP`, `R4QJ`, `R4QK`), `status` while logged in what the
+launcher by their Mii and friend code: the WFC profiles logged in to GPCM, as
+`{"profile_id", "mii", "game", "friend_code", "online", "status",
+"last_online", "friend"}`. `mii` is the Mii name of the profile's last login,
+`game` the release (`R4QE`, `R4QP`, `R4QJ`, `R4QK`), `friend_code` the code
+the game shows for it (`0868-9934-5920`), `status` while logged in what the
 game does (`menu`, `matchmaking` or `match`, from DWC's status) and
 `last_online` the last login in Unix seconds.
 

@@ -1,6 +1,7 @@
 //! The game's own online players as Mii profiles (docs/profiles.md, "Mii
 //! profiles"): the WFC profiles logged in to the game without a Recharged
-//! launcher, shown by their Mii name, and the ones a player keeps as friends.
+//! launcher, shown by their Mii name and friend code, and the ones a player
+//! keeps as friends.
 
 use std::collections::HashMap;
 
@@ -13,7 +14,7 @@ use crate::gpcm::Presence;
 /// The game's online players shown at most.
 const MAX_ONLINE: usize = 100;
 
-/// A WFC profile, as the launcher shows it: no friend code, only the Mii.
+/// A WFC profile, as the launcher shows it: its Mii and friend code.
 #[derive(Debug, PartialEq, Serialize)]
 pub struct MiiProfile {
     pub profile_id: i32,
@@ -21,6 +22,8 @@ pub struct MiiProfile {
     pub mii: Option<String>,
     /// The release: R4QE, R4QP, R4QJ or R4QK.
     pub game: String,
+    /// As the game shows it, for that release.
+    pub friend_code: String,
     pub online: bool,
     /// While logged in, what its game does: `menu`, `matchmaking` or
     /// `match`, from DWC's status.
@@ -57,10 +60,12 @@ async fn profiles(
         .filter_map(|id| rows.iter().find(|row| row.profile_id == *id))
         .map(|row| {
             let logged_in = presence.get(&row.profile_id);
+            let game: String = row.gsbrcd.chars().take(4).collect();
             MiiProfile {
                 profile_id: row.profile_id,
                 mii: row.ingamesn.clone().filter(|name| !name.is_empty()),
-                game: row.gsbrcd.chars().take(4).collect(),
+                friend_code: crate::accounts::friend_code(row.profile_id, &game),
+                game,
                 online: logged_in.is_some(),
                 status: logged_in.map(status),
                 last_online: logged_in
@@ -253,6 +258,10 @@ mod tests {
         assert_eq!(
             (game[1].game.as_str(), game[1].online, game[1].friend),
             ("R4QP", true, false)
+        );
+        assert_eq!(
+            game[1].friend_code,
+            crate::accounts::friend_code(kiki, "R4QP")
         );
 
         // A Mii friend leaves that list for the friends'.
