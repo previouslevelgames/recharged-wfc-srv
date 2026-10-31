@@ -209,10 +209,44 @@ pub(super) async fn players(
         Ok(recent) => recent,
         Err(error) => return database_error(error),
     };
+    // The players available for random games, only for one who is too.
+    let available = match players::available(&state.pool, player.id).await {
+        Ok(true) => match players::available_now(&state.pool, player.id).await {
+            Ok(available) => available,
+            Err(error) => return database_error(error),
+        },
+        Ok(false) => Vec::new(),
+        Err(error) => return database_error(error),
+    };
     match friends::list(&state.pool, player.id).await {
-        Ok(friends) => {
-            Json(json!({ "online": online, "recent": recent, "friends": friends })).into_response()
-        }
+        Ok(friends) => Json(json!({
+            "online": online,
+            "recent": recent,
+            "friends": friends,
+            "available": available,
+        }))
+        .into_response(),
+        Err(error) => database_error(error),
+    }
+}
+
+#[derive(Deserialize)]
+pub(super) struct Available {
+    available: bool,
+}
+
+/// Switches the player's availability for random games.
+pub(super) async fn set_available(
+    State(state): State<Arc<ProfilesState>>,
+    headers: HeaderMap,
+    Json(request): Json<Available>,
+) -> Response {
+    let player = match state.signed_in(&headers).await {
+        Ok(player) => player,
+        Err(response) => return response,
+    };
+    match players::set_available(&state.pool, player.id, request.available).await {
+        Ok(()) => Json(json!({ "available": request.available })).into_response(),
         Err(error) => database_error(error),
     }
 }

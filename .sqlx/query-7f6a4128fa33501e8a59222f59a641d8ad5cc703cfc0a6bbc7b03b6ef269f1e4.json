@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT available FROM players WHERE player_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "available",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "available"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "7f6a4128fa33501e8a59222f59a641d8ad5cc703cfc0a6bbc7b03b6ef269f1e4"
+}

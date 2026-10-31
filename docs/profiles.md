@@ -122,6 +122,17 @@ proven theirs, `rule_sets` the rules, `matches` and `match_reports` the
 matches and what each game reported. The series every Recharged build reports
 online are separate ([reports.md](reports.md)).
 
+## Available for random games
+
+A player can make themselves available for random games
+(`players.available`, off by default). `PUT /api/v1/me/available` with
+`{"available": true}` (or `false`) switches it and answers the same;
+`GET /api/v1/me` has it as `available`. While a player is available,
+`available` in `GET /api/v1/players` lists the other available players who
+have Recharged open (at most 100, by name, as the other lists show players);
+for a player who isn't, it is empty. So only those who take part see each
+other.
+
 ## Friends
 
 Each player keeps a list of friends on the server, so it follows them to
