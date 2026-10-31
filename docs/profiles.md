@@ -24,14 +24,16 @@ needed too. In the Discord app, add the redirect
 `<PUBLIC_URL>/sign-in/discord/callback` under **OAuth2 → Redirects**, e.g.
 `https://wfc.example.com/sign-in/discord/callback`, or
 `http://127.0.0.1:8080/sign-in/discord/callback` for a server on your own
-computer. The sign-in asks only for `identify`: the Discord user's id,
-username, display name and avatar.
+computer. The sign-in asks for `identify` (the Discord user's id, username,
+display name and avatar) and for the Discord Social SDK's
+`openid sdk.social_layer_presence`, for the launcher's Discord friends (see
+"Discord friends"), so the Discord app needs the Social SDK switched on in
+the Developer Portal.
 
 ## Signing in
 
-The launcher never sees a password or a Discord token, and needs no local web
-server: it opens a page in the browser and asks the server until the
-sign-in ends.
+The launcher never sees a password and needs no local web server: it opens a
+page in the browser and asks the server until the sign-in ends.
 
 1. `POST /api/v1/sign-in` starts a sign-in:
 
@@ -58,11 +60,16 @@ sign-in ends.
    ```json
    {"status": "signed_in", "token": "<43 characters>",
     "player": {"id": 7, "name": "Nelly", "avatar_url": "https://cdn.discordapp.com/…",
-               "discord": "nelly", "test": false}}
+               "discord": "nelly", "test": false},
+    "discord": {"access_token": "…", "refresh_token": "…", "expires_in": 604800,
+                "scope": "identify openid sdk.social_layer_presence"}}
    ```
 
    or `{"status": "refused", "message": "Sign-in was cancelled."}`. After
-   that, or 10 minutes after it began, it is 404.
+   that, or 10 minutes after it began, it is 404. `discord` comes with a
+   Discord sign-in that Discord granted the SDK's scopes: Discord's tokens for
+   the launcher's Discord friends, kept in memory with the sign-in until this
+   answer and not after.
 
 Sign-ins wait in the server's memory; a restart drops them, and the launcher
 starts again.
@@ -152,10 +159,12 @@ other), `unread` (their messages not shown yet) and, with `chat`, `discord_id`
 ## Discord friends
 
 The launcher can show the player's Discord friends, with who is online and
-who plays Recharged, through the Discord Social SDK. It is a separate step
-after signing in: the SDK asks Discord for its own permission (the scopes
+who plays Recharged, through the Discord Social SDK. Signing in with Discord
+already gives the SDK's permission (the scopes
 `openid sdk.social_layer_presence`, for the application in
-`discord_application`) and then reads the friends list from Discord itself.
+`discord_application`): the sign-in's answer hands the launcher Discord's
+tokens, and the SDK then reads the friends list from Discord itself. A player
+who signed in earlier connects with the SDK's own authorization instead.
 The friends list never reaches the server. The server only does what the SDK
 can't do itself, as the confidential client that holds the secret: it trades
 the SDK's code (and later its refresh token) for tokens, and it tells which

@@ -214,14 +214,21 @@ impl ProfilesState {
         Ok((player_id, token))
     }
 
-    /// Ends the sign-in `id` with a session for `identity`.
-    async fn finish(&self, id: &str, identity: &Identity<'_>) -> Result<bool, sqlx::Error> {
+    /// Ends the sign-in `id` with a session for `identity`, and the Discord
+    /// Social SDK's tokens for the launcher.
+    async fn finish(
+        &self,
+        id: &str,
+        identity: &Identity<'_>,
+        discord: Option<discord::SdkTokens>,
+    ) -> Result<bool, sqlx::Error> {
         let (player_id, token) = self.open(identity).await?;
         if self.sign_ins.finish(
             id,
             Outcome::SignedIn {
                 token: token.clone(),
                 player_id,
+                discord,
             },
         ) {
             return Ok(true);
@@ -231,13 +238,13 @@ impl ProfilesState {
         Ok(false)
     }
 
-    /// The Discord callback: the sign-in it ends and the account, or why
-    /// not. A sign-in found but refused is ended with the reason, which the
-    /// launcher then shows too.
+    /// The Discord callback: the sign-in it ends, the account and the SDK's
+    /// tokens, or why not. A sign-in found but refused is ended with the
+    /// reason, which the launcher then shows too.
     async fn discord_account(
         &self,
         params: CallbackParams,
-    ) -> Result<(String, discord::Account), SignInError> {
+    ) -> Result<(String, discord::Account, Option<discord::SdkTokens>), SignInError> {
         let (id, authorization) = params
             .state
             .as_deref()
@@ -260,7 +267,7 @@ impl ProfilesState {
             .as_ref()
             .expect("the route needs Discord");
         match discord::exchange(&self.http, &self.config, discord, &authorization, &code).await {
-            Ok(account) => Ok((id, account)),
+            Ok((account, tokens)) => Ok((id, account, tokens)),
             Err(error) => Err(refuse(error)),
         }
     }
@@ -376,13 +383,15 @@ async fn start_sign_in(State(state): State<Arc<ProfilesState>>) -> Response {
 async fn poll_sign_in(State(state): State<Arc<ProfilesState>>, Path(id): Path<String>) -> Response {
     match state.sign_ins.poll(&id) {
         Poll::Waiting => Json(json!({ "status": "waiting" })).into_response(),
-        Poll::Ended(Outcome::SignedIn { token, player_id }) => {
-            match players::player(&state.pool, player_id).await {
-                Ok(Some(player)) => signed_in(&token, &player),
-                Ok(None) => json_error(StatusCode::NOT_FOUND, "unknown sign-in"),
-                Err(error) => database_error(error),
-            }
-        }
+        Poll::Ended(Outcome::SignedIn {
+            token,
+            player_id,
+            discord,
+        }) => match players::player(&state.pool, player_id).await {
+            Ok(Some(player)) => signed_in(&token, &player, discord.as_ref()),
+            Ok(None) => json_error(StatusCode::NOT_FOUND, "unknown sign-in"),
+            Err(error) => database_error(error),
+        },
         Poll::Ended(Outcome::Refused(message)) => {
             Json(json!({ "status": "refused", "message": message })).into_response()
         }
@@ -390,8 +399,14 @@ async fn poll_sign_in(State(state): State<Arc<ProfilesState>>, Path(id): Path<St
     }
 }
 
-fn signed_in(token: &str, player: &Player) -> Response {
-    Json(json!({ "status": "signed_in", "token": token, "player": player })).into_response()
+/// The launcher's session; with `discord`, the Discord Social SDK's tokens,
+/// which connect its Discord friends without a second authorization.
+fn signed_in(token: &str, player: &Player, discord: Option<&discord::SdkTokens>) -> Response {
+    let mut body = json!({ "status": "signed_in", "token": token, "player": player });
+    if let Some(tokens) = discord {
+        body["discord"] = json!(tokens);
+    }
+    Json(body).into_response()
 }
 
 #[derive(Deserialize)]
@@ -416,7 +431,7 @@ async fn api_test_sign_in(
     let external_id = name.to_lowercase();
     match state.open(&test_identity(&name, &external_id)).await {
         Ok((player_id, token)) => match players::player(&state.pool, player_id).await {
-            Ok(Some(player)) => signed_in(&token, &player),
+            Ok(Some(player)) => signed_in(&token, &player, None),
             Ok(None) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "the player went away"),
             Err(error) => database_error(error),
         },
@@ -534,7 +549,7 @@ async fn discord_callback(
     State(state): State<Arc<ProfilesState>>,
     Query(params): Query<CallbackParams>,
 ) -> Response {
-    let (id, account) = match state.discord_account(params).await {
+    let (id, account, tokens) = match state.discord_account(params).await {
         Ok(found) => found,
         Err(error) => {
             warn!(target: "profiles", %error, "Discord sign-in refused");
@@ -548,7 +563,7 @@ async fn discord_callback(
         display_name: &account.display_name,
         avatar_url: Some(&account.avatar_url),
     };
-    match state.finish(&id, &identity).await {
+    match state.finish(&id, &identity, tokens).await {
         Ok(true) => state.signed_in_page(&account.display_name, Some(&account.avatar_url)),
         Ok(false) => state.notice_page(StatusCode::NOT_FOUND, &SignInError::Expired.message()),
         Err(error) => {
@@ -586,7 +601,7 @@ async fn page_test_sign_in(
     }
     let external_id = name.to_lowercase();
     match state
-        .finish(&form.id, &test_identity(&name, &external_id))
+        .finish(&form.id, &test_identity(&name, &external_id), None)
         .await
     {
         Ok(true) => state.signed_in_page(&name, None),

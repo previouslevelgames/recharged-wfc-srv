@@ -1,12 +1,14 @@
 //! Discord sign-in: OAuth2's authorization code flow with PKCE and the
-//! `identify` scope, which gives the user's id, username, display name and
-//! avatar, and nothing else.
+//! [`SCOPES`]: `identify`, which gives the user's id, username, display name
+//! and avatar, and the Discord Social SDK's presence scopes, for the
+//! launcher's Discord friends.
 //!
 //! The launcher's sign-in page sends the browser to Discord with a fresh
 //! [`Authorization`], kept with the sign-in ([`super::sign_in`]). Discord
 //! sends the browser back to `/sign-in/discord/callback` with a code, which
-//! [`exchange`] trades for the user. The access token is used once and
-//! forgotten.
+//! [`exchange`] trades for the user and the SDK's tokens. The tokens wait in
+//! memory with the sign-in until the launcher picks it up, and are then
+//! forgotten (docs/profiles.md, "Discord friends").
 
 use std::fmt;
 
@@ -18,6 +20,13 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
 use super::config::{Config, DiscordClient};
+
+/// What the sign-in asks Discord for: the account, and the Discord Social
+/// SDK's presence scopes (its `Client::GetDefaultPresenceScopes`), so that
+/// the launcher's Discord friends need no second authorization.
+pub const SCOPES: &str = "identify openid sdk.social_layer_presence";
+/// The SDK's scope the tokens must have to be passed on.
+const SDK_SCOPE: &str = "sdk.social_layer";
 
 /// Alphanumeric secrets of ~256 bits; also the shortest PKCE verifier.
 const SECRET_LEN: usize = 43;
@@ -50,7 +59,7 @@ impl Authorization {
             .append_pair("client_id", &discord.client_id)
             .append_pair("redirect_uri", &config.discord_redirect_uri())
             .append_pair("response_type", "code")
-            .append_pair("scope", "identify")
+            .append_pair("scope", SCOPES)
             .append_pair("state", &self.state)
             .append_pair("code_challenge", &challenge)
             .append_pair("code_challenge_method", "S256");
@@ -70,17 +79,22 @@ pub struct Account {
     pub avatar_url: String,
 }
 
-/// Trades the callback's `code` for the account that signed in.
+/// Trades the callback's `code` for the account that signed in, and the
+/// Discord Social SDK's tokens when Discord granted its scopes.
 pub async fn exchange(
     http: &reqwest::Client,
     config: &Config,
     discord: &DiscordClient,
     authorization: &Authorization,
     code: &str,
-) -> Result<Account, SignInError> {
+) -> Result<(Account, Option<SdkTokens>), SignInError> {
     #[derive(Deserialize)]
     struct Tokens {
         access_token: String,
+        refresh_token: Option<String>,
+        expires_in: Option<i64>,
+        #[serde(default)]
+        scope: String,
     }
 
     let redirect_uri = config.discord_redirect_uri();
@@ -122,7 +136,24 @@ pub async fn exchange(
         .json()
         .await
         .map_err(|error| SignInError::User(error.to_string()))?;
-    user.account()
+    let sdk = match tokens.refresh_token {
+        Some(refresh_token)
+            if tokens
+                .scope
+                .split(' ')
+                .any(|scope| scope.starts_with(SDK_SCOPE)) =>
+        {
+            Some(SdkTokens {
+                access_token: tokens.access_token,
+                refresh_token,
+                expires_in: tokens.expires_in.unwrap_or(0),
+                scope: tokens.scope,
+                id_token: None,
+            })
+        }
+        _ => None,
+    };
+    Ok((user.account()?, sdk))
 }
 
 /// What the launcher trades for the Discord Social SDK's tokens
@@ -154,7 +185,7 @@ pub fn is_sdk_redirect(uri: &str) -> bool {
 }
 
 /// The Discord Social SDK's tokens, as Discord's token endpoint gives them.
-#[derive(Debug, Deserialize, serde::Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, serde::Serialize)]
 pub struct SdkTokens {
     pub access_token: String,
     pub refresh_token: String,
@@ -422,7 +453,10 @@ mod tests {
                 .find(|(name, _)| name == key)
                 .map(|(_, value)| value.as_str())
         };
-        assert_eq!(get("scope"), Some("identify"));
+        assert_eq!(
+            get("scope"),
+            Some("identify openid sdk.social_layer_presence")
+        );
         assert_eq!(
             get("code_challenge"),
             Some("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM")
