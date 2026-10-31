@@ -1,6 +1,6 @@
-/* The sign-in pages the launcher opens, in the launcher's look: its header
-   art and logo, night blue, electric green and the logo's sky blue. Plain
-   CSS: the pages' Content-Security-Policy allows no fonts or scripts. */
+/* The sign-in pages the launcher opens, in the launcher's look: its logo,
+   night blue, electric green and the logo's sky blue. Plain CSS: the pages'
+   Content-Security-Policy allows no fonts or scripts. */
 
 :root {
   color-scheme: dark;
@@ -87,22 +87,6 @@ body {
 .card.failed::before {
   background: linear-gradient(90deg, transparent, #ffb443, var(--danger), transparent);
   box-shadow: 0 0 18px rgba(255, 90, 106, 0.45);
-}
-
-/* The launcher's header art across the top, fading into the night. */
-.scene {
-  position: absolute;
-  z-index: -1;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: min(78vh, 720px);
-  background:
-    linear-gradient(to bottom, rgba(7, 10, 18, 0.1), rgba(7, 10, 18, 0.55) 55%, var(--night) 97%),
-    radial-gradient(45% 55% at 50% 42%, rgba(7, 10, 18, 0.6), transparent 75%),
-    url("/sign-in/header.webp") 74% 28% / cover no-repeat;
-  pointer-events: none;
-  animation: dawn 1.2s ease-out both;
 }
 
 .brand {
@@ -464,13 +448,6 @@ input:focus {
   from {
     opacity: 0;
     transform: translateY(12px) scale(0.98);
-  }
-}
-
-@keyframes dawn {
-  from {
-    opacity: 0;
-    transform: scale(1.04);
   }
 }
 

@@ -60,8 +60,7 @@ const MAX_TEST_NAME: usize = 16;
 
 const PAGE: &str = include_str!("assets/page.html");
 const STYLESHEET: &str = include_str!("assets/sign-in.css");
-/// The launcher's header art and logo (assets/README.md).
-const HEADER_ART: &[u8] = include_bytes!("assets/header.webp");
+/// The launcher's logo (assets/README.md).
 const LOGO: &[u8] = include_bytes!("assets/logo.webp");
 /// The failed sign-in page's mark: an exclamation point in a ring.
 const PROBLEM: &str = r#"<div class="hero problem" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 6.5v7M12 17.5h.01"/></svg></div>"#;
@@ -141,7 +140,6 @@ pub(crate) fn router(
         .route("/sign-in", get(sign_in_page))
         .route("/sign-in/test", post(page_test_sign_in))
         .route("/sign-in/sign-in.css", get(stylesheet))
-        .route("/sign-in/header.webp", get(|| image(HEADER_ART)))
         .route("/sign-in/logo.webp", get(|| image(LOGO)));
     if discord {
         router = router
