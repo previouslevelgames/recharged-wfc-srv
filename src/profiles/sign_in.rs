@@ -14,7 +14,7 @@ use std::{
 
 use rand::distr::{Alphanumeric, SampleString};
 
-use super::discord::Authorization;
+use super::discord::{Authorization, SdkTokens};
 
 /// Time to finish signing in in the browser.
 pub const SIGN_IN_TTL: Duration = Duration::from_secs(10 * 60);
@@ -44,8 +44,13 @@ struct Pending {
 /// How a sign-in ended.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Outcome {
-    /// The launcher's session.
-    SignedIn { token: String, player_id: i64 },
+    /// The launcher's session, and the Discord Social SDK's tokens of a
+    /// Discord sign-in that granted its scopes.
+    SignedIn {
+        token: String,
+        player_id: i64,
+        discord: Option<SdkTokens>,
+    },
     /// Why not, for the launcher to show.
     Refused(String),
 }
@@ -171,6 +176,7 @@ mod tests {
         let outcome = Outcome::SignedIn {
             token: "token".into(),
             player_id: 7,
+            discord: None,
         };
         assert!(sign_ins.finish(&id, outcome.clone()));
         assert!(!sign_ins.finish(&id, Outcome::Refused("again".into())));
