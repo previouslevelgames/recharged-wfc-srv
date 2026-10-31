@@ -10,14 +10,12 @@
   <link rel="stylesheet" href="/sign-in/sign-in.css">
 </head>
 <body>
+  <div class="scene" aria-hidden="true"></div>
+  <header class="brand">
+    <img class="logo" src="/sign-in/logo.webp" alt="Recharged" width="720" height="401">
+    {{label}}
+  </header>
   <main class="card {{tone}}">
-    <header class="brand">
-      <span class="charge" aria-hidden="true">
-        <svg viewBox="0 0 24 24"><path d="M13.5 3 6 13.5h5L10 21l8-11h-5.2z"/></svg>
-      </span>
-      <span class="wordmark">Recharged</span>
-      {{label}}
-    </header>
     {{hero}}
     <h1>{{title}}</h1>
     {{content}}

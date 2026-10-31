@@ -60,6 +60,9 @@ const MAX_TEST_NAME: usize = 16;
 
 const PAGE: &str = include_str!("assets/page.html");
 const STYLESHEET: &str = include_str!("assets/sign-in.css");
+/// The launcher's header art and logo (assets/README.md).
+const HEADER_ART: &[u8] = include_bytes!("assets/header.webp");
+const LOGO: &[u8] = include_bytes!("assets/logo.webp");
 /// The failed sign-in page's mark: an exclamation point in a ring.
 const PROBLEM: &str = r#"<div class="hero problem" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 6.5v7M12 17.5h.01"/></svg></div>"#;
 /// Discord's mark, on its button.
@@ -137,7 +140,9 @@ pub(crate) fn router(
         .route("/api/v1/matches/{id}/report", post(play::report))
         .route("/sign-in", get(sign_in_page))
         .route("/sign-in/test", post(page_test_sign_in))
-        .route("/sign-in/sign-in.css", get(stylesheet));
+        .route("/sign-in/sign-in.css", get(stylesheet))
+        .route("/sign-in/header.webp", get(|| image(HEADER_ART)))
+        .route("/sign-in/logo.webp", get(|| image(LOGO)));
     if discord {
         router = router
             .route("/sign-in/discord", get(to_discord))
@@ -621,6 +626,10 @@ async fn stylesheet() -> impl IntoResponse {
         [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
         STYLESHEET,
     )
+}
+
+async fn image(bytes: &'static [u8]) -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "image/webp")], bytes)
 }
 
 /// Every response of the service: never cached, never framed.

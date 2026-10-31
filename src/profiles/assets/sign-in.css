@@ -1,6 +1,6 @@
-/* The sign-in pages the launcher opens, in the launcher's colours: night
-   blue, electric green and the logo's sky blue. Plain CSS and inline SVG:
-   the pages' Content-Security-Policy allows no fonts or scripts. */
+/* The sign-in pages the launcher opens, in the launcher's look: its header
+   art and logo, night blue, electric green and the logo's sky blue. Plain
+   CSS: the pages' Content-Security-Policy allows no fonts or scripts. */
 
 :root {
   color-scheme: dark;
@@ -108,42 +108,42 @@ body::before {
   box-shadow: 0 0 18px rgba(255, 90, 106, 0.45);
 }
 
+/* The launcher's header art across the top, fading into the night. */
+.scene {
+  position: absolute;
+  z-index: -1;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: min(78vh, 720px);
+  background:
+    linear-gradient(to bottom, rgba(7, 10, 18, 0.1), rgba(7, 10, 18, 0.55) 55%, var(--night) 97%),
+    radial-gradient(45% 55% at 50% 42%, rgba(7, 10, 18, 0.6), transparent 75%),
+    url("/sign-in/header.webp") 74% 28% / cover no-repeat;
+  pointer-events: none;
+  animation: dawn 1.2s ease-out both;
+}
+
 .brand {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  margin-bottom: 24px;
+  position: relative;
+  margin-bottom: -6px;
 }
 
-.charge {
-  display: grid;
-  place-items: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
-  background: radial-gradient(circle at 35% 30%, var(--lime), var(--green) 55%, #1f9d4a);
-  box-shadow: 0 0 0 3px rgba(76, 240, 122, 0.14), 0 0 22px rgba(76, 240, 122, 0.5);
-  animation: breathe 3.2s ease-in-out infinite;
+.logo {
+  display: block;
+  width: clamp(230px, 64vw, 340px);
+  height: auto;
+  filter: drop-shadow(0 6px 24px rgba(0, 0, 0, 0.7)) drop-shadow(0 0 18px rgba(77, 189, 255, 0.25));
+  animation: arrive 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 
-.charge svg {
-  width: 19px;
-  height: 19px;
-  fill: var(--green-ink);
+/* A test server's label, stuck on the logo's corner. */
+.brand .server-label {
+  position: absolute;
+  top: 2px;
+  right: -10px;
+  transform: rotate(6deg);
 }
-
-.wordmark {
-  background: linear-gradient(180deg, #fff 15%, #c9f7d6 50%, var(--green));
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-  font: italic 900 23px/1 var(--sans);
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  filter: drop-shadow(0 0 10px rgba(76, 240, 122, 0.3));
-}
-
 h1 {
   margin: 0 0 6px;
   font-size: 27px;
@@ -473,9 +473,10 @@ input:focus {
   }
 }
 
-@keyframes breathe {
-  50% {
-    box-shadow: 0 0 0 5px rgba(76, 240, 122, 0.08), 0 0 30px rgba(76, 240, 122, 0.75);
+@keyframes dawn {
+  from {
+    opacity: 0;
+    transform: scale(1.04);
   }
 }
 
