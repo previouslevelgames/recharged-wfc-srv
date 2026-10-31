@@ -188,6 +188,21 @@ is `{"profile_id", "game": "R4QE", "friend_code": "0868-9934-5920", "mii"}`.
 403 for a profile not logged in with that ticket. `GET /api/v1/me` lists the
 player's profiles as `wfc`, the latest first.
 
+## Leaderboard
+
+`GET /api/v1/leaderboard` gives the launcher the game's own RANKED
+leaderboards, as its LEADERBOARD menu shows them: `{"season": {...},
+"daily": {...}}`, the season's board (category 0) and the striker of the
+day's (category 1) of `docs/gamestats2.md`. Each has `first_day` and
+`last_day` of the current season (or the day), `players` on it, the first 20
+as `top`, and `you`, the player's best row among the WFC profiles they proved
+(see "Friend codes"), or `null`. A row is `{"rank", "mii", "player", "wins",
+"losses", "points", "region", "you"}`: the rank as the game counts it (equal
+points share it), the Mii's name and record from the game's submission, the
+Recharged player whose profile it is (`null` when no launcher proved it), and
+the game's region (1 JP, 2 US, 4 EU, 8 KR). Rows of an ended season, which
+stay in `scores` until their player's next ranked game, are left out.
+
 ## Rules
 
 A rule set is what a match is played by, and the server's admins keep them on

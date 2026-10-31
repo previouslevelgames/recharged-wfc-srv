@@ -20,6 +20,7 @@ mod discord;
 #[cfg(test)]
 mod flow_tests;
 mod friends;
+mod leaderboard;
 mod matches;
 mod play;
 mod players;
@@ -129,6 +130,7 @@ pub(crate) fn router(
         .route("/api/v1/matches/{id}/rematch", post(play::rematch))
         .route("/api/v1/players", get(play::players))
         .route("/api/v1/players/discord", post(social::players_by_discord))
+        .route("/api/v1/leaderboard", get(leaderboard::leaderboard))
         .route("/api/v1/discord/token", post(social::discord_token))
         .route("/api/v1/friends", post(play::add_friend))
         .route("/api/v1/friends/{id}", delete(play::remove_friend))
