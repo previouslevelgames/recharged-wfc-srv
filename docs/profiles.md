@@ -133,6 +133,28 @@ have Recharged open (at most 100, by name, as the other lists show players);
 for a player who isn't, it is empty. So only those who take part see each
 other.
 
+## Mii profiles
+
+The game's own online players without a Recharged launcher show in the
+launcher by their Mii, never by a friend code: the WFC profiles logged in to
+GPCM, as `{"profile_id", "mii", "game", "online", "status", "last_online",
+"friend"}`. `mii` is the Mii name of the profile's last login, `game` the
+release (`R4QE`, `R4QP`, `R4QJ`, `R4QK`), `status` while logged in what the
+game does (`menu`, `matchmaking` or `match`, from DWC's status) and
+`last_online` the last login in Unix seconds.
+
+`GET /api/v1/players` has them twice: `mii_friends`, the Mii profiles the
+player keeps as friends (`friend_profiles`, those logged in first by name,
+then the last online first), and, while the player is available for random
+games, `game_online`: the profiles logged in that aren't in the lists already
+(not the player's own, not a player's whose launcher is open, not a Mii
+friend), by Mii name, at most 100.
+
+| Route | |
+|---|---|
+| `POST /api/v1/friends/miis` | `{"profile_id": <id>}`: adds that Mii profile to the player's friends, and answers `{"mii_friends": [...]}`. 404 for no such profile, 409 with the list full (200, as for players). |
+| `DELETE /api/v1/friends/miis/<profile_id>` | Takes it off; the answer as above. |
+
 ## Friends
 
 Each player keeps a list of friends on the server, so it follows them to

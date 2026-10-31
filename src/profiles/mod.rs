@@ -22,6 +22,7 @@ mod flow_tests;
 mod friends;
 mod leaderboard;
 mod matches;
+mod miis;
 mod play;
 mod players;
 pub(crate) mod rules;
@@ -135,6 +136,11 @@ pub(crate) fn router(
         .route("/api/v1/discord/token", post(social::discord_token))
         .route("/api/v1/friends", post(play::add_friend))
         .route("/api/v1/friends/{id}", delete(play::remove_friend))
+        .route("/api/v1/friends/miis", post(play::add_mii_friend))
+        .route(
+            "/api/v1/friends/miis/{profile_id}",
+            delete(play::remove_mii_friend),
+        )
         .route(
             "/api/v1/chat/{id}",
             get(play::chat_messages).post(play::send_chat),
