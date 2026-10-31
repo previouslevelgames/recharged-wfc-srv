@@ -13,7 +13,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use time::OffsetDateTime;
-use tracing::{info, warn};
+use tracing::info;
 
 use super::{
     ProfilesState, chat, database_error, friends, json_error,
@@ -143,7 +143,6 @@ pub(super) async fn challenge(
     match matches::challenge(&state.pool, player.id, opponent, &rule_set, None).await {
         Ok(Ok(found)) => {
             info!(target: "profiles", match_id = found.id, home = player.id, away = opponent, rule_set = found.rule_set, "challenge");
-            befriend(&state, player.id, opponent).await;
             state.respond(StatusCode::CREATED, &found, &player).await
         }
         Ok(Err(refusal)) => refused(refusal),
@@ -389,14 +388,6 @@ pub(super) async fn send_chat(
     }
 }
 
-/// A challenge or an accepted one makes the two players friends of the one
-/// who acted; a failure here costs only that.
-async fn befriend(state: &ProfilesState, player_id: i64, friend_id: i64) {
-    if let Err(error) = friends::add(&state.pool, player_id, friend_id).await {
-        warn!(target: "profiles", player_id, friend_id, %error, "keeping a friend failed");
-    }
-}
-
 pub(super) async fn accept(
     state: State<Arc<ProfilesState>>,
     headers: HeaderMap,
@@ -429,9 +420,7 @@ async fn answer(
     match matches::answer(&state.pool, id, player.id, accept).await {
         Ok(Ok(found)) => {
             info!(target: "profiles", match_id = id, state = found.state, "answered");
-            if accept {
-                befriend(&state, player.id, found.home).await;
-            } else {
+            if !accept {
                 state.pairings.end(id);
             }
             state.respond(StatusCode::OK, &found, &player).await

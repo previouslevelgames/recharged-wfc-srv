@@ -400,6 +400,17 @@ async fn expired_sign_ins_have_no_page() {
     assert_eq!(poll(&app, "made-up").await.0, 404);
 }
 
+#[tokio::test]
+async fn a_labelled_server_says_so_on_its_pages() {
+    let (mut config, _) = fake_discord(true).await;
+    config.label = Some("DEV".into());
+    let app = recharged_wfc_srv::App::new(lazy_pool()).router(None, Some(config));
+    let (_, _, page) = get_page(&app, "/sign-in?id=made-up").await;
+    assert!(page.contains("<title>DEV · "), "{page}");
+    assert!(page.contains(r#"id="server-label">DEV</span>"#), "{page}");
+    assert!(!page.contains("{{"), "{page}");
+}
+
 /// Follows `/sign-in/discord?id=<id>` to Discord. Returns the query it sends
 /// there.
 async fn to_discord(app: &Router, id: &str) -> HashMap<String, String> {

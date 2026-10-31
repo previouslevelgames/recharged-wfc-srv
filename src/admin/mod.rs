@@ -49,7 +49,7 @@ use tracing::{info, warn};
 use crate::{
     activity::Activity,
     gpcm::Gpcm,
-    html::escape,
+    html::{escape, label_page},
     master::Master,
     profiles::rules::{self, Rules, SaveError},
 };
@@ -111,6 +111,9 @@ struct AdminState {
     /// The Maintenance page's operations waiting for their second ask.
     confirmations: Confirmations,
     started_at: OffsetDateTime,
+    /// [`LOGIN_PAGE`] and [`DASHBOARD_PAGE`] with the server's label.
+    login_page: String,
+    dashboard_page: String,
 }
 
 pub(crate) fn router(
@@ -124,6 +127,9 @@ pub(crate) fn router(
         .timeout(Duration::from_secs(10))
         .build()
         .expect("the TLS backend initializes");
+    let label = config.label.as_deref();
+    let login_page = label_page(LOGIN_PAGE, label);
+    let dashboard_page = label_page(DASHBOARD_PAGE, label);
     let state = Arc::new(AdminState {
         config,
         pool,
@@ -134,6 +140,8 @@ pub(crate) fn router(
         sessions: Sessions::default(),
         confirmations: Confirmations::default(),
         started_at: OffsetDateTime::now_utc(),
+        login_page,
+        dashboard_page,
     });
     let mut router = Router::new();
     for path in PAGES {
@@ -207,7 +215,8 @@ impl AdminState {
         if return_to != PAGES[0] {
             login_url = format!("{login_url}?next={return_to}");
         }
-        let page = LOGIN_PAGE
+        let page = self
+            .login_page
             .replace("{{message}}", &message)
             .replace("{{login_url}}", &escape(&login_url));
         (status, Html(page)).into_response()
@@ -279,7 +288,7 @@ async fn home(State(state): State<Arc<AdminState>>, jar: CookieJar, uri: Uri) ->
         Some(viewer) if !viewer.owner && OWNER_PAGES.contains(&path.as_str()) => {
             StatusCode::NOT_FOUND.into_response()
         }
-        Some(_) => Html(DASHBOARD_PAGE).into_response(),
+        Some(_) => Html(state.dashboard_page.clone()).into_response(),
         None => state.login_page(StatusCode::OK, None, &path),
     }
 }

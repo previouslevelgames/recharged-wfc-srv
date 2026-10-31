@@ -144,3 +144,21 @@ input {
   color: var(--ink);
   font: 15px/1.3 var(--sans);
 }
+
+/* SERVER_LABEL's badge, e.g. DEV: a test server's pages. */
+.server-label {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: #c2410c;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 1.5;
+  vertical-align: middle;
+}
+
+h1 .server-label {
+  margin-left: 10px;
+}

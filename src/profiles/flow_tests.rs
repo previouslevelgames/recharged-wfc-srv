@@ -521,24 +521,13 @@ async fn friends_who_keep_each_other_chat(pool: PgPool) {
         }
     };
 
-    // A challenge and its accept: each keeps the other, so they can write.
-    let (_, challenge) = world
-        .send(
-            "POST",
-            "/api/v1/matches",
-            &mario,
-            json!({"opponent": "luigi", "rule_set": 1}),
-        )
-        .await;
-    let id = challenge["id"].as_i64().unwrap();
-    world
-        .send(
-            "POST",
-            &format!("/api/v1/matches/{id}/accept"),
-            &luigi,
-            Value::Null,
-        )
-        .await;
+    // Each keeps the other, so they can write.
+    for (token, name) in [(&mario, "luigi"), (&luigi, "mario")] {
+        let (status, added) = world
+            .send("POST", "/api/v1/friends", token, json!({ "name": name }))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{added}");
+    }
     let (status, sent) = write(&mario, luigi_id, "  good game?\nrematch!  ").await;
     assert_eq!(status, StatusCode::CREATED, "{sent}");
     assert_eq!(sent["body"], "good game? rematch!");
@@ -711,7 +700,7 @@ async fn a_match_in_the_game_shows_and_keeps_challenges_away(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn friends_come_from_challenges_and_follow_the_player(pool: PgPool) {
+async fn friends_are_added_by_hand_and_follow_the_player(pool: PgPool) {
     let world = World::new(pool);
     let mario = world.sign_in("Mario").await;
     let luigi = world.sign_in("Luigi").await;
@@ -733,8 +722,8 @@ async fn friends_come_from_challenges_and_follow_the_player(pool: PgPool) {
     };
     assert!(friends(mario.clone()).await.is_empty());
 
-    // A challenge keeps its opponent; the one challenged keeps the
-    // challenger only once they accept.
+    // Playing someone makes no friend: a challenge and its accept leave
+    // both lists empty.
     let (status, challenge) = world
         .send(
             "POST",
@@ -744,8 +733,6 @@ async fn friends_come_from_challenges_and_follow_the_player(pool: PgPool) {
         )
         .await;
     assert_eq!(status, StatusCode::CREATED, "{challenge}");
-    assert_eq!(names(&friends(mario.clone()).await), ["Luigi"]);
-    assert!(friends(luigi.clone()).await.is_empty());
     let id = challenge["id"].as_i64().unwrap();
     world
         .send(
@@ -755,6 +742,16 @@ async fn friends_come_from_challenges_and_follow_the_player(pool: PgPool) {
             Value::Null,
         )
         .await;
+    assert!(friends(mario.clone()).await.is_empty());
+    assert!(friends(luigi.clone()).await.is_empty());
+
+    // Each adds by hand.
+    for (token, name) in [(&luigi, "mario"), (&mario, "luigi")] {
+        let (status, added) = world
+            .send("POST", "/api/v1/friends", token, json!({ "name": name }))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{added}");
+    }
     let luigis = friends(luigi.clone()).await;
     assert_eq!(names(&luigis), ["Mario"]);
     assert_eq!(
@@ -767,8 +764,8 @@ async fn friends_come_from_challenges_and_follow_the_player(pool: PgPool) {
     );
     assert!(luigis[0]["last_online"].as_i64().unwrap() > 0);
 
-    // By hand: by name, then by id; online friends first, the others by
-    // when they were last online; the other lists mark friends.
+    // By name, then by id; online friends first, the others by when they
+    // were last online; the other lists mark friends.
     let (status, added) = world
         .send("POST", "/api/v1/friends", &mario, json!({"name": "PEACH"}))
         .await;

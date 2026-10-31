@@ -116,12 +116,14 @@ online are separate ([reports.md](reports.md)).
 ## Friends
 
 Each player keeps a list of friends on the server, so it follows them to
-every computer they sign in on. It is their own list, without requests: a
-challenge adds its opponent, accepting a challenge adds the challenger, and the
-launcher adds and removes players by hand. The players of earlier sets came in
-the same way when the list began. A list holds at most 200 friends. The
-launcher shows them online first, by name, then the others by when they were
-last online.
+every computer they sign in on. It is their own list, without requests: the
+player adds and removes players by hand in the launcher. Playing someone does
+not make them a friend: they show among the players last played with
+(`recent` in `GET /api/v1/players`) until the player adds them. Up to 1.2.0 a
+challenge added its opponent and an accept the challenger, and the players of
+earlier sets came in when the list began; those stay friends until removed. A
+list holds at most 200 friends. The launcher shows them online first, by name,
+then the others by when they were last online.
 
 | Route | |
 |---|---|
