@@ -42,7 +42,11 @@ use serde_json::json;
 use sqlx::PgPool;
 use tracing::{info, warn};
 
-use crate::{gpcm::Gpcm, html::escape, pairing::Pairings};
+use crate::{
+    gpcm::Gpcm,
+    html::{escape, label_page},
+    pairing::Pairings,
+};
 
 pub use config::{Config, DiscordClient, DiscordEndpoints, VARIABLES};
 use discord::SignInError;
@@ -72,6 +76,8 @@ struct ProfilesState {
     gpcm: Arc<Gpcm>,
     /// Matches' games kept for RANKED, which the server browser reads.
     pairings: Arc<Pairings>,
+    /// [`PAGE`] with the server's label.
+    page: String,
 }
 
 pub(crate) fn router(
@@ -85,6 +91,7 @@ pub(crate) fn router(
         .build()
         .expect("the TLS backend initializes");
     let discord = config.discord.is_some();
+    let page = label_page(PAGE, config.label.as_deref());
     let state = Arc::new(ProfilesState {
         config,
         pool,
@@ -92,6 +99,7 @@ pub(crate) fn router(
         sign_ins: SignIns::default(),
         gpcm,
         pairings,
+        page,
     });
     let mut router = Router::new()
         .route("/api/v1/server", get(server))
@@ -236,7 +244,8 @@ impl ProfilesState {
 
     /// A page on the sign-in's design, with `content` (HTML) under `title`.
     fn page(&self, status: StatusCode, title: &str, content: &str) -> Response {
-        let page = PAGE
+        let page = self
+            .page
             .replace("{{title}}", &escape(title))
             .replace("{{content}}", content);
         (status, Html(page)).into_response()

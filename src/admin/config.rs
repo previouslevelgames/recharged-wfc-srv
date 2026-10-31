@@ -6,8 +6,8 @@ use reqwest::Url;
 
 /// Every variable `/admin` needs. Set all of them, or none of the Google
 /// ones to run the server without `/admin`: `PUBLIC_URL` serves the profile
-/// service too. It also reads `LOG_DIR`, for the Logs page, and
-/// `OWNER_GOOGLE_EMAILS`, for the owners' pages.
+/// service too. It also reads `LOG_DIR`, for the Logs page,
+/// `OWNER_GOOGLE_EMAILS`, for the owners' pages, and `SERVER_LABEL`.
 pub const VARIABLES: [&str; 4] = [
     "PUBLIC_URL",
     "GOOGLE_CLIENT_ID",
@@ -32,6 +32,8 @@ pub struct Config {
     pub google: GoogleEndpoints,
     /// Where the server writes its daily log files, if anywhere.
     pub log_dir: Option<PathBuf>,
+    /// `SERVER_LABEL`, which the pages show, e.g. `DEV`.
+    pub label: Option<String>,
 }
 
 /// Google's OpenID Connect endpoints. Tests point them at a fake.
@@ -77,6 +79,7 @@ impl Config {
         }
         let [public_url, client_id, client_secret, admins] = values.map(Option::unwrap);
         let mut config = Self::new(&public_url, client_id.trim(), client_secret.trim(), &admins)?;
+        config.label = crate::html::server_label(&var)?;
         config.log_dir = var("LOG_DIR")
             .filter(|dir| !dir.is_empty())
             .map(PathBuf::from);
@@ -107,6 +110,7 @@ impl Config {
             owners: Vec::new(),
             google: GoogleEndpoints::default(),
             log_dir: None,
+            label: None,
         })
     }
 
@@ -145,6 +149,7 @@ impl fmt::Debug for Config {
             .field("owners", &self.owners)
             .field("google", &self.google)
             .field("log_dir", &self.log_dir)
+            .field("label", &self.label)
             .finish_non_exhaustive()
     }
 }

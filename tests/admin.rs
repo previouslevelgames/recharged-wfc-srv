@@ -261,6 +261,46 @@ async fn an_admin_reads_and_downloads_the_log_files() {
 }
 
 #[tokio::test]
+async fn a_labelled_server_says_so_on_its_pages() {
+    let (config, _) = fake_google().await;
+    let mut browser =
+        Browser::new(recharged_wfc_srv::App::new(lazy_pool()).router(Some(config), None));
+    let (_, _, page) = browser.get("/admin").await;
+    assert!(
+        page.contains("<title>Sign in · Recharged WFC</title>"),
+        "{page}"
+    );
+    assert!(
+        !page.contains("server-label") && !page.contains("{{"),
+        "{page}"
+    );
+
+    let (mut config, google) = fake_google().await;
+    config.label = Some("DEV".into());
+    let mut browser =
+        Browser::new(recharged_wfc_srv::App::new(lazy_pool()).router(Some(config), None));
+    let (status, _, page) = browser.get("/admin").await;
+    assert_eq!(status, 200);
+    assert!(
+        page.contains("<title>DEV · Sign in · Recharged WFC</title>"),
+        "{page}"
+    );
+    assert!(page.contains(r#"id="server-label">DEV</span>"#), "{page}");
+
+    let params = start_sign_in(&mut browser, "/admin/login").await;
+    google.approve(&params, "admin@example.com");
+    browser.callback(CODE, &params["state"]).await;
+    let (status, _, page) = browser.get("/admin").await;
+    assert_eq!(status, 200);
+    assert!(
+        page.contains("<title>DEV · Admin · Recharged WFC</title>"),
+        "{page}"
+    );
+    assert!(page.contains(r#"id="server-label">DEV</span>"#), "{page}");
+    assert!(!page.contains("{{"), "{page}");
+}
+
+#[tokio::test]
 async fn other_google_accounts_are_refused() {
     let (config, google) = fake_google().await;
     let mut browser =

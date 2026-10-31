@@ -5,7 +5,8 @@ use std::{env, fmt, net::IpAddr};
 use reqwest::Url;
 
 /// Every variable the profile service reads. `PUBLIC_URL` is shared with
-/// `/admin`; Discord's client, test sign-in, or both turn the service on.
+/// `/admin`; Discord's client, test sign-in, or both turn the service on. It
+/// also reads `SERVER_LABEL`.
 pub const VARIABLES: [&str; 4] = [
     "PUBLIC_URL",
     "DISCORD_CLIENT_ID",
@@ -26,6 +27,8 @@ pub struct Config {
     /// player of its own. For local and test servers only: anyone can be
     /// anyone.
     pub test_sign_in: bool,
+    /// `SERVER_LABEL`, which the sign-in pages show, e.g. `DEV`.
+    pub label: Option<String>,
 }
 
 #[derive(Clone)]
@@ -95,7 +98,9 @@ impl Config {
         }
         let public_url = get("PUBLIC_URL")
             .ok_or("profiles need PUBLIC_URL, the address launchers and browsers use")?;
-        Self::new(&public_url, discord, test_sign_in).map(Some)
+        let mut config = Self::new(&public_url, discord, test_sign_in)?;
+        config.label = crate::html::server_label(&var)?;
+        Ok(Some(config))
     }
 
     pub fn new(
@@ -107,6 +112,7 @@ impl Config {
             public_url: origin(public_url)?,
             discord,
             test_sign_in,
+            label: None,
         })
     }
 
@@ -127,6 +133,7 @@ impl fmt::Debug for Config {
                 &self.discord.as_ref().map(|discord| &discord.client_id),
             )
             .field("test_sign_in", &self.test_sign_in)
+            .field("label", &self.label)
             .finish()
     }
 }

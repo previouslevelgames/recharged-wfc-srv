@@ -5,6 +5,9 @@
 'use strict';
 
 const POLL_MS = 5000;
+// SERVER_LABEL (e.g. DEV), which the server puts in the header, before every
+// tab title.
+const LABEL = document.getElementById('server-label')?.textContent;
 // Transactions per second kept for the sparkline: 5 minutes of polls.
 const HISTORY = 60;
 // NETWORK_PERSISTENT_* (docs/gamestats2.md, "Categories").
@@ -2499,7 +2502,12 @@ function render(data) {
 function setHead(title, intro) {
   document.getElementById('page-title').textContent = title;
   document.getElementById('page-intro').replaceChildren(...[intro].flat());
-  document.title = `${title} · ${section.name} · Recharged WFC`;
+  document.title = pageTitle(`${title} · ${section.name}`);
+}
+
+/** The tab's title for `title`, after the server's label. */
+function pageTitle(title) {
+  return `${LABEL ? `${LABEL} · ` : ''}${title} · Recharged WFC`;
 }
 
 function setLive(state, text) {
@@ -2537,7 +2545,7 @@ async function poll() {
   if (!document.hidden && !logs.paused) timer = setTimeout(poll, POLL_MS);
 }
 
-document.title = `${section.name} · Recharged WFC`;
+document.title = pageTitle(section.name);
 renderNav();
 document.getElementById('content').replaceChildren(
   h(
