@@ -257,28 +257,41 @@ button {
   box-shadow: 0 8px 24px rgba(76, 240, 122, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.35);
 }
 
-/* "or" between Discord and the test sign-in. */
-.or {
+/* The test server's sign-in by name, set apart from the real one. */
+.test-only {
+  margin-top: 24px;
+  padding: 16px;
+  border: 1px dashed rgba(255, 180, 67, 0.45);
+  border-radius: 14px;
+  background: rgba(255, 180, 67, 0.05);
+  text-align: left;
+}
+
+.test-head {
   display: flex;
   align-items: center;
-  gap: 12px;
-  margin: 22px 0 16px;
-  color: var(--dim);
-  font-size: 12px;
-  letter-spacing: 0.12em;
+  gap: 8px;
+  margin: 0 0 4px;
+  font-weight: 700;
+}
+
+.tag {
+  padding: 1px 7px;
+  border-radius: 5px;
+  background: rgba(255, 180, 67, 0.16);
+  color: #ffb443;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
-.or::before,
-.or::after {
-  content: "";
-  flex: 1;
-  height: 1px;
-  background: var(--border);
-}
-
-form button {
+.test-only button {
   margin-top: 0;
+  border: 1px solid var(--border);
+  background: var(--field);
+  color: var(--text);
+  box-shadow: none;
 }
 
 label {

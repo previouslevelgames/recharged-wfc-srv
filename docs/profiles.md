@@ -17,7 +17,7 @@ The service is off unless it is configured, and the routes below then answer
 | `PUBLIC_URL` | The address launchers and browsers use, without a path, e.g. `https://wfc.example.com`, shared with `/admin`. Plain `http://` works only on a local network, for a test server. |
 | `DISCORD_CLIENT_ID` | The Discord app's client ID (Discord Developer Portal → the app → **OAuth2**). |
 | `DISCORD_CLIENT_SECRET` | Its client secret, from the same page. Set **Password Mask: Yes**. |
-| `PROFILES_TEST_SIGN_IN` | `true` lets anyone sign in with a name alone, so a second game on one PC has a player of its own. **Only on a local or test server.** |
+| `PROFILES_TEST_SIGN_IN` | `true` lets anyone sign in with a name alone, so a second game on one PC has a player of its own. **Only on a local or test server.** An owner can switch it on or off on the admin dashboard's **Maintenance** page instead; that switch wins from then on. |
 
 Discord, test sign-in, or both turn the service on, and then `PUBLIC_URL` is
 needed too. In the Discord app, add the redirect
@@ -70,7 +70,9 @@ starts again.
 On a test server, `POST /api/v1/sign-in/test` with `{"name": "Mario"}`
 signs in at once and answers like a sign-in that ended. A test name has 1 to
 16 letters, digits, `-` or `_`; the same name in other letters is the same
-player. 403 without `PROFILES_TEST_SIGN_IN`.
+player. 403 while test sign-in is off. The sign-in page shows it in a box of
+its own, marked as a test server's, below Discord: a test player has no
+Discord account, so no Discord friends, and nobody finds it by Discord name.
 
 ## Sessions
 

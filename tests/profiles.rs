@@ -365,10 +365,47 @@ async fn the_sign_in_page_takes_a_test_name(pool: PgPool) {
     assert_eq!(signed_in["player"]["name"], "Luigi");
 }
 
-#[tokio::test]
-async fn test_sign_in_needs_its_setting() {
+#[sqlx::test]
+async fn the_owners_switch_wins_over_the_test_sign_in_setting(pool: PgPool) {
+    let (config, _) = fake_discord(true).await;
+    let app = recharged_wfc_srv::App::new(pool.clone()).router(None, Some(config));
+    let switch = |enabled: bool| {
+        sqlx::query(
+            "INSERT INTO switches (name, enabled, changed_by) VALUES ('test_sign_in', $1, 'owner')
+             ON CONFLICT (name) DO UPDATE SET enabled = excluded.enabled",
+        )
+        .bind(enabled)
+        .execute(&pool)
+    };
+    let page = async || {
+        let (_, _, body) = send(&app, Request::post("/api/v1/sign-in"), None).await;
+        let sign_in: Value = serde_json::from_str(&body).unwrap();
+        let id = sign_in["id"].as_str().unwrap().to_owned();
+        get_page(&app, &format!("/sign-in?id={id}")).await.2
+    };
+    assert!(page().await.contains("Sign in as test player"));
+
+    switch(false).await.unwrap();
+    let off = page().await;
+    assert!(!off.contains("Sign in as test player"), "{off}");
+    let (status, _, _) = send(
+        &app,
+        Request::post("/api/v1/sign-in/test")
+            .header(header::CONTENT_TYPE, "application/json")
+            .with_body(r#"{"name": "Mario"}"#),
+        None,
+    )
+    .await;
+    assert_eq!(status, 403);
+
+    switch(true).await.unwrap();
+    assert!(page().await.contains("Sign in as test player"));
+}
+
+#[sqlx::test]
+async fn test_sign_in_needs_its_setting(pool: PgPool) {
     let (config, _) = fake_discord(false).await;
-    let app = recharged_wfc_srv::App::new(lazy_pool()).router(None, Some(config));
+    let app = recharged_wfc_srv::App::new(pool).router(None, Some(config));
     let (status, _, _) = send(
         &app,
         Request::post("/api/v1/sign-in/test")

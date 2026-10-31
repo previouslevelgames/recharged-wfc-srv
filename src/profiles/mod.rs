@@ -167,6 +167,22 @@ fn database_error(error: sqlx::Error) -> Response {
 }
 
 impl ProfilesState {
+    /// Whether players may sign in with a name alone: the owner's switch on
+    /// the Maintenance page, else `PROFILES_TEST_SIGN_IN`. Off when the
+    /// database cannot say.
+    async fn test_sign_in(&self) -> bool {
+        crate::switches::enabled(
+            &self.pool,
+            crate::switches::TEST_SIGN_IN,
+            self.config.test_sign_in,
+        )
+        .await
+        .unwrap_or_else(|error| {
+            warn!(target: "profiles", %error, "database error");
+            false
+        })
+    }
+
     /// The player of the request's bearer token, or the 401 to answer. The
     /// request is the player's heartbeat: their Recharged is open, doing what
     /// its `Recharged-Activity` header says.
@@ -330,7 +346,7 @@ async fn server(State(state): State<Arc<ProfilesState>>) -> Response {
         "revision": crate::REVISION,
         "sign_in": {
             "discord": state.config.discord.is_some(),
-            "test": state.config.test_sign_in,
+            "test": state.test_sign_in().await,
         },
         // The launcher's Discord Social SDK signs in to this application
         // (docs/profiles.md, "Discord friends").
@@ -390,7 +406,7 @@ async fn api_test_sign_in(
     State(state): State<Arc<ProfilesState>>,
     Json(request): Json<TestSignIn>,
 ) -> Response {
-    if !state.config.test_sign_in {
+    if !state.test_sign_in().await {
         return json_error(StatusCode::FORBIDDEN, "this server has no test sign-in");
     }
     let Some(name) = test_name(&request.name) else {
@@ -472,14 +488,15 @@ async fn sign_in_page(
             escape(&id)
         );
     }
-    if state.config.test_sign_in {
-        if state.config.discord.is_some() {
-            content += r#"<p class="or">or</p>"#;
-        }
+    // Marked as the test server's extra, not a second way in: a test
+    // player has no Discord account behind it.
+    if state.test_sign_in().await {
         content += &format!(
-            r#"<form method="post" action="/sign-in/test">
+            r#"<form class="test-only" method="post" action="/sign-in/test">
+<p class="test-head"><span class="tag">Test server</span>Sign in without Discord</p>
+<p class="hint">Only for tests: a test player has no Discord friends and nobody finds it by its Discord name.</p>
 <input type="hidden" name="id" value="{}">
-<label>Test player <input name="name" maxlength="{MAX_TEST_NAME}" required autocomplete="off"></label>
+<label>Test player name <input name="name" maxlength="{MAX_TEST_NAME}" required autocomplete="off"></label>
 <button type="submit">Sign in as test player</button>
 </form>"#,
             escape(&id)
@@ -557,7 +574,7 @@ async fn page_test_sign_in(
     State(state): State<Arc<ProfilesState>>,
     Form(form): Form<TestSignInForm>,
 ) -> Response {
-    if !state.config.test_sign_in {
+    if !state.test_sign_in().await {
         return state.notice_page(StatusCode::FORBIDDEN, "This server has no test sign-in.");
     }
     let Some(name) = test_name(&form.name) else {
