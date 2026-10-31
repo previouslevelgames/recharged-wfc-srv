@@ -80,7 +80,7 @@ days. The database keeps only the token's SHA-256.
 
 | Route | Answer |
 |---|---|
-| `GET /api/v1/server` | `{"version", "revision", "sign_in": {"discord": true, "test": false}}`, without a session: what the launcher can offer |
+| `GET /api/v1/server` | `{"version", "revision", "sign_in": {"discord": true, "test": false}, "discord_application": "<client id>"}`, without a session: what the launcher can offer (`discord_application` is `null` without Discord sign-in; see "Discord friends") |
 | `GET /api/v1/me` | the player, as in a sign-in, with `wfc` (see "Friend codes") and `discord_id`: the Discord account id (a string; `null` for test players), from which the launcher makes the player's Mii |
 | `POST /api/v1/sign-out` | 204; the session is closed |
 
@@ -88,6 +88,15 @@ Every request with a session is also the player's heartbeat, as is a
 sign-in: their Recharged (the launcher, or the game it started) is open. A
 player without one for 60 seconds has closed it ("Online now", and the sets
 it ends, see "Sets").
+
+### Activity
+
+The game's requests say what it is doing in a `Recharged-Activity` header:
+`game` outside a match, `match` from a match's loading until it is unloaded
+(offline, classic online or a set's). The launcher sends none, and neither do
+builds before 1.2.0's games. `players.activity` keeps the value of the last
+heartbeat (`NULL` for the launcher); a changed activity is written at once.
+The lists show it, and nobody can challenge a player in a match.
 
 Errors are JSON, `{"error": "<what went wrong>"}`. Every response is
 `no-store`; the pages allow no scripts and no framing.
@@ -118,6 +127,41 @@ last online.
 |---|---|
 | `POST /api/v1/friends` | `{"player_id": <id>}`, or `{"name": "<Discord username>"}` instead: adds them, and answers `{"friends": [...]}` as in `GET /api/v1/players`. One already there changes nothing. 400 for yourself, 404 for nobody of that name, 409 with the list full. |
 | `DELETE /api/v1/friends/<id>` | Removes them (one not there is no error) and answers the list the same way |
+
+## Chat
+
+Two players who keep each other as friends can write each other: one line of
+at most 300 characters per message (line breaks become spaces), at most 20
+messages a minute. `chat_messages` keeps them 30 days, with when the
+recipient's launcher showed them. They are not encrypted on the server: its
+operator can read them in the database.
+
+In the lists of `GET /api/v1/players`, a player has `chat` (the two keep each
+other), `unread` (their messages not shown yet) and, with `chat`, `discord_id`
+(for the launcher's link to their Discord profile; `null` for test players).
+
+| Route | |
+|---|---|
+| `GET /api/v1/chat/<id>` | `{"messages": [{"id", "mine", "body", "sent_at"}], "can_send": true}`: the latest 50 with player `<id>`, oldest first, or with `?after=<message id>` only later ones; theirs count as read now. `can_send` is whether the two keep each other. |
+| `POST /api/v1/chat/<id>` | `{"body": "..."}`: a message, 201 with it as above. 400 for an empty or too long one, 403 unless the two keep each other as friends, 429 after 20 in a minute. |
+
+## Discord friends
+
+The launcher can show the player's Discord friends, with who is online and
+who plays Recharged, through the Discord Social SDK. It is a separate step
+after signing in: the SDK asks Discord for its own permission (the scopes
+`openid sdk.social_layer_presence`, for the application in
+`discord_application`) and then reads the friends list from Discord itself.
+The friends list never reaches the server. The server only does what the SDK
+can't do itself, as the confidential client that holds the secret: it trades
+the SDK's code (and later its refresh token) for tokens, and it tells which
+of the friends play Recharged. It keeps neither the tokens nor the IDs it
+was asked about.
+
+| Route | |
+|---|---|
+| `POST /api/v1/discord/token` | `{"code", "code_verifier", "redirect_uri"}` from the SDK's authorization, or `{"refresh_token"}` from an earlier answer: `{"access_token", "refresh_token", "expires_in", "scope"}` from Discord. The redirect must be the SDK's local web server, `http://127.0.0.1[:port]/callback` (add `http://127.0.0.1/callback` to the Discord app's redirects). 400 when Discord refuses (a used code, a link the user ended: connect again), 403 for another Discord account than the player signed in with, 404 without Discord sign-in, 502 when Discord can't be reached. |
+| `POST /api/v1/players/discord` | `{"ids": ["<Discord account id>", ...]}`, at most 200: `{"players": [...]}`, those of them who have signed in to Recharged (not the player), by name, as in `GET /api/v1/players`, each with its `discord_id`. |
 
 ## Friend codes
 
@@ -162,8 +206,8 @@ with no Mega Strikes, fast terrain and Thunder Island walls).
 
 | Route | |
 |---|---|
-| `GET /api/v1/players` | `{"online": [...], "recent": [...], "friends": [...]}`: who has Recharged open (by name, at most 100), the last 10 players played a set with, and the player's friends (see "Friends"). Each is a player as in a sign-in, with `online`, `busy` (has a set to play), `last_online` (their last heartbeat in Unix seconds, `null` before the first) and `friend` (the player keeps them as one). |
-| `POST /api/v1/matches` | `{"opponent": "<Discord username>", "rule_set": <id>}`, or `"opponent_id": <player id>` instead of the name: a challenge, 201. 404 for nobody of that name, 409 when either already has a match to play or the opponent doesn't have Recharged open. |
+| `GET /api/v1/players` | `{"online": [...], "recent": [...], "friends": [...]}`: who has Recharged open (by name, at most 100), the last 10 players played a set with, and the player's friends (see "Friends"). Each is a player as in a sign-in, with `online`, `busy` (has a set to play), `activity` (while online: `launcher`, `game` or `match`, see "Activity"), `last_online` (their last heartbeat in Unix seconds, `null` before the first) and `friend` (the player keeps them as one). |
+| `POST /api/v1/matches` | `{"opponent": "<Discord username>", "rule_set": <id>}`, or `"opponent_id": <player id>` instead of the name: a challenge, 201. 404 for nobody of that name, 409 when either already has a match to play, or the opponent doesn't have Recharged open or is playing a match (see "Activity"). |
 | `GET /api/v1/matches/current` | `{"match": …, "poll_interval": 2, "server_time": <unix seconds>}`: the match still to be played, or the last one that ended within the hour, or `null`; `poll_interval` is how soon to ask again (2 while the set waits for its players, 10 while they play, 5 otherwise) |
 | `POST /api/v1/matches/<id>/accept`, `…/decline` | The challenged player's answer |
 | `POST /api/v1/matches/<id>/cancel` | Either player, before the result |
@@ -197,13 +241,16 @@ still work:
 
 | `stage` | `state` | |
 |---|---|---|
-| `invited` | `challenged` | Waiting for the challenged player's answer |
-| `open` | `accepted` | Both are in; each presses **Ready to play!** (`you_ready`, `opponent_ready`) and may take it back |
+| `invited` | `challenged` | Waiting for the challenged player's answer; the challenge is the challenger's **Ready to play!** |
+| `open` | `accepted` | Both are in, but one took **Ready to play!** back (`you_ready`, `opponent_ready`) or the set waits for it again |
 | `go` | `accepted` | Both are ready (`go_at`): both launchers start their games |
 | `playing` | `accepted` | The games found each other in RANKED (`playing_at`) |
 | `finished`, `disputed` | the same | The result |
 | `dissolved` | `declined`, `cancelled`, `expired` or `dissolved` | Ended without a result; `reason` is the state |
 
+- The accept is the challenged player's Ready to play!: with the
+  challenger's, the set goes at once. Either may take theirs back before
+  the games met (`open`) and press it again.
 - A set whose games haven't met 5 minutes after the go waits for Ready to
   play! again.
 - A player without a heartbeat for 60 seconds has closed Recharged: their

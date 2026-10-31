@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
@@ -16,7 +16,7 @@ use time::OffsetDateTime;
 use tracing::{info, warn};
 
 use super::{
-    ProfilesState, database_error, friends, json_error,
+    ProfilesState, chat, database_error, friends, json_error,
     matches::{self, Game, Match, Refusal},
     players::{self, Player},
     rules,
@@ -117,10 +117,17 @@ pub(super) async fn challenge(
     if opponent == player.id {
         return json_error(StatusCode::BAD_REQUEST, "you can't challenge yourself");
     }
-    // A set lasts while both have Recharged open.
-    match players::is_online(&state.pool, opponent).await {
-        Ok(true) => {}
-        Ok(false) => {
+    // A set lasts while both have Recharged open; a match in the game is
+    // played to its end first.
+    match players::activity(&state.pool, opponent).await {
+        Ok(Some(players::Activity::Match)) => {
+            return json_error(
+                StatusCode::CONFLICT,
+                "that player is playing a match right now",
+            );
+        }
+        Ok(Some(_)) => {}
+        Ok(None) => {
             return json_error(
                 StatusCode::CONFLICT,
                 "that player doesn't have Recharged open right now",
@@ -300,6 +307,84 @@ pub(super) async fn remove_friend(
 async fn friends_answer(state: &ProfilesState, player_id: i64) -> Response {
     match friends::list(&state.pool, player_id).await {
         Ok(list) => Json(json!({ "friends": list })).into_response(),
+        Err(error) => database_error(error),
+    }
+}
+
+#[derive(Deserialize)]
+pub(super) struct ChatQuery {
+    /// The last message the launcher has: only later ones.
+    #[serde(default)]
+    after: Option<i64>,
+}
+
+/// The messages with player `id` (docs/profiles.md, "Chat"), and whether
+/// the two may write (they keep each other as friends).
+pub(super) async fn chat_messages(
+    State(state): State<Arc<ProfilesState>>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    Query(query): Query<ChatQuery>,
+) -> Response {
+    let player = match state.signed_in(&headers).await {
+        Ok(player) => player,
+        Err(response) => return response,
+    };
+    let may = match chat::may_chat(&state.pool, player.id, id).await {
+        Ok(may) => may,
+        Err(error) => return database_error(error),
+    };
+    match chat::messages(&state.pool, player.id, id, query.after).await {
+        Ok(messages) => Json(json!({ "messages": messages, "can_send": may })).into_response(),
+        Err(error) => database_error(error),
+    }
+}
+
+#[derive(Deserialize)]
+pub(super) struct ChatMessage {
+    body: String,
+}
+
+/// A message to player `id`, who must keep the player as a friend, as the
+/// player keeps them.
+pub(super) async fn send_chat(
+    State(state): State<Arc<ProfilesState>>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    Json(request): Json<ChatMessage>,
+) -> Response {
+    let player = match state.signed_in(&headers).await {
+        Ok(player) => player,
+        Err(response) => return response,
+    };
+    let Some(body) = chat::clean(&request.body) else {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            &format!("a message has 1 to {} characters", chat::MAX_LENGTH),
+        );
+    };
+    match chat::may_chat(&state.pool, player.id, id).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return json_error(
+                StatusCode::FORBIDDEN,
+                "you can write to friends who have you as a friend too",
+            );
+        }
+        Err(error) => return database_error(error),
+    }
+    match chat::sent_last_minute(&state.pool, player.id).await {
+        Ok(sent) if sent >= chat::PER_MINUTE => {
+            return json_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "that's a lot of messages: wait a minute",
+            );
+        }
+        Ok(_) => {}
+        Err(error) => return database_error(error),
+    }
+    match chat::send(&state.pool, player.id, id, &body).await {
+        Ok(message) => (StatusCode::CREATED, Json(message)).into_response(),
         Err(error) => database_error(error),
     }
 }

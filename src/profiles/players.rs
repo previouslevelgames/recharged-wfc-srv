@@ -55,7 +55,7 @@ pub async fn sign_in(pool: &PgPool, identity: &Identity<'_>) -> Result<i64, sqlx
         .await?
         {
             sqlx::query!(
-                "UPDATE players SET display_name = $2, last_seen_at = now(), heartbeat_at = now()
+                "UPDATE players SET display_name = $2, last_seen_at = now(), heartbeat_at = now(), activity = NULL
                  WHERE player_id = $1",
                 player_id,
                 identity.display_name,
@@ -130,13 +130,60 @@ pub async fn discord_id(pool: &PgPool, player_id: i64) -> Result<Option<String>,
     .await
 }
 
-/// `player_id`'s launcher or game made a request: they have Recharged open
-/// (written at most every few seconds).
-pub async fn heartbeat(pool: &PgPool, player_id: i64) -> Result<(), sqlx::Error> {
+/// What a player's Recharged is doing (docs/profiles.md, "Activity").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Activity {
+    Launcher,
+    /// The game, outside a match.
+    Game,
+    /// A match in the game: offline, classic online or a set's.
+    Match,
+}
+
+impl Activity {
+    /// The `Recharged-Activity` header's value; anything else (or none) is
+    /// the launcher, which never sends one.
+    pub fn from_header(value: Option<&str>) -> Self {
+        match value.map(str::trim) {
+            Some("game") => Self::Game,
+            Some("match") => Self::Match,
+            _ => Self::Launcher,
+        }
+    }
+
+    /// As stored in `players.activity`.
+    fn column(self) -> Option<&'static str> {
+        match self {
+            Self::Launcher => None,
+            Self::Game => Some("game"),
+            Self::Match => Some("match"),
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Launcher => "launcher",
+            Self::Game => "game",
+            Self::Match => "match",
+        }
+    }
+}
+
+/// `player_id`'s launcher or game made a request: they have Recharged open,
+/// doing `activity` (written at most every few seconds, and at once when the
+/// activity changes).
+pub async fn heartbeat(
+    pool: &PgPool,
+    player_id: i64,
+    activity: Activity,
+) -> Result<(), sqlx::Error> {
     sqlx::query!(
-        "UPDATE players SET heartbeat_at = now()
-         WHERE player_id = $1 AND (heartbeat_at IS NULL OR heartbeat_at < now() - interval '5 seconds')",
+        "UPDATE players SET heartbeat_at = now(), activity = $2
+         WHERE player_id = $1
+           AND (heartbeat_at IS NULL OR heartbeat_at < now() - interval '5 seconds'
+                OR activity IS DISTINCT FROM $2)",
         player_id,
+        activity.column(),
     )
     .execute(pool)
     .await?;
@@ -156,6 +203,19 @@ pub async fn is_online(pool: &PgPool, player_id: i64) -> Result<bool, sqlx::Erro
     .is_some())
 }
 
+/// What `player_id`'s Recharged is doing; none while it is closed.
+pub async fn activity(pool: &PgPool, player_id: i64) -> Result<Option<Activity>, sqlx::Error> {
+    Ok(sqlx::query!(
+        "SELECT activity FROM players
+         WHERE player_id = $1 AND heartbeat_at > now() - make_interval(secs => $2)",
+        player_id,
+        f64::from(super::matches::HEARTBEAT_TIMEOUT_SECS),
+    )
+    .fetch_optional(pool)
+    .await?
+    .map(|row| Activity::from_header(row.activity.as_deref())))
+}
+
 /// A player in the launcher's lists: whether they have Recharged open and a
 /// set to play, when they last had it open, and whether the player who asks
 /// keeps them as a friend.
@@ -165,9 +225,18 @@ pub struct Listed {
     pub player: Player,
     pub online: bool,
     pub busy: bool,
+    /// While online: "launcher", "game" or "match" (see [`Activity`]).
+    pub activity: Option<&'static str>,
     /// Their last heartbeat in Unix seconds; none before the first.
     pub last_online: Option<i64>,
     pub friend: bool,
+    /// The two keep each other as friends: they can write each other
+    /// (docs/profiles.md, "Chat").
+    pub chat: bool,
+    /// Their messages the player has not read.
+    pub unread: i64,
+    /// Their Discord account id, for a friend the player can chat with.
+    pub discord_id: Option<String>,
 }
 
 /// Who has Recharged open, but `player_id`, by name.
@@ -203,6 +272,40 @@ pub async fn recent_opponents(pool: &PgPool, player_id: i64) -> Result<Vec<Liste
     listed(pool, player_id, &ids).await
 }
 
+/// The most Discord accounts one [`by_discord`] looks up.
+pub const MAX_DISCORD_LOOKUP: usize = 200;
+
+/// The players among the Discord accounts `discord_ids` (the launcher's
+/// Discord friends), but `viewer`, by name, each with its Discord account id.
+pub async fn by_discord(
+    pool: &PgPool,
+    viewer: i64,
+    discord_ids: &[String],
+) -> Result<Vec<Listed>, sqlx::Error> {
+    let rows = sqlx::query!(
+        "SELECT player_identities.player_id, player_identities.external_id
+         FROM player_identities
+         JOIN players ON players.player_id = player_identities.player_id
+         WHERE player_identities.provider = 'discord'
+           AND player_identities.external_id = ANY($1)
+           AND player_identities.player_id <> $2
+         ORDER BY lower(players.display_name), players.player_id",
+        discord_ids,
+        viewer,
+    )
+    .fetch_all(pool)
+    .await?;
+    let ids: Vec<i64> = rows.iter().map(|row| row.player_id).collect();
+    let mut found = listed(pool, viewer, &ids).await?;
+    for entry in &mut found {
+        entry.discord_id = rows
+            .iter()
+            .find(|row| row.player_id == entry.player.id)
+            .map(|row| row.external_id.clone());
+    }
+    Ok(found)
+}
+
 /// The players `ids`, in that order, as `viewer` sees them.
 pub(super) async fn listed(
     pool: &PgPool,
@@ -215,6 +318,7 @@ pub(super) async fn listed(
                   test.username AS "test?",
                   coalesce(players.heartbeat_at > now() - make_interval(secs => $2), false)
                       AS "online!",
+                  players.activity,
                   EXISTS (SELECT 1 FROM matches
                           WHERE state IN ('challenged', 'accepted')
                             AND (home = players.player_id OR away = players.player_id))
@@ -222,7 +326,14 @@ pub(super) async fn listed(
                   extract(epoch FROM players.heartbeat_at)::bigint AS last_online,
                   EXISTS (SELECT 1 FROM friends
                           WHERE friends.player_id = $3 AND friends.friend_id = players.player_id)
-                      AS "friend!"
+                      AS "friend!",
+                  EXISTS (SELECT 1 FROM friends
+                          WHERE friends.player_id = players.player_id AND friends.friend_id = $3)
+                      AS "keeps_you!",
+                  (SELECT count(*) FROM chat_messages
+                   WHERE chat_messages.sender = players.player_id AND chat_messages.recipient = $3
+                     AND chat_messages.read_at IS NULL) AS "unread!",
+                  discord.external_id AS "discord_id?"
            FROM players
            LEFT JOIN player_identities discord
                   ON discord.player_id = players.player_id AND discord.provider = 'discord'
@@ -247,8 +358,16 @@ pub(super) async fn listed(
             },
             online: row.online,
             busy: row.busy,
+            activity: row
+                .online
+                .then(|| Activity::from_header(row.activity.as_deref()).name()),
             last_online: row.last_online,
             friend: row.friend,
+            chat: row.friend && row.keeps_you,
+            unread: row.unread,
+            discord_id: (row.friend && row.keeps_you)
+                .then_some(row.discord_id)
+                .flatten(),
         })
         .collect();
     listed.sort_by_key(|entry| ids.iter().position(|id| *id == entry.player.id));

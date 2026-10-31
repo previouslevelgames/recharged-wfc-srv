@@ -14,6 +14,7 @@
 //! reports the games it played ([`play`]); two ready games find only each
 //! other in RANKED ([`crate::pairing`]).
 
+mod chat;
 mod config;
 mod discord;
 #[cfg(test)]
@@ -24,6 +25,7 @@ mod play;
 mod players;
 pub(crate) mod rules;
 mod sign_in;
+mod social;
 
 use std::{sync::Arc, time::Duration};
 
@@ -112,8 +114,14 @@ pub(crate) fn router(
         )
         .route("/api/v1/matches/{id}/rematch", post(play::rematch))
         .route("/api/v1/players", get(play::players))
+        .route("/api/v1/players/discord", post(social::players_by_discord))
+        .route("/api/v1/discord/token", post(social::discord_token))
         .route("/api/v1/friends", post(play::add_friend))
         .route("/api/v1/friends/{id}", delete(play::remove_friend))
+        .route(
+            "/api/v1/chat/{id}",
+            get(play::chat_messages).post(play::send_chat),
+        )
         .route("/api/v1/matches/{id}/report", post(play::report))
         .route("/sign-in", get(sign_in_page))
         .route("/sign-in/test", post(page_test_sign_in))
@@ -143,7 +151,8 @@ fn database_error(error: sqlx::Error) -> Response {
 
 impl ProfilesState {
     /// The player of the request's bearer token, or the 401 to answer. The
-    /// request is the player's heartbeat: their Recharged is open.
+    /// request is the player's heartbeat: their Recharged is open, doing what
+    /// its `Recharged-Activity` header says.
     async fn signed_in(&self, headers: &HeaderMap) -> Result<Player, Response> {
         let unauthorized = || json_error(StatusCode::UNAUTHORIZED, "signed out");
         let token = bearer(headers).ok_or_else(unauthorized)?;
@@ -151,7 +160,12 @@ impl ProfilesState {
             .await
             .map_err(database_error)?
             .ok_or_else(unauthorized)?;
-        players::heartbeat(&self.pool, player_id)
+        let activity = players::Activity::from_header(
+            headers
+                .get("recharged-activity")
+                .and_then(|value| value.to_str().ok()),
+        );
+        players::heartbeat(&self.pool, player_id, activity)
             .await
             .map_err(database_error)?;
         players::player(&self.pool, player_id)
@@ -262,6 +276,9 @@ async fn server(State(state): State<Arc<ProfilesState>>) -> Response {
             "discord": state.config.discord.is_some(),
             "test": state.config.test_sign_in,
         },
+        // The launcher's Discord Social SDK signs in to this application
+        // (docs/profiles.md, "Discord friends").
+        "discord_application": state.config.discord.as_ref().map(|discord| &discord.client_id),
     }))
     .into_response()
 }

@@ -47,12 +47,28 @@ impl World {
     }
 
     async fn send(&self, method: &str, uri: &str, token: &str, body: Value) -> (StatusCode, Value) {
+        self.send_from(method, uri, token, None, body).await
+    }
+
+    /// A request of the game doing `activity` (the `Recharged-Activity`
+    /// header); none is the launcher.
+    async fn send_from(
+        &self,
+        method: &str,
+        uri: &str,
+        token: &str,
+        activity: Option<&str>,
+        body: Value,
+    ) -> (StatusCode, Value) {
         let mut request = Request::builder()
             .method(method)
             .uri(uri)
             .header(header::CONTENT_TYPE, "application/json");
         if !token.is_empty() {
             request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        if let Some(activity) = activity {
+            request = request.header("recharged-activity", activity);
         }
         let body = if body.is_null() {
             Body::empty()
@@ -355,19 +371,26 @@ async fn a_set_from_the_lobby_to_a_rematch(pool: PgPool) {
         let token = token.to_owned();
         async move { world.send("POST", &path, &token, body).await }
     };
-    post(format!("/api/v1/matches/{id}/accept"), &bowser, Value::Null).await;
+    assert_eq!(challenge["you_ready"], json!(true));
 
-    // Both press Ready to play!: go.
-    let (status, open) = post(
+    // The accept is Bowser's Ready to play!, the challenge was Mario's: go.
+    let (status, go) = post(format!("/api/v1/matches/{id}/accept"), &bowser, Value::Null).await;
+    assert_eq!(status, StatusCode::OK, "{go}");
+    assert_eq!(
+        (&go["stage"], &go["you_ready"], &go["opponent_ready"]),
+        (&json!("go"), &json!(true), &json!(true))
+    );
+    assert!(go["go_at"].is_i64());
+    // Taken back and pressed again: open, then go.
+    let (_, open) = post(
         format!("/api/v1/matches/{id}/ready-to-play"),
-        &bowser,
-        json!({"ready": true}),
+        &mario,
+        json!({"ready": false}),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{open}");
     assert_eq!(
         (&open["stage"], &open["you_ready"], &open["opponent_ready"]),
-        (&json!("open"), &json!(true), &json!(false))
+        (&json!("open"), &json!(false), &json!(true))
     );
     let (_, go) = post(
         format!("/api/v1/matches/{id}/ready-to-play"),
@@ -376,7 +399,6 @@ async fn a_set_from_the_lobby_to_a_rematch(pool: PgPool) {
     )
     .await;
     assert_eq!(go["stage"], "go");
-    assert!(go["go_at"].is_i64());
     let (_, current) = world
         .send("GET", "/api/v1/matches/current", &bowser, Value::Null)
         .await;
@@ -436,7 +458,7 @@ async fn a_set_from_the_lobby_to_a_rematch(pool: PgPool) {
     let (_, again) = post(format!("/api/v1/matches/{id}/rematch"), &mario, Value::Null).await;
     assert_eq!(
         (&again["id"], &again["stage"]),
-        (&offered["id"], &json!("open"))
+        (&offered["id"], &json!("go"))
     );
     let (_, lists) = world
         .send("GET", "/api/v1/players", &mario, Value::Null)
@@ -460,6 +482,232 @@ async fn a_set_from_the_lobby_to_a_rematch(pool: PgPool) {
         (&current["match"]["stage"], &current["match"]["reason"]),
         (&json!("dissolved"), &json!("dissolved"))
     );
+}
+
+#[sqlx::test]
+async fn friends_who_keep_each_other_chat(pool: PgPool) {
+    let world = World::new(pool);
+    let mario = world.sign_in("Mario").await;
+    let luigi = world.sign_in("Luigi").await;
+    let peach = world.sign_in("Peach").await;
+    let id_of = |name: &'static str| {
+        let world = &world;
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT player_id FROM player_identities WHERE lower(username) = $1",
+            )
+            .bind(name)
+            .fetch_one(&world.pool)
+            .await
+            .unwrap()
+        }
+    };
+    let (luigi_id, peach_id, mario_id) = (
+        id_of("luigi").await,
+        id_of("peach").await,
+        id_of("mario").await,
+    );
+    let write = |token: &str, to: i64, body: &str| {
+        let (world, token, body) = (&world, token.to_owned(), body.to_owned());
+        async move {
+            world
+                .send(
+                    "POST",
+                    &format!("/api/v1/chat/{to}"),
+                    &token,
+                    json!({ "body": body }),
+                )
+                .await
+        }
+    };
+
+    // A challenge and its accept: each keeps the other, so they can write.
+    let (_, challenge) = world
+        .send(
+            "POST",
+            "/api/v1/matches",
+            &mario,
+            json!({"opponent": "luigi", "rule_set": 1}),
+        )
+        .await;
+    let id = challenge["id"].as_i64().unwrap();
+    world
+        .send(
+            "POST",
+            &format!("/api/v1/matches/{id}/accept"),
+            &luigi,
+            Value::Null,
+        )
+        .await;
+    let (status, sent) = write(&mario, luigi_id, "  good game?\nrematch!  ").await;
+    assert_eq!(status, StatusCode::CREATED, "{sent}");
+    assert_eq!(sent["body"], "good game? rematch!");
+    assert_eq!(sent["mine"], json!(true));
+
+    // Luigi sees it unread in the list, then reads it.
+    let (_, lists) = world
+        .send("GET", "/api/v1/players", &luigi, Value::Null)
+        .await;
+    let marios = &lists["friends"][0];
+    assert_eq!(
+        (&marios["name"], &marios["chat"], &marios["unread"]),
+        (&json!("Mario"), &json!(true), &json!(1))
+    );
+    let (status, chat) = world
+        .send(
+            "GET",
+            &format!("/api/v1/chat/{mario_id}"),
+            &luigi,
+            Value::Null,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{chat}");
+    assert_eq!(chat["can_send"], json!(true));
+    assert_eq!(chat["messages"][0]["body"], "good game? rematch!");
+    assert_eq!(chat["messages"][0]["mine"], json!(false));
+    let (_, lists) = world
+        .send("GET", "/api/v1/players", &luigi, Value::Null)
+        .await;
+    assert_eq!(lists["friends"][0]["unread"], json!(0));
+    let (status, reply) = write(&luigi, mario_id, "sure").await;
+    assert_eq!(status, StatusCode::CREATED, "{reply}");
+    let after = sent["id"].as_i64().unwrap();
+    let (_, newer) = world
+        .send(
+            "GET",
+            &format!("/api/v1/chat/{luigi_id}?after={after}"),
+            &mario,
+            Value::Null,
+        )
+        .await;
+    assert_eq!(newer["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(newer["messages"][0]["body"], "sure");
+
+    // Empty and too long are refused.
+    assert_eq!(
+        write(&mario, luigi_id, " \n ").await.0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        write(&mario, luigi_id, &"x".repeat(301)).await.0,
+        StatusCode::BAD_REQUEST
+    );
+
+    // Only friends who keep each other: Mario keeps Peach, not she him.
+    world
+        .send("POST", "/api/v1/friends", &mario, json!({"name": "peach"}))
+        .await;
+    let (status, refused) = write(&mario, peach_id, "hello").await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+    world
+        .send("POST", "/api/v1/friends", &peach, json!({"name": "mario"}))
+        .await;
+    assert_eq!(
+        write(&mario, peach_id, "hello").await.0,
+        StatusCode::CREATED
+    );
+
+    // At most 20 a minute.
+    for _ in 0..18 {
+        assert_eq!(write(&mario, peach_id, "spam").await.0, StatusCode::CREATED);
+    }
+    assert_eq!(
+        write(&mario, peach_id, "spam").await.0,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+
+    // Taken off the list: no more writing.
+    world
+        .send(
+            "DELETE",
+            &format!("/api/v1/friends/{mario_id}"),
+            &luigi,
+            Value::Null,
+        )
+        .await;
+    let (_, chat) = world
+        .send(
+            "GET",
+            &format!("/api/v1/chat/{mario_id}"),
+            &luigi,
+            Value::Null,
+        )
+        .await;
+    assert_eq!(chat["can_send"], json!(false));
+    assert_eq!(
+        write(&luigi, mario_id, "bye").await.0,
+        StatusCode::FORBIDDEN
+    );
+}
+
+#[sqlx::test]
+async fn a_match_in_the_game_shows_and_keeps_challenges_away(pool: PgPool) {
+    let world = World::new(pool);
+    let mario = world.sign_in("Mario").await;
+    let luigi = world.sign_in("Luigi").await;
+    let activity_of_luigi = || async {
+        let (_, lists) = world
+            .send("GET", "/api/v1/players", &mario, Value::Null)
+            .await;
+        lists["online"][0]["activity"].clone()
+    };
+    let challenge = || {
+        world.send(
+            "POST",
+            "/api/v1/matches",
+            &mario,
+            json!({"opponent": "luigi", "rule_set": 1}),
+        )
+    };
+    assert_eq!(activity_of_luigi().await, json!("launcher"));
+
+    // Luigi's game starts a match: shown at once, and no challenge reaches it.
+    world
+        .send_from(
+            "GET",
+            "/api/v1/matches/current",
+            &luigi,
+            Some("game"),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(activity_of_luigi().await, json!("game"));
+    world
+        .send_from(
+            "GET",
+            "/api/v1/matches/current",
+            &luigi,
+            Some("match"),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(activity_of_luigi().await, json!("match"));
+    let (status, refused) = challenge().await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    assert_eq!(refused["error"], "that player is playing a match right now");
+
+    // Back in the game's menus, Luigi can be challenged again.
+    world
+        .send_from(
+            "GET",
+            "/api/v1/matches/current",
+            &luigi,
+            Some("game"),
+            Value::Null,
+        )
+        .await;
+    let (status, created) = challenge().await;
+    assert_eq!(status, StatusCode::CREATED, "{created}");
+
+    // A closed Recharged has no activity.
+    sqlx::query("UPDATE players SET heartbeat_at = now() - interval '2 minutes'")
+        .execute(&world.pool)
+        .await
+        .unwrap();
+    let (_, lists) = world
+        .send("GET", "/api/v1/players", &mario, Value::Null)
+        .await;
+    assert_eq!(lists["friends"][0]["activity"], Value::Null);
 }
 
 #[sqlx::test]
