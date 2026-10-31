@@ -122,6 +122,40 @@ proven theirs, `rule_sets` the rules, `matches` and `match_reports` the
 matches and what each game reported. The series every Recharged build reports
 online are separate ([reports.md](reports.md)).
 
+## Available for random games
+
+A player can make themselves available for random games
+(`players.available`, off by default). `PUT /api/v1/me/available` with
+`{"available": true}` (or `false`) switches it and answers the same;
+`GET /api/v1/me` has it as `available`. While a player is available,
+`available` in `GET /api/v1/players` lists the other available players who
+have Recharged open (at most 100, by name, as the other lists show players);
+for a player who isn't, it is empty. So only those who take part see each
+other.
+
+## Mii profiles
+
+The game's own online players without a Recharged launcher show in the
+launcher by their Mii and friend code: the WFC profiles logged in to GPCM, as
+`{"profile_id", "mii", "game", "friend_code", "online", "status",
+"last_online", "friend"}`. `mii` is the Mii name of the profile's last login,
+`game` the release (`R4QE`, `R4QP`, `R4QJ`, `R4QK`), `friend_code` the code
+the game shows for it (`0868-9934-5920`), `status` while logged in what the
+game does (`menu`, `matchmaking` or `match`, from DWC's status) and
+`last_online` the last login in Unix seconds.
+
+`GET /api/v1/players` has them twice: `mii_friends`, the Mii profiles the
+player keeps as friends (`friend_profiles`, those logged in first by name,
+then the last online first), and, while the player is available for random
+games, `game_online`: the profiles logged in that aren't in the lists already
+(not the player's own, not a player's whose launcher is open, not a Mii
+friend), by Mii name, at most 100.
+
+| Route | |
+|---|---|
+| `POST /api/v1/friends/miis` | `{"profile_id": <id>}`: adds that Mii profile to the player's friends, and answers `{"mii_friends": [...]}`. 404 for no such profile, 409 with the list full (200, as for players). |
+| `DELETE /api/v1/friends/miis/<profile_id>` | Takes it off; the answer as above. |
+
 ## Friends
 
 Each player keeps a list of friends on the server, so it follows them to

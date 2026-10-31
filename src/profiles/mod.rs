@@ -22,6 +22,7 @@ mod flow_tests;
 mod friends;
 mod leaderboard;
 mod matches;
+mod miis;
 mod play;
 mod players;
 pub(crate) mod rules;
@@ -36,7 +37,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware,
     response::{Html, IntoResponse, Redirect, Response},
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -115,6 +116,7 @@ pub(crate) fn router(
         .route("/api/v1/sign-in/{id}", get(poll_sign_in))
         .route("/api/v1/sign-out", post(sign_out))
         .route("/api/v1/me", get(me))
+        .route("/api/v1/me/available", put(play::set_available))
         .route("/api/v1/rules", get(play::rule_sets))
         .route("/api/v1/wfc", post(play::bind))
         .route("/api/v1/matches", post(play::challenge))
@@ -134,6 +136,11 @@ pub(crate) fn router(
         .route("/api/v1/discord/token", post(social::discord_token))
         .route("/api/v1/friends", post(play::add_friend))
         .route("/api/v1/friends/{id}", delete(play::remove_friend))
+        .route("/api/v1/friends/miis", post(play::add_mii_friend))
+        .route(
+            "/api/v1/friends/miis/{profile_id}",
+            delete(play::remove_mii_friend),
+        )
         .route(
             "/api/v1/chat/{id}",
             get(play::chat_messages).post(play::send_chat),
@@ -463,11 +470,16 @@ async fn me(State(state): State<Arc<ProfilesState>>, headers: HeaderMap) -> Resp
         Ok(discord_id) => discord_id,
         Err(error) => return database_error(error),
     };
+    let available = match players::available(&state.pool, player.id).await {
+        Ok(available) => available,
+        Err(error) => return database_error(error),
+    };
     match players::wfc_profiles(&state.pool, player.id).await {
         Ok(wfc) => {
             let mut me = serde_json::to_value(&player).expect("a player serializes");
             me["wfc"] = json!(wfc);
             me["discord_id"] = json!(discord_id);
+            me["available"] = json!(available);
             Json(me).into_response()
         }
         Err(error) => database_error(error),

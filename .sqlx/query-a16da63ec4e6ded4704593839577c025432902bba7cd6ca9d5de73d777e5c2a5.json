@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT profiles.profile_id AS \"profile_id!\" FROM profiles\n           WHERE profiles.profile_id = ANY($1)\n             AND NOT EXISTS (\n                 SELECT 1 FROM player_wfc_profiles JOIN players USING (player_id)\n                 WHERE player_wfc_profiles.profile_id = profiles.profile_id\n                   AND (players.player_id = $2\n                        OR players.heartbeat_at > now() - make_interval(secs => $3)))\n             AND NOT EXISTS (\n                 SELECT 1 FROM friend_profiles\n                 WHERE friend_profiles.player_id = $2\n                   AND friend_profiles.profile_id = profiles.profile_id)\n           ORDER BY lower(profiles.ingamesn), profiles.profile_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "profile_id!",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "profiles",
+            "name": "profile_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4Array",
+        "Int8",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "a16da63ec4e6ded4704593839577c025432902bba7cd6ca9d5de73d777e5c2a5"
+}

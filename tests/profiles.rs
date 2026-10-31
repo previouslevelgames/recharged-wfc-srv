@@ -104,8 +104,11 @@ async fn the_launcher_signs_in_with_discord(pool: PgPool) {
     // account id, which the launcher makes the player's Mii from.
     assert_eq!(me["wfc"], json!([]));
     assert_eq!(me["discord_id"], "80351110224678912");
+    // Not available for random games until the player says so.
+    assert_eq!(me["available"], false);
     me.as_object_mut().unwrap().remove("wfc");
     me.as_object_mut().unwrap().remove("discord_id");
+    me.as_object_mut().unwrap().remove("available");
     assert_eq!(me, signed_in["player"]);
 
     // Signing in again with the same account: the same player.
@@ -152,6 +155,75 @@ async fn a_discord_sign_in_without_the_sdk_scopes_passes_no_tokens(pool: PgPool)
     assert_eq!(status, 200);
     assert_eq!(signed_in["status"], "signed_in");
     assert!(signed_in.get("discord").is_none(), "{signed_in}");
+}
+
+#[sqlx::test]
+async fn available_players_see_each_other(pool: PgPool) {
+    let (config, _) = fake_discord(true).await;
+    let app = recharged_wfc_srv::App::new(pool).router(None, Some(config));
+    let nelly = test_sign_in(&app, "Nelly").await["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let sam = test_sign_in(&app, "Sam").await["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let me = |body: String| serde_json::from_str::<Value>(&body).unwrap()["available"].clone();
+
+    // Off by default: nobody listed, for nobody.
+    assert_eq!(
+        me(send(&app, Request::get("/api/v1/me"), Some(&nelly)).await.2),
+        false
+    );
+    assert!(available_names(&app, &nelly).await.is_empty());
+
+    // Only one available: the other is not listed to them.
+    set_available(&app, &nelly, true).await;
+    assert_eq!(
+        me(send(&app, Request::get("/api/v1/me"), Some(&nelly)).await.2),
+        true
+    );
+    assert!(available_names(&app, &nelly).await.is_empty());
+    assert!(available_names(&app, &sam).await.is_empty());
+
+    // Both: each sees the other, never themselves.
+    set_available(&app, &sam, true).await;
+    assert_eq!(available_names(&app, &nelly).await, ["Sam"]);
+    assert_eq!(available_names(&app, &sam).await, ["Nelly"]);
+
+    set_available(&app, &sam, false).await;
+    assert!(available_names(&app, &nelly).await.is_empty());
+    assert!(available_names(&app, &sam).await.is_empty());
+}
+
+/// The names in `available` of `GET /api/v1/players`.
+async fn available_names(app: &Router, token: &str) -> Vec<String> {
+    let (status, _, body) = send(app, Request::get("/api/v1/players"), Some(token)).await;
+    assert_eq!(status, 200, "{body}");
+    let lists: Value = serde_json::from_str(&body).unwrap();
+    lists["available"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|player| player["name"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+async fn set_available(app: &Router, token: &str, on: bool) {
+    let (status, _, body) = send(
+        app,
+        Request::put("/api/v1/me/available")
+            .header(header::CONTENT_TYPE, "application/json")
+            .with_body(&json!({ "available": on }).to_string()),
+        Some(token),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap(),
+        json!({ "available": on })
+    );
 }
 
 #[sqlx::test]
