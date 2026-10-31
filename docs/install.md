@@ -67,7 +67,7 @@ enter the **Key** and **Value** from the table, and set **Password Mask: Yes** f
 | `OWNER_GOOGLE_EMAILS` | no | Owners, above admins: Google addresses, comma-separated, e.g. `you@gmail.com`. They sign in too, and only they see **Maintenance**. Unset, no one does. |
 | `DISCORD_CLIENT_ID` | for profiles | Client ID of the Discord app players sign in with. See [profiles.md](profiles.md). |
 | `DISCORD_CLIENT_SECRET` | for profiles | Its client secret. Set **Password Mask: Yes**. |
-| `PROFILES_TEST_SIGN_IN` | no | `true` lets anyone sign in to a profile with a name alone, for tests with two games on one PC. Never on a public server. |
+| `PROFILES_TEST_SIGN_IN` | no | `true` lets anyone sign in to a profile with a name alone, for tests with two games on one PC. Never on a public server. An owner's switch on **Maintenance** wins over it. |
 | `SERVER_LABEL` | no | A short name such as `DEV` for a test server: `/admin` and the sign-in pages show it in their header and tab title, with an orange tab icon, so they are not mistaken for the live server's. At most 16 letters, digits, spaces, `-`, `_` or `.`. Unset, no label. |
 | `LOG_DIR` | no | Log folder inside the container. Default: `/var/log/recharged-wfc-srv`, the mapped **Path (logs)**. Leave unset to use this default. |
 | `LOG_RETENTION_DAYS` | no | Days of log files to keep. Default: `14`. |
@@ -167,7 +167,10 @@ cannot be undone: **Wipe all leaderboards** deletes every board's scores and the
 final standings of past seasons. It asks twice: the button shows what would go,
 then the wipe runs only once you type `wipe all leaderboards` within 5 minutes.
 A game that is online keeps its totals until it logs in again and puts them
-back after its next match, so wipe when no one is online. Without the four `/admin`
+back after its next match, so wipe when no one is online. **Test sign-in**
+switches sign-in with a name alone on or off at once
+([profiles.md](profiles.md)); the switch stays across restarts and updates
+and wins over `PROFILES_TEST_SIGN_IN`. Without the four `/admin`
 variables, the server runs as before and `/admin` answers 404. With only some of
 them, the container stops at start and its log names the missing ones.
 

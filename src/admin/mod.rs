@@ -110,6 +110,9 @@ struct AdminState {
     sessions: Sessions,
     /// The Maintenance page's operations waiting for their second ask.
     confirmations: Confirmations,
+    /// `PROFILES_TEST_SIGN_IN` while profiles run, for the Maintenance
+    /// page's switch; none without profiles.
+    test_sign_in: Option<bool>,
     started_at: OffsetDateTime,
     /// [`LOGIN_PAGE`] and [`DASHBOARD_PAGE`] with the server's label.
     login_page: String,
@@ -122,6 +125,7 @@ pub(crate) fn router(
     master: Arc<Master>,
     activity: Arc<Activity>,
     config: Config,
+    test_sign_in: Option<bool>,
 ) -> Router {
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
@@ -139,6 +143,7 @@ pub(crate) fn router(
         http,
         sessions: Sessions::default(),
         confirmations: Confirmations::default(),
+        test_sign_in,
         started_at: OffsetDateTime::now_utc(),
         login_page,
         dashboard_page,
@@ -175,6 +180,10 @@ pub(crate) fn router(
         .route(
             "/admin/api/maintenance/wipe-leaderboards/confirm",
             post(wipe_leaderboards),
+        )
+        .route(
+            "/admin/api/maintenance/test-sign-in",
+            put(switch_test_sign_in),
         )
         .route("/admin/api/rules", post(create_rule_set))
         .route(
@@ -575,7 +584,10 @@ async fn api_maintenance(State(state): State<Arc<AdminState>>, jar: CookieJar) -
         return StatusCode::FORBIDDEN.into_response();
     }
     state
-        .page_data(&jar, maintenance::read(&state.pool, &state.gpcm))
+        .page_data(
+            &jar,
+            maintenance::read(&state.pool, &state.gpcm, state.test_sign_in),
+        )
         .await
 }
 
@@ -646,6 +658,51 @@ async fn wipe_leaderboards(
             warn!(target: "admin", email = %owner.email, ?wiped, "leaderboards wiped");
             Json(wiped).into_response()
         }
+        Err(failure) => {
+            warn!(target: "admin", error = %failure, "database error");
+            error(StatusCode::INTERNAL_SERVER_ERROR, "the database failed")
+        }
+    }
+}
+
+/// The Maintenance page's switch for test sign-in.
+#[derive(Deserialize)]
+struct SwitchForm {
+    enabled: bool,
+}
+
+/// Switches test sign-in on or off: it stays so across restarts.
+async fn switch_test_sign_in(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Json(form): Json<SwitchForm>,
+) -> Response {
+    let owner = match state.owner(&jar, &headers) {
+        Ok(owner) => owner,
+        Err(status) => return status.into_response(),
+    };
+    let Some(default) = state.test_sign_in else {
+        return error(StatusCode::NOT_FOUND, "this server has no profiles");
+    };
+    let switched = crate::switches::set(
+        &state.pool,
+        crate::switches::TEST_SIGN_IN,
+        form.enabled,
+        &owner.email,
+    )
+    .await;
+    if let Err(failure) = switched {
+        warn!(target: "admin", error = %failure, "database error");
+        return error(StatusCode::INTERNAL_SERVER_ERROR, "the database failed");
+    }
+    if form.enabled {
+        warn!(target: "admin", email = %owner.email, "test sign-in switched on");
+    } else {
+        info!(target: "admin", email = %owner.email, "test sign-in switched off");
+    }
+    match maintenance::test_sign_in(&state.pool, default).await {
+        Ok(test_sign_in) => Json(test_sign_in).into_response(),
         Err(failure) => {
             warn!(target: "admin", error = %failure, "database error");
             error(StatusCode::INTERNAL_SERVER_ERROR, "the database failed")
