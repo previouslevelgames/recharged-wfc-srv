@@ -60,6 +60,10 @@ const MAX_TEST_NAME: usize = 16;
 
 const PAGE: &str = include_str!("assets/page.html");
 const STYLESHEET: &str = include_str!("assets/sign-in.css");
+/// The failed sign-in page's mark: an exclamation point in a ring.
+const PROBLEM: &str = r#"<div class="hero problem" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 6.5v7M12 17.5h.01"/></svg></div>"#;
+/// Discord's mark, on its button.
+const DISCORD_MARK: &str = r#"<svg viewBox="0 0 127.14 96.36" aria-hidden="true"><path d="M107.7 8.07A105.15 105.15 0 0 0 81.47 0a72.06 72.06 0 0 0-3.36 6.83 97.68 97.68 0 0 0-29.11 0A72.37 72.37 0 0 0 45.64 0a105.89 105.89 0 0 0-26.25 8.09C2.79 32.65-1.71 56.6.54 80.21a105.73 105.73 0 0 0 32.17 16.15 77.7 77.7 0 0 0 6.89-11.11 68.42 68.42 0 0 1-10.85-5.18c.91-.66 1.8-1.34 2.66-2a75.57 75.57 0 0 0 64.32 0c.87.71 1.76 1.39 2.66 2a68.68 68.68 0 0 1-10.87 5.19 77 77 0 0 0 6.89 11.1 105.25 105.25 0 0 0 32.19-16.14c2.64-27.38-4.51-51.11-18.9-72.15ZM42.45 65.69C36.18 65.69 31 60 31 53s5-12.74 11.43-12.74S54 46 53.89 53s-5.05 12.69-11.44 12.69Zm42.24 0C78.41 65.69 73.25 60 73.25 53s5-12.74 11.44-12.74S96.23 46 96.12 53s-5.04 12.69-11.43 12.69Z"/></svg>"#;
 
 /// The pages' scripts and styles only from here.
 const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; style-src 'self'; \
@@ -242,26 +246,64 @@ impl ProfilesState {
         }
     }
 
-    /// A page on the sign-in's design, with `content` (HTML) under `title`.
-    fn page(&self, status: StatusCode, title: &str, content: &str) -> Response {
+    /// A page on the sign-in's design: `hero` (HTML) above `title`, then
+    /// `content` (HTML). `tone` is the card's class.
+    fn page(
+        &self,
+        status: StatusCode,
+        tone: &str,
+        hero: &str,
+        title: &str,
+        content: &str,
+    ) -> Response {
+        // The text that may come from anyone goes in last.
         let page = self
             .page
+            .replace("{{tone}}", tone)
             .replace("{{title}}", &escape(title))
+            .replace("{{hero}}", hero)
             .replace("{{content}}", content);
         (status, Html(page)).into_response()
     }
 
     fn notice_page(&self, status: StatusCode, message: &str) -> Response {
         let content = format!(r#"<p class="notice" role="alert">{}</p>"#, escape(message));
-        self.page(status, "Signing in", &content)
+        self.page(status, "failed", PROBLEM, "Sign-in failed", &content)
     }
 
-    fn signed_in_page(&self, name: &str) -> Response {
+    /// `avatar_url`: the player's picture, else their initial.
+    fn signed_in_page(&self, name: &str, avatar_url: Option<&str>) -> Response {
+        let picture = match avatar_url {
+            Some(url) => format!(
+                r#"<img src="{}" alt="" width="96" height="96">"#,
+                escape(url)
+            ),
+            None => format!(
+                r#"<span class="initial">{}</span>"#,
+                escape(
+                    &name
+                        .chars()
+                        .next()
+                        .map(char::to_uppercase)
+                        .map(String::from_iter)
+                        .unwrap_or_default()
+                )
+            ),
+        };
+        let hero = format!(
+            r#"<div class="hero avatar" aria-hidden="true">{picture}<span class="check"><svg viewBox="0 0 24 24"><path d="m6 12.5 4 4 8-9"/></svg></span></div>"#
+        );
         let content = format!(
-            "<p>Signed in as <b>{}</b>.</p><p>You can close this page and go back to Recharged.</p>",
+            r#"<p class="lead">Signed in as <b>{}</b>.</p>
+<div class="linked">
+<span class="linked-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></span>
+<span class="linked-text"><b>Launcher connected</b>Your launcher signed in too, by itself.</span>
+<span class="live" aria-hidden="true"></span>
+</div>
+<p class="hint">You can close this tab and go back to the launcher.</p>"#,
             escape(name)
         );
-        self.page(StatusCode::OK, "Signed in", &content)
+        self.page(StatusCode::OK, "done", &hero, "You're signed in", &content)
     }
 }
 
@@ -414,18 +456,21 @@ async fn sign_in_page(
         );
     };
     let mut content = format!(
-        r#"<p>Signing in to Recharged's launcher. Check that the launcher shows this code:</p>
-<p class="code">{}</p>
-<p class="hint">If it doesn't, close this page: someone else started this sign-in.</p>"#,
-        sign_in::display_code(&code)
+        r#"<p class="lead">Check that Recharged's launcher shows this code:</p>
+{}
+<p class="hint">A different code? Close this page: someone else started this sign-in.</p>"#,
+        code_tiles(&sign_in::display_code(&code))
     );
     if state.config.discord.is_some() {
         content += &format!(
-            r#"<p><a class="button discord" href="/sign-in/discord?id={}">Continue with Discord</a></p>"#,
+            r#"<a class="button discord" href="/sign-in/discord?id={}">{DISCORD_MARK}Continue with Discord</a>"#,
             escape(&id)
         );
     }
     if state.config.test_sign_in {
+        if state.config.discord.is_some() {
+            content += r#"<p class="or">or</p>"#;
+        }
         content += &format!(
             r#"<form method="post" action="/sign-in/test">
 <input type="hidden" name="id" value="{}">
@@ -435,7 +480,7 @@ async fn sign_in_page(
             escape(&id)
         );
     }
-    state.page(StatusCode::OK, "Sign in", &content)
+    state.page(StatusCode::OK, "sign-in", "", "Sign in", &content)
 }
 
 /// Sends the browser to Discord for the sign-in `id`.
@@ -484,7 +529,7 @@ async fn discord_callback(
         avatar_url: Some(&account.avatar_url),
     };
     match state.finish(&id, &identity).await {
-        Ok(true) => state.signed_in_page(&account.display_name),
+        Ok(true) => state.signed_in_page(&account.display_name, Some(&account.avatar_url)),
         Ok(false) => state.notice_page(StatusCode::NOT_FOUND, &SignInError::Expired.message()),
         Err(error) => {
             warn!(target: "profiles", %error, "database error");
@@ -524,7 +569,7 @@ async fn page_test_sign_in(
         .finish(&form.id, &test_identity(&name, &external_id))
         .await
     {
-        Ok(true) => state.signed_in_page(&name),
+        Ok(true) => state.signed_in_page(&name, None),
         Ok(false) => state.notice_page(StatusCode::NOT_FOUND, &SignInError::Expired.message()),
         Err(error) => {
             warn!(target: "profiles", %error, "database error");
@@ -534,6 +579,21 @@ async fn page_test_sign_in(
             )
         }
     }
+}
+
+/// The sign-in code as one tile per character; screen readers get it whole.
+fn code_tiles(code: &str) -> String {
+    let tiles: String = code
+        .chars()
+        .map(|character| match character {
+            '-' => r#"<span class="dash"></span>"#.to_owned(),
+            _ => format!("<span>{}</span>", escape(&character.to_string())),
+        })
+        .collect();
+    format!(
+        r#"<p class="code" role="img" aria-label="{}">{tiles}</p>"#,
+        escape(code)
+    )
 }
 
 /// `name` as a test name, if it is one.
