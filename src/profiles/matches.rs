@@ -22,6 +22,9 @@ const GO_TIMEOUT_SECS: i32 = 300;
 /// A game of a playing set last called this long ago, and neither player
 /// reported: the set was broken off and ends (`dissolved`).
 const GAME_GONE_SECS: i32 = 60;
+/// One player reported this long ago and the other never did (their games
+/// disagreed on the series, or a report got lost): the set ends (`dissolved`).
+const ONE_REPORT_SECS: i32 = 300;
 
 /// A match as it is stored.
 #[derive(Clone, Debug, PartialEq)]
@@ -157,6 +160,8 @@ struct Row {
 ///   [`HEARTBEAT_TIMEOUT_SECS`]) and has not reported (`dissolved`);
 /// - playing sets without a report with a game that stopped saying it is
 ///   ready [`GAME_GONE_SECS`] ago (`dissolved`);
+/// - sets with one report [`ONE_REPORT_SECS`] old and none from the other
+///   player (`dissolved`);
 /// - a go older than [`GO_TIMEOUT_SECS`] without the games meeting: both
 ///   players are not ready again.
 pub async fn sweep(pool: &PgPool) -> Result<Vec<i64>, sqlx::Error> {
@@ -199,6 +204,22 @@ pub async fn sweep(pool: &PgPool) -> Result<Vec<i64>, sqlx::Error> {
                    SELECT 1 FROM match_reports WHERE match_reports.match_id = matches.match_id)
              RETURNING match_id",
             f64::from(GAME_GONE_SECS),
+        )
+        .fetch_all(pool)
+        .await?,
+    );
+    // One report and the other never came: without both nothing is settled.
+    ended.extend(
+        sqlx::query_scalar!(
+            "UPDATE matches SET state = 'dissolved', updated_at = now()
+             WHERE state = 'accepted'
+               AND (SELECT count(*) FROM match_reports
+                    WHERE match_reports.match_id = matches.match_id) = 1
+               AND (SELECT min(reported_at) FROM match_reports
+                    WHERE match_reports.match_id = matches.match_id)
+                   < now() - make_interval(secs => $1)
+             RETURNING match_id",
+            f64::from(ONE_REPORT_SECS),
         )
         .fetch_all(pool)
         .await?,
@@ -1111,6 +1132,38 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(settled.state, "finished");
+    }
+
+    #[sqlx::test]
+    async fn a_set_whose_second_report_never_comes_ends(pool: PgPool) {
+        let (found, mario, bowser) = playing_set(&pool).await;
+        report(&pool, found.id, mario, &[game(1, 0)])
+            .await
+            .unwrap()
+            .unwrap();
+        let reported_ago = async |seconds: i32| {
+            sqlx::query!(
+                "UPDATE match_reports SET reported_at = now() - make_interval(secs => $2)
+                 WHERE match_id = $1",
+                found.id,
+                f64::from(seconds),
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+        };
+        // Bowser's report may still come: the set waits.
+        reported_ago(290).await;
+        assert!(sweep(&pool).await.unwrap().is_empty());
+        // It never came: no result, and neither is in a set any more.
+        reported_ago(301).await;
+        assert_eq!(sweep(&pool).await.unwrap(), [found.id]);
+        let ended = get(&pool, found.id, mario).await.unwrap().unwrap();
+        assert_eq!(
+            (ended.state.as_str(), ended.stage(), ended.winner),
+            ("dissolved", "dissolved", None)
+        );
+        assert!(!busy_now(&pool, mario, bowser).await);
     }
 
     #[sqlx::test]
