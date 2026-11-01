@@ -254,6 +254,47 @@ pub async fn online(pool: &PgPool, player_id: i64) -> Result<Vec<Listed>, sqlx::
     listed(pool, player_id, &ids).await
 }
 
+/// Whether `player_id` is available for random games.
+pub async fn available(pool: &PgPool, player_id: i64) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar!(
+        "SELECT available FROM players WHERE player_id = $1",
+        player_id
+    )
+    .fetch_one(pool)
+    .await
+}
+
+pub async fn set_available(
+    pool: &PgPool,
+    player_id: i64,
+    available: bool,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "UPDATE players SET available = $2 WHERE player_id = $1",
+        player_id,
+        available
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// The other players with Recharged open who are available for random games,
+/// by name, as `player_id` sees them.
+pub async fn available_now(pool: &PgPool, player_id: i64) -> Result<Vec<Listed>, sqlx::Error> {
+    let ids = sqlx::query_scalar!(
+        "SELECT player_id FROM players
+         WHERE available AND heartbeat_at > now() - make_interval(secs => $2) AND player_id <> $1
+         ORDER BY lower(display_name), player_id
+         LIMIT 100",
+        player_id,
+        f64::from(super::matches::HEARTBEAT_TIMEOUT_SECS),
+    )
+    .fetch_all(pool)
+    .await?;
+    listed(pool, player_id, &ids).await
+}
+
 /// The last 10 players `player_id` played a set with, the latest first.
 pub async fn recent_opponents(pool: &PgPool, player_id: i64) -> Result<Vec<Listed>, sqlx::Error> {
     let ids = sqlx::query_scalar!(

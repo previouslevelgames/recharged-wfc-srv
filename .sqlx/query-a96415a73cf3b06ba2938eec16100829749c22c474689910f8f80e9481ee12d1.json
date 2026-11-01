@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO friend_profiles (player_id, profile_id)\n         SELECT $1, $2\n         WHERE (SELECT count(*) FROM friend_profiles WHERE player_id = $1) < $3\n         ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int4",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a96415a73cf3b06ba2938eec16100829749c22c474689910f8f80e9481ee12d1"
+}

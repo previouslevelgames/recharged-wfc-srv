@@ -5,6 +5,9 @@
 'use strict';
 
 const POLL_MS = 5000;
+// SERVER_LABEL (e.g. DEV), which the server puts in the header, before every
+// tab title.
+const LABEL = document.getElementById('server-label')?.textContent;
 // Transactions per second kept for the sparkline: 5 minutes of polls.
 const HISTORY = 60;
 // NETWORK_PERSISTENT_* (docs/gamestats2.md, "Categories").
@@ -361,7 +364,7 @@ const SECTIONS = [
     group: 'System',
     name: 'Maintenance',
     icon: 'maintenance',
-    intro: "Operations on the server's data that cannot be undone, for owners only. Each one asks twice.",
+    intro: "For owners only: switches that take effect at once, and operations on the server's data that cannot be undone, which ask twice.",
     api: 'maintenance',
     render: renderMaintenance,
     owner: true,
@@ -2303,6 +2306,7 @@ function renderMaintenance(data) {
   const boards = data.content.leaderboards;
   const empty = boards.entries + boards.past_entries === 0;
   return [
+    testSignInCard(data.content.test_sign_in),
     h(
       'section',
       { class: 'tiles', 'aria-label': 'What a wipe deletes' },
@@ -2333,6 +2337,63 @@ function renderMaintenance(data) {
     ),
   ];
 }
+
+/** Test sign-in: a player name alone, without Discord (docs/profiles.md).
+ * None on a server without profiles. */
+function testSignInCard(test) {
+  if (!test) return null;
+  const how = test.switch
+    ? `Switched ${test.enabled ? 'on' : 'off'} by ${test.switch.changed_by}, ${dateTime.format(new Date(test.switch.changed_at))}.`
+    : `${test.enabled ? 'On' : 'Off'} from PROFILES_TEST_SIGN_IN until an owner switches it here.`;
+  return h(
+    'section',
+    { class: 'card' },
+    h(
+      'header',
+      { class: 'card-head' },
+      h('h2', null, 'Test sign-in'),
+      badge(test.enabled ? 'warning' : null, test.enabled ? 'On' : 'Off'),
+    ),
+    h(
+      'div',
+      { class: 'operation' },
+      h('p', null, 'Lets anyone sign in with a player name alone, without Discord, so that a second game on one computer has a player of its own. A test player has no Discord account: no Discord friends, and nobody finds it by its Discord name. The sign-in page shows it as a test server\'s extra, below Discord.'),
+      test.enabled && warningNote('On: anyone who finds this server can sign in under any test name. Keep it off on a public server.'),
+      h(
+        'div',
+        { class: 'editor-actions' },
+        h(
+          'button',
+          { class: test.enabled ? 'button primary' : 'button', type: 'button', disabled: testSwitch.busy, onclick: () => testSwitch.set(!test.enabled) },
+          test.enabled ? 'Switch off' : 'Switch on',
+        ),
+        testSwitch.result
+          ? h('span', { class: 'editor-status', role: 'status', 'data-tone': testSwitch.result[1] }, testSwitch.result[0])
+          : h('span', { class: 'editor-status', role: 'status' }, how),
+      ),
+    ),
+  );
+}
+
+/** Switching test sign-in: it takes effect at once, for the next sign-in. */
+const testSwitch = {
+  busy: false,
+  result: null, // [text, tone] of the last attempt.
+
+  async set(enabled) {
+    this.busy = true;
+    this.result = null;
+    render(lastData);
+    try {
+      await send('PUT', '/admin/api/maintenance/test-sign-in', { enabled });
+      this.result = [enabled ? 'Test sign-in is on.' : 'Test sign-in is off.', 'good'];
+    } catch (error) {
+      this.result = [error.message, 'critical'];
+    }
+    this.busy = false;
+    poll();
+  },
+};
 
 /** Wiping the leaderboards, in two asks: the button arms it on the server,
  * then the dialog sends back its token with the phrase typed out. The dialog
@@ -2499,7 +2560,12 @@ function render(data) {
 function setHead(title, intro) {
   document.getElementById('page-title').textContent = title;
   document.getElementById('page-intro').replaceChildren(...[intro].flat());
-  document.title = `${title} · ${section.name} · Recharged WFC`;
+  document.title = pageTitle(`${title} · ${section.name}`);
+}
+
+/** The tab's title for `title`, after the server's label. */
+function pageTitle(title) {
+  return `${LABEL ? `${LABEL} · ` : ''}${title} · Recharged WFC`;
 }
 
 function setLive(state, text) {
@@ -2537,7 +2603,7 @@ async function poll() {
   if (!document.hidden && !logs.paused) timer = setTimeout(poll, POLL_MS);
 }
 
-document.title = `${section.name} · Recharged WFC`;
+document.title = pageTitle(section.name);
 renderNav();
 document.getElementById('content').replaceChildren(
   h(

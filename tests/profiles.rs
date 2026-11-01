@@ -83,6 +83,17 @@ async fn the_launcher_signs_in_with_discord(pool: PgPool) {
     assert_eq!(signed_in["player"]["name"], "Nelly");
     assert_eq!(signed_in["player"]["discord"], "nelly");
     assert_eq!(signed_in["player"]["test"], false);
+    // The Discord SDK's tokens of the same sign-in, for the launcher's
+    // Discord friends: no second authorization.
+    assert_eq!(
+        signed_in["discord"],
+        json!({
+            "access_token": ACCESS_TOKEN,
+            "refresh_token": "refresh-token",
+            "expires_in": 604800,
+            "scope": "identify openid sdk.social_layer_presence",
+        })
+    );
     assert_eq!(poll(&app, id).await.0, 404);
 
     let token = signed_in["token"].as_str().unwrap();
@@ -93,8 +104,11 @@ async fn the_launcher_signs_in_with_discord(pool: PgPool) {
     // account id, which the launcher makes the player's Mii from.
     assert_eq!(me["wfc"], json!([]));
     assert_eq!(me["discord_id"], "80351110224678912");
+    // Not available for random games until the player says so.
+    assert_eq!(me["available"], false);
     me.as_object_mut().unwrap().remove("wfc");
     me.as_object_mut().unwrap().remove("discord_id");
+    me.as_object_mut().unwrap().remove("available");
     assert_eq!(me, signed_in["player"]);
 
     // Signing in again with the same account: the same player.
@@ -115,6 +129,101 @@ async fn the_launcher_signs_in_with_discord(pool: PgPool) {
     assert_eq!(signed_in_again["player"]["id"], me["id"]);
     assert_eq!(signed_in_again["player"]["name"], "nelly");
     assert_ne!(signed_in_again["token"], signed_in["token"]);
+}
+
+#[sqlx::test]
+async fn a_discord_sign_in_without_the_sdk_scopes_passes_no_tokens(pool: PgPool) {
+    let (config, discord) = fake_discord(false).await;
+    let app = recharged_wfc_srv::App::new(pool).router(None, Some(config));
+    *discord.granted.lock().unwrap() = Some("identify".into());
+
+    let (_, _, body) = send(&app, Request::post("/api/v1/sign-in"), None).await;
+    let sign_in: Value = serde_json::from_str(&body).unwrap();
+    let id = sign_in["id"].as_str().unwrap();
+    let params = to_discord(&app, id).await;
+    discord.approve(&params, "80351110224678912", "nelly", Some("Nelly"));
+    let (status, _, page) = get_page(
+        &app,
+        &format!(
+            "/sign-in/discord/callback?code={CODE}&state={}",
+            params["state"]
+        ),
+    )
+    .await;
+    assert_eq!(status, 200, "{page}");
+    let (status, signed_in) = poll(&app, id).await;
+    assert_eq!(status, 200);
+    assert_eq!(signed_in["status"], "signed_in");
+    assert!(signed_in.get("discord").is_none(), "{signed_in}");
+}
+
+#[sqlx::test]
+async fn available_players_see_each_other(pool: PgPool) {
+    let (config, _) = fake_discord(true).await;
+    let app = recharged_wfc_srv::App::new(pool).router(None, Some(config));
+    let nelly = test_sign_in(&app, "Nelly").await["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let sam = test_sign_in(&app, "Sam").await["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let me = |body: String| serde_json::from_str::<Value>(&body).unwrap()["available"].clone();
+
+    // Off by default: nobody listed, for nobody.
+    assert_eq!(
+        me(send(&app, Request::get("/api/v1/me"), Some(&nelly)).await.2),
+        false
+    );
+    assert!(available_names(&app, &nelly).await.is_empty());
+
+    // Only one available: the other is not listed to them.
+    set_available(&app, &nelly, true).await;
+    assert_eq!(
+        me(send(&app, Request::get("/api/v1/me"), Some(&nelly)).await.2),
+        true
+    );
+    assert!(available_names(&app, &nelly).await.is_empty());
+    assert!(available_names(&app, &sam).await.is_empty());
+
+    // Both: each sees the other, never themselves.
+    set_available(&app, &sam, true).await;
+    assert_eq!(available_names(&app, &nelly).await, ["Sam"]);
+    assert_eq!(available_names(&app, &sam).await, ["Nelly"]);
+
+    set_available(&app, &sam, false).await;
+    assert!(available_names(&app, &nelly).await.is_empty());
+    assert!(available_names(&app, &sam).await.is_empty());
+}
+
+/// The names in `available` of `GET /api/v1/players`.
+async fn available_names(app: &Router, token: &str) -> Vec<String> {
+    let (status, _, body) = send(app, Request::get("/api/v1/players"), Some(token)).await;
+    assert_eq!(status, 200, "{body}");
+    let lists: Value = serde_json::from_str(&body).unwrap();
+    lists["available"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|player| player["name"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+async fn set_available(app: &Router, token: &str, on: bool) {
+    let (status, _, body) = send(
+        app,
+        Request::put("/api/v1/me/available")
+            .header(header::CONTENT_TYPE, "application/json")
+            .with_body(&json!({ "available": on }).to_string()),
+        Some(token),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(
+        serde_json::from_str::<Value>(&body).unwrap(),
+        json!({ "available": on })
+    );
 }
 
 #[sqlx::test]
@@ -365,10 +474,47 @@ async fn the_sign_in_page_takes_a_test_name(pool: PgPool) {
     assert_eq!(signed_in["player"]["name"], "Luigi");
 }
 
-#[tokio::test]
-async fn test_sign_in_needs_its_setting() {
+#[sqlx::test]
+async fn the_owners_switch_wins_over_the_test_sign_in_setting(pool: PgPool) {
+    let (config, _) = fake_discord(true).await;
+    let app = recharged_wfc_srv::App::new(pool.clone()).router(None, Some(config));
+    let switch = |enabled: bool| {
+        sqlx::query(
+            "INSERT INTO switches (name, enabled, changed_by) VALUES ('test_sign_in', $1, 'owner')
+             ON CONFLICT (name) DO UPDATE SET enabled = excluded.enabled",
+        )
+        .bind(enabled)
+        .execute(&pool)
+    };
+    let page = async || {
+        let (_, _, body) = send(&app, Request::post("/api/v1/sign-in"), None).await;
+        let sign_in: Value = serde_json::from_str(&body).unwrap();
+        let id = sign_in["id"].as_str().unwrap().to_owned();
+        get_page(&app, &format!("/sign-in?id={id}")).await.2
+    };
+    assert!(page().await.contains("Sign in as test player"));
+
+    switch(false).await.unwrap();
+    let off = page().await;
+    assert!(!off.contains("Sign in as test player"), "{off}");
+    let (status, _, _) = send(
+        &app,
+        Request::post("/api/v1/sign-in/test")
+            .header(header::CONTENT_TYPE, "application/json")
+            .with_body(r#"{"name": "Mario"}"#),
+        None,
+    )
+    .await;
+    assert_eq!(status, 403);
+
+    switch(true).await.unwrap();
+    assert!(page().await.contains("Sign in as test player"));
+}
+
+#[sqlx::test]
+async fn test_sign_in_needs_its_setting(pool: PgPool) {
     let (config, _) = fake_discord(false).await;
-    let app = recharged_wfc_srv::App::new(lazy_pool()).router(None, Some(config));
+    let app = recharged_wfc_srv::App::new(pool).router(None, Some(config));
     let (status, _, _) = send(
         &app,
         Request::post("/api/v1/sign-in/test")
@@ -400,6 +546,17 @@ async fn expired_sign_ins_have_no_page() {
     assert_eq!(poll(&app, "made-up").await.0, 404);
 }
 
+#[tokio::test]
+async fn a_labelled_server_says_so_on_its_pages() {
+    let (mut config, _) = fake_discord(true).await;
+    config.label = Some("DEV".into());
+    let app = recharged_wfc_srv::App::new(lazy_pool()).router(None, Some(config));
+    let (_, _, page) = get_page(&app, "/sign-in?id=made-up").await;
+    assert!(page.contains("<title>DEV · "), "{page}");
+    assert!(page.contains(r#"id="server-label">DEV</span>"#), "{page}");
+    assert!(!page.contains("{{"), "{page}");
+}
+
 /// Follows `/sign-in/discord?id=<id>` to Discord. Returns the query it sends
 /// there.
 async fn to_discord(app: &Router, id: &str) -> HashMap<String, String> {
@@ -412,7 +569,7 @@ async fn to_discord(app: &Router, id: &str) -> HashMap<String, String> {
     );
     let params: HashMap<String, String> = location.query_pairs().into_owned().collect();
     assert_eq!(params["client_id"], CLIENT_ID);
-    assert_eq!(params["scope"], "identify");
+    assert_eq!(params["scope"], "identify openid sdk.social_layer_presence");
     assert_eq!(
         params["redirect_uri"],
         format!("{PUBLIC_URL}/sign-in/discord/callback")
@@ -520,6 +677,8 @@ async fn send(
 #[derive(Clone, Default)]
 struct FakeDiscord {
     grant: Arc<Mutex<Option<Grant>>>,
+    /// The scopes Discord grants a sign-in, when not those it asked for.
+    granted: Arc<Mutex<Option<String>>>,
     user: Arc<Mutex<Option<Value>>>,
     /// The account the Discord SDK's authorization signed in with: its
     /// [`SDK_CODE`] and [`SDK_REFRESH`] give tokens for it.
@@ -528,6 +687,7 @@ struct FakeDiscord {
 
 struct Grant {
     challenge: String,
+    scope: String,
     user: Value,
 }
 
@@ -540,8 +700,10 @@ impl FakeDiscord {
         username: &str,
         global_name: Option<&str>,
     ) {
+        let scope = self.granted.lock().unwrap().clone();
         *self.grant.lock().unwrap() = Some(Grant {
             challenge: params["code_challenge"].clone(),
+            scope: scope.unwrap_or_else(|| params["scope"].clone()),
             user: json!({
                 "id": id,
                 "username": username,
@@ -636,7 +798,7 @@ async fn token(
         "token_type": "Bearer",
         "expires_in": 604800,
         "refresh_token": "refresh-token",
-        "scope": "identify",
+        "scope": grant.scope,
     })))
 }
 

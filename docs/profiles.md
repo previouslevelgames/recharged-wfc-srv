@@ -17,21 +17,23 @@ The service is off unless it is configured, and the routes below then answer
 | `PUBLIC_URL` | The address launchers and browsers use, without a path, e.g. `https://wfc.example.com`, shared with `/admin`. Plain `http://` works only on a local network, for a test server. |
 | `DISCORD_CLIENT_ID` | The Discord app's client ID (Discord Developer Portal → the app → **OAuth2**). |
 | `DISCORD_CLIENT_SECRET` | Its client secret, from the same page. Set **Password Mask: Yes**. |
-| `PROFILES_TEST_SIGN_IN` | `true` lets anyone sign in with a name alone, so a second game on one PC has a player of its own. **Only on a local or test server.** |
+| `PROFILES_TEST_SIGN_IN` | `true` lets anyone sign in with a name alone, so a second game on one PC has a player of its own. **Only on a local or test server.** An owner can switch it on or off on the admin dashboard's **Maintenance** page instead; that switch wins from then on. |
 
 Discord, test sign-in, or both turn the service on, and then `PUBLIC_URL` is
 needed too. In the Discord app, add the redirect
 `<PUBLIC_URL>/sign-in/discord/callback` under **OAuth2 → Redirects**, e.g.
 `https://wfc.example.com/sign-in/discord/callback`, or
 `http://127.0.0.1:8080/sign-in/discord/callback` for a server on your own
-computer. The sign-in asks only for `identify`: the Discord user's id,
-username, display name and avatar.
+computer. The sign-in asks for `identify` (the Discord user's id, username,
+display name and avatar) and for the Discord Social SDK's
+`openid sdk.social_layer_presence`, for the launcher's Discord friends (see
+"Discord friends"), so the Discord app needs the Social SDK switched on in
+the Developer Portal.
 
 ## Signing in
 
-The launcher never sees a password or a Discord token, and needs no local web
-server: it opens a page in the browser and asks the server until the
-sign-in ends.
+The launcher never sees a password and needs no local web server: it opens a
+page in the browser and asks the server until the sign-in ends.
 
 1. `POST /api/v1/sign-in` starts a sign-in:
 
@@ -58,11 +60,16 @@ sign-in ends.
    ```json
    {"status": "signed_in", "token": "<43 characters>",
     "player": {"id": 7, "name": "Nelly", "avatar_url": "https://cdn.discordapp.com/…",
-               "discord": "nelly", "test": false}}
+               "discord": "nelly", "test": false},
+    "discord": {"access_token": "…", "refresh_token": "…", "expires_in": 604800,
+                "scope": "identify openid sdk.social_layer_presence"}}
    ```
 
    or `{"status": "refused", "message": "Sign-in was cancelled."}`. After
-   that, or 10 minutes after it began, it is 404.
+   that, or 10 minutes after it began, it is 404. `discord` comes with a
+   Discord sign-in that Discord granted the SDK's scopes: Discord's tokens for
+   the launcher's Discord friends, kept in memory with the sign-in until this
+   answer and not after.
 
 Sign-ins wait in the server's memory; a restart drops them, and the launcher
 starts again.
@@ -70,7 +77,9 @@ starts again.
 On a test server, `POST /api/v1/sign-in/test` with `{"name": "Mario"}`
 signs in at once and answers like a sign-in that ended. A test name has 1 to
 16 letters, digits, `-` or `_`; the same name in other letters is the same
-player. 403 without `PROFILES_TEST_SIGN_IN`.
+player. 403 while test sign-in is off. The sign-in page shows it in a box of
+its own, marked as a test server's, below Discord: a test player has no
+Discord account, so no Discord friends, and nobody finds it by Discord name.
 
 ## Sessions
 
@@ -113,15 +122,51 @@ proven theirs, `rule_sets` the rules, `matches` and `match_reports` the
 matches and what each game reported. The series every Recharged build reports
 online are separate ([reports.md](reports.md)).
 
+## Available for random games
+
+A player can make themselves available for random games
+(`players.available`, off by default). `PUT /api/v1/me/available` with
+`{"available": true}` (or `false`) switches it and answers the same;
+`GET /api/v1/me` has it as `available`. While a player is available,
+`available` in `GET /api/v1/players` lists the other available players who
+have Recharged open (at most 100, by name, as the other lists show players);
+for a player who isn't, it is empty. So only those who take part see each
+other.
+
+## Mii profiles
+
+The game's own online players without a Recharged launcher show in the
+launcher by their Mii and friend code: the WFC profiles logged in to GPCM, as
+`{"profile_id", "mii", "game", "friend_code", "online", "status",
+"last_online", "friend"}`. `mii` is the Mii name of the profile's last login,
+`game` the release (`R4QE`, `R4QP`, `R4QJ`, `R4QK`), `friend_code` the code
+the game shows for it (`0868-9934-5920`), `status` while logged in what the
+game does (`menu`, `matchmaking` or `match`, from DWC's status) and
+`last_online` the last login in Unix seconds.
+
+`GET /api/v1/players` has them twice: `mii_friends`, the Mii profiles the
+player keeps as friends (`friend_profiles`, those logged in first by name,
+then the last online first), and, while the player is available for random
+games, `game_online`: the profiles logged in that aren't in the lists already
+(not the player's own, not a player's whose launcher is open, not a Mii
+friend), by Mii name, at most 100.
+
+| Route | |
+|---|---|
+| `POST /api/v1/friends/miis` | `{"profile_id": <id>}`: adds that Mii profile to the player's friends, and answers `{"mii_friends": [...]}`. 404 for no such profile, 409 with the list full (200, as for players). |
+| `DELETE /api/v1/friends/miis/<profile_id>` | Takes it off; the answer as above. |
+
 ## Friends
 
 Each player keeps a list of friends on the server, so it follows them to
-every computer they sign in on. It is their own list, without requests: a
-challenge adds its opponent, accepting a challenge adds the challenger, and the
-launcher adds and removes players by hand. The players of earlier sets came in
-the same way when the list began. A list holds at most 200 friends. The
-launcher shows them online first, by name, then the others by when they were
-last online.
+every computer they sign in on. It is their own list, without requests: the
+player adds and removes players by hand in the launcher. Playing someone does
+not make them a friend: they show among the players last played with
+(`recent` in `GET /api/v1/players`) until the player adds them. Up to 1.2.0 a
+challenge added its opponent and an accept the challenger, and the players of
+earlier sets came in when the list began; those stay friends until removed. A
+list holds at most 200 friends. The launcher shows them online first, by name,
+then the others by when they were last online.
 
 | Route | |
 |---|---|
@@ -148,10 +193,12 @@ other), `unread` (their messages not shown yet) and, with `chat`, `discord_id`
 ## Discord friends
 
 The launcher can show the player's Discord friends, with who is online and
-who plays Recharged, through the Discord Social SDK. It is a separate step
-after signing in: the SDK asks Discord for its own permission (the scopes
+who plays Recharged, through the Discord Social SDK. Signing in with Discord
+already gives the SDK's permission (the scopes
 `openid sdk.social_layer_presence`, for the application in
-`discord_application`) and then reads the friends list from Discord itself.
+`discord_application`): the sign-in's answer hands the launcher Discord's
+tokens, and the SDK then reads the friends list from Discord itself. A player
+who signed in earlier connects with the SDK's own authorization instead.
 The friends list never reaches the server. The server only does what the SDK
 can't do itself, as the confidential client that holds the secret: it trades
 the SDK's code (and later its refresh token) for tokens, and it tells which
@@ -174,6 +221,21 @@ profile is then the player's, until another player proves it, and the answer
 is `{"profile_id", "game": "R4QE", "friend_code": "0868-9934-5920", "mii"}`.
 403 for a profile not logged in with that ticket. `GET /api/v1/me` lists the
 player's profiles as `wfc`, the latest first.
+
+## Leaderboard
+
+`GET /api/v1/leaderboard` gives the launcher the game's own RANKED
+leaderboards, as its LEADERBOARD menu shows them: `{"season": {...},
+"daily": {...}}`, the season's board (category 0) and the striker of the
+day's (category 1) of `docs/gamestats2.md`. Each has `first_day` and
+`last_day` of the current season (or the day), `players` on it, the first 20
+as `top`, and `you`, the player's best row among the WFC profiles they proved
+(see "Friend codes"), or `null`. A row is `{"rank", "mii", "player", "wins",
+"losses", "points", "region", "you"}`: the rank as the game counts it (equal
+points share it), the Mii's name and record from the game's submission, the
+Recharged player whose profile it is (`null` when no launcher proved it), and
+the game's region (1 JP, 2 US, 4 EU, 8 KR). Rows of an ended season, which
+stay in `scores` until their player's next ranked game, are left out.
 
 ## Rules
 

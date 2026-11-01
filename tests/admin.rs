@@ -211,6 +211,49 @@ async fn only_an_owner_wipes_the_leaderboards_and_only_when_asked_twice(pool: Pg
     assert_eq!(scores().await, 0);
 }
 
+#[sqlx::test]
+async fn only_an_owner_switches_test_sign_in_and_profiles_follow_at_once(pool: PgPool) {
+    const SWITCH: &str = "/admin/api/maintenance/test-sign-in";
+    let (config, google) = fake_google().await;
+    let profiles = recharged_wfc_srv::profiles::Config::new(PUBLIC_URL, None, false).unwrap();
+    let app = recharged_wfc_srv::App::new(pool).router(Some(config), Some(profiles));
+    let mut launcher = Browser::new(app.clone());
+    let mut test_sign_in = async || {
+        let (_, _, body) = launcher.get("/api/v1/server").await;
+        let server: serde_json::Value = serde_json::from_str(&body).unwrap();
+        server["sign_in"]["test"].clone()
+    };
+    assert_eq!(test_sign_in().await, false);
+
+    // An admin, not an owner, can't.
+    let mut admin = Browser::new(app.clone());
+    sign_in(&mut admin, &google, "second@example.com").await;
+    let on = serde_json::json!({ "enabled": true });
+    assert_eq!(admin.put_json(SWITCH, on.clone()).await.0, 403);
+
+    // The owner sees PROFILES_TEST_SIGN_IN's value until switching it.
+    let mut owner = Browser::new(app);
+    sign_in(&mut owner, &google, "owner@example.com").await;
+    let (_, _, body) = owner.get("/admin/api/maintenance").await;
+    let data: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let state = &data["content"]["test_sign_in"];
+    assert_eq!(state["enabled"], false, "{body}");
+    assert_eq!(state["switch"], serde_json::Value::Null, "{body}");
+
+    let (status, state) = owner.put_json(SWITCH, on).await;
+    assert_eq!(status, 200, "{state}");
+    assert_eq!(state["enabled"], true);
+    assert_eq!(state["default"], false);
+    assert_eq!(state["switch"]["changed_by"], "owner@example.com");
+    assert_eq!(test_sign_in().await, true);
+
+    let (status, state) = owner
+        .put_json(SWITCH, serde_json::json!({ "enabled": false }))
+        .await;
+    assert_eq!(status, 200, "{state}");
+    assert_eq!(test_sign_in().await, false);
+}
+
 #[tokio::test]
 async fn an_admin_reads_and_downloads_the_log_files() {
     let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("admin-logs");
@@ -258,6 +301,46 @@ async fn an_admin_reads_and_downloads_the_log_files() {
     }
 
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn a_labelled_server_says_so_on_its_pages() {
+    let (config, _) = fake_google().await;
+    let mut browser =
+        Browser::new(recharged_wfc_srv::App::new(lazy_pool()).router(Some(config), None));
+    let (_, _, page) = browser.get("/admin").await;
+    assert!(
+        page.contains("<title>Sign in · Recharged WFC</title>"),
+        "{page}"
+    );
+    assert!(
+        !page.contains("server-label") && !page.contains("{{"),
+        "{page}"
+    );
+
+    let (mut config, google) = fake_google().await;
+    config.label = Some("DEV".into());
+    let mut browser =
+        Browser::new(recharged_wfc_srv::App::new(lazy_pool()).router(Some(config), None));
+    let (status, _, page) = browser.get("/admin").await;
+    assert_eq!(status, 200);
+    assert!(
+        page.contains("<title>DEV · Sign in · Recharged WFC</title>"),
+        "{page}"
+    );
+    assert!(page.contains(r#"id="server-label">DEV</span>"#), "{page}");
+
+    let params = start_sign_in(&mut browser, "/admin/login").await;
+    google.approve(&params, "admin@example.com");
+    browser.callback(CODE, &params["state"]).await;
+    let (status, _, page) = browser.get("/admin").await;
+    assert_eq!(status, 200);
+    assert!(
+        page.contains("<title>DEV · Admin · Recharged WFC</title>"),
+        "{page}"
+    );
+    assert!(page.contains(r#"id="server-label">DEV</span>"#), "{page}");
+    assert!(!page.contains("{{"), "{page}");
 }
 
 #[tokio::test]
@@ -416,7 +499,23 @@ impl Browser {
         uri: &str,
         json: Option<serde_json::Value>,
     ) -> (StatusCode, serde_json::Value) {
-        let request = Request::post(uri)
+        self.send_json(Request::post(uri), json).await
+    }
+
+    async fn put_json(
+        &mut self,
+        uri: &str,
+        json: serde_json::Value,
+    ) -> (StatusCode, serde_json::Value) {
+        self.send_json(Request::put(uri), Some(json)).await
+    }
+
+    async fn send_json(
+        &mut self,
+        request: request::Builder,
+        json: Option<serde_json::Value>,
+    ) -> (StatusCode, serde_json::Value) {
+        let request = request
             .header(header::ORIGIN, PUBLIC_URL)
             .header(header::CONTENT_TYPE, "application/json");
         let body = json.map_or_else(Body::empty, |json| Body::from(json.to_string()));

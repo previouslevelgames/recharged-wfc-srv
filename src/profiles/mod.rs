@@ -20,7 +20,9 @@ mod discord;
 #[cfg(test)]
 mod flow_tests;
 mod friends;
+mod leaderboard;
 mod matches;
+mod miis;
 mod play;
 mod players;
 pub(crate) mod rules;
@@ -35,14 +37,18 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware,
     response::{Html, IntoResponse, Redirect, Response},
-    routing::{delete, get, post},
+    routing::{delete, get, post, put},
 };
 use serde::Deserialize;
 use serde_json::json;
 use sqlx::PgPool;
 use tracing::{info, warn};
 
-use crate::{gpcm::Gpcm, html::escape, pairing::Pairings};
+use crate::{
+    gpcm::Gpcm,
+    html::{escape, label_page},
+    pairing::Pairings,
+};
 
 pub use config::{Config, DiscordClient, DiscordEndpoints, VARIABLES};
 use discord::SignInError;
@@ -56,6 +62,12 @@ const MAX_TEST_NAME: usize = 16;
 
 const PAGE: &str = include_str!("assets/page.html");
 const STYLESHEET: &str = include_str!("assets/sign-in.css");
+/// The launcher's logo (assets/README.md).
+const LOGO: &[u8] = include_bytes!("assets/logo.webp");
+/// The failed sign-in page's mark: an exclamation point in a ring.
+const PROBLEM: &str = r#"<div class="hero problem" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 6.5v7M12 17.5h.01"/></svg></div>"#;
+/// Discord's mark, on its button.
+const DISCORD_MARK: &str = r#"<svg viewBox="0 0 127.14 96.36" aria-hidden="true"><path d="M107.7 8.07A105.15 105.15 0 0 0 81.47 0a72.06 72.06 0 0 0-3.36 6.83 97.68 97.68 0 0 0-29.11 0A72.37 72.37 0 0 0 45.64 0a105.89 105.89 0 0 0-26.25 8.09C2.79 32.65-1.71 56.6.54 80.21a105.73 105.73 0 0 0 32.17 16.15 77.7 77.7 0 0 0 6.89-11.11 68.42 68.42 0 0 1-10.85-5.18c.91-.66 1.8-1.34 2.66-2a75.57 75.57 0 0 0 64.32 0c.87.71 1.76 1.39 2.66 2a68.68 68.68 0 0 1-10.87 5.19 77 77 0 0 0 6.89 11.1 105.25 105.25 0 0 0 32.19-16.14c2.64-27.38-4.51-51.11-18.9-72.15ZM42.45 65.69C36.18 65.69 31 60 31 53s5-12.74 11.43-12.74S54 46 53.89 53s-5.05 12.69-11.44 12.69Zm42.24 0C78.41 65.69 73.25 60 73.25 53s5-12.74 11.44-12.74S96.23 46 96.12 53s-5.04 12.69-11.43 12.69Z"/></svg>"#;
 
 /// The pages' scripts and styles only from here.
 const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; style-src 'self'; \
@@ -72,6 +84,8 @@ struct ProfilesState {
     gpcm: Arc<Gpcm>,
     /// Matches' games kept for RANKED, which the server browser reads.
     pairings: Arc<Pairings>,
+    /// [`PAGE`] with the server's label.
+    page: String,
 }
 
 pub(crate) fn router(
@@ -85,6 +99,7 @@ pub(crate) fn router(
         .build()
         .expect("the TLS backend initializes");
     let discord = config.discord.is_some();
+    let page = label_page(PAGE, config.label.as_deref());
     let state = Arc::new(ProfilesState {
         config,
         pool,
@@ -92,6 +107,7 @@ pub(crate) fn router(
         sign_ins: SignIns::default(),
         gpcm,
         pairings,
+        page,
     });
     let mut router = Router::new()
         .route("/api/v1/server", get(server))
@@ -100,6 +116,7 @@ pub(crate) fn router(
         .route("/api/v1/sign-in/{id}", get(poll_sign_in))
         .route("/api/v1/sign-out", post(sign_out))
         .route("/api/v1/me", get(me))
+        .route("/api/v1/me/available", put(play::set_available))
         .route("/api/v1/rules", get(play::rule_sets))
         .route("/api/v1/wfc", post(play::bind))
         .route("/api/v1/matches", post(play::challenge))
@@ -115,9 +132,15 @@ pub(crate) fn router(
         .route("/api/v1/matches/{id}/rematch", post(play::rematch))
         .route("/api/v1/players", get(play::players))
         .route("/api/v1/players/discord", post(social::players_by_discord))
+        .route("/api/v1/leaderboard", get(leaderboard::leaderboard))
         .route("/api/v1/discord/token", post(social::discord_token))
         .route("/api/v1/friends", post(play::add_friend))
         .route("/api/v1/friends/{id}", delete(play::remove_friend))
+        .route("/api/v1/friends/miis", post(play::add_mii_friend))
+        .route(
+            "/api/v1/friends/miis/{profile_id}",
+            delete(play::remove_mii_friend),
+        )
         .route(
             "/api/v1/chat/{id}",
             get(play::chat_messages).post(play::send_chat),
@@ -125,7 +148,8 @@ pub(crate) fn router(
         .route("/api/v1/matches/{id}/report", post(play::report))
         .route("/sign-in", get(sign_in_page))
         .route("/sign-in/test", post(page_test_sign_in))
-        .route("/sign-in/sign-in.css", get(stylesheet));
+        .route("/sign-in/sign-in.css", get(stylesheet))
+        .route("/sign-in/logo.webp", get(|| image(LOGO)));
     if discord {
         router = router
             .route("/sign-in/discord", get(to_discord))
@@ -150,6 +174,22 @@ fn database_error(error: sqlx::Error) -> Response {
 }
 
 impl ProfilesState {
+    /// Whether players may sign in with a name alone: the owner's switch on
+    /// the Maintenance page, else `PROFILES_TEST_SIGN_IN`. Off when the
+    /// database cannot say.
+    async fn test_sign_in(&self) -> bool {
+        crate::switches::enabled(
+            &self.pool,
+            crate::switches::TEST_SIGN_IN,
+            self.config.test_sign_in,
+        )
+        .await
+        .unwrap_or_else(|error| {
+            warn!(target: "profiles", %error, "database error");
+            false
+        })
+    }
+
     /// The player of the request's bearer token, or the 401 to answer. The
     /// request is the player's heartbeat: their Recharged is open, doing what
     /// its `Recharged-Activity` header says.
@@ -183,14 +223,21 @@ impl ProfilesState {
         Ok((player_id, token))
     }
 
-    /// Ends the sign-in `id` with a session for `identity`.
-    async fn finish(&self, id: &str, identity: &Identity<'_>) -> Result<bool, sqlx::Error> {
+    /// Ends the sign-in `id` with a session for `identity`, and the Discord
+    /// Social SDK's tokens for the launcher.
+    async fn finish(
+        &self,
+        id: &str,
+        identity: &Identity<'_>,
+        discord: Option<discord::SdkTokens>,
+    ) -> Result<bool, sqlx::Error> {
         let (player_id, token) = self.open(identity).await?;
         if self.sign_ins.finish(
             id,
             Outcome::SignedIn {
                 token: token.clone(),
                 player_id,
+                discord,
             },
         ) {
             return Ok(true);
@@ -200,13 +247,13 @@ impl ProfilesState {
         Ok(false)
     }
 
-    /// The Discord callback: the sign-in it ends and the account, or why
-    /// not. A sign-in found but refused is ended with the reason, which the
-    /// launcher then shows too.
+    /// The Discord callback: the sign-in it ends, the account and the SDK's
+    /// tokens, or why not. A sign-in found but refused is ended with the
+    /// reason, which the launcher then shows too.
     async fn discord_account(
         &self,
         params: CallbackParams,
-    ) -> Result<(String, discord::Account), SignInError> {
+    ) -> Result<(String, discord::Account, Option<discord::SdkTokens>), SignInError> {
         let (id, authorization) = params
             .state
             .as_deref()
@@ -229,30 +276,69 @@ impl ProfilesState {
             .as_ref()
             .expect("the route needs Discord");
         match discord::exchange(&self.http, &self.config, discord, &authorization, &code).await {
-            Ok(account) => Ok((id, account)),
+            Ok((account, tokens)) => Ok((id, account, tokens)),
             Err(error) => Err(refuse(error)),
         }
     }
 
-    /// A page on the sign-in's design, with `content` (HTML) under `title`.
-    fn page(&self, status: StatusCode, title: &str, content: &str) -> Response {
-        let page = PAGE
+    /// A page on the sign-in's design: `hero` (HTML) above `title`, then
+    /// `content` (HTML). `tone` is the card's class.
+    fn page(
+        &self,
+        status: StatusCode,
+        tone: &str,
+        hero: &str,
+        title: &str,
+        content: &str,
+    ) -> Response {
+        // The text that may come from anyone goes in last.
+        let page = self
+            .page
+            .replace("{{tone}}", tone)
             .replace("{{title}}", &escape(title))
+            .replace("{{hero}}", hero)
             .replace("{{content}}", content);
         (status, Html(page)).into_response()
     }
 
     fn notice_page(&self, status: StatusCode, message: &str) -> Response {
         let content = format!(r#"<p class="notice" role="alert">{}</p>"#, escape(message));
-        self.page(status, "Signing in", &content)
+        self.page(status, "failed", PROBLEM, "Sign-in failed", &content)
     }
 
-    fn signed_in_page(&self, name: &str) -> Response {
+    /// `avatar_url`: the player's picture, else their initial.
+    fn signed_in_page(&self, name: &str, avatar_url: Option<&str>) -> Response {
+        let picture = match avatar_url {
+            Some(url) => format!(
+                r#"<img src="{}" alt="" width="96" height="96">"#,
+                escape(url)
+            ),
+            None => format!(
+                r#"<span class="initial">{}</span>"#,
+                escape(
+                    &name
+                        .chars()
+                        .next()
+                        .map(char::to_uppercase)
+                        .map(String::from_iter)
+                        .unwrap_or_default()
+                )
+            ),
+        };
+        let hero = format!(
+            r#"<div class="hero avatar" aria-hidden="true">{picture}<span class="check"><svg viewBox="0 0 24 24"><path d="m6 12.5 4 4 8-9"/></svg></span></div>"#
+        );
         let content = format!(
-            "<p>Signed in as <b>{}</b>.</p><p>You can close this page and go back to Recharged.</p>",
+            r#"<p class="lead">Signed in as <b>{}</b>.</p>
+<div class="linked">
+<span class="linked-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></span>
+<span class="linked-text"><b>Launcher connected</b>Your launcher signed in too, by itself.</span>
+<span class="live" aria-hidden="true"></span>
+</div>
+<p class="hint">You can close this tab and go back to the launcher.</p>"#,
             escape(name)
         );
-        self.page(StatusCode::OK, "Signed in", &content)
+        self.page(StatusCode::OK, "done", &hero, "You're signed in", &content)
     }
 }
 
@@ -274,7 +360,7 @@ async fn server(State(state): State<Arc<ProfilesState>>) -> Response {
         "revision": crate::REVISION,
         "sign_in": {
             "discord": state.config.discord.is_some(),
-            "test": state.config.test_sign_in,
+            "test": state.test_sign_in().await,
         },
         // The launcher's Discord Social SDK signs in to this application
         // (docs/profiles.md, "Discord friends").
@@ -306,13 +392,15 @@ async fn start_sign_in(State(state): State<Arc<ProfilesState>>) -> Response {
 async fn poll_sign_in(State(state): State<Arc<ProfilesState>>, Path(id): Path<String>) -> Response {
     match state.sign_ins.poll(&id) {
         Poll::Waiting => Json(json!({ "status": "waiting" })).into_response(),
-        Poll::Ended(Outcome::SignedIn { token, player_id }) => {
-            match players::player(&state.pool, player_id).await {
-                Ok(Some(player)) => signed_in(&token, &player),
-                Ok(None) => json_error(StatusCode::NOT_FOUND, "unknown sign-in"),
-                Err(error) => database_error(error),
-            }
-        }
+        Poll::Ended(Outcome::SignedIn {
+            token,
+            player_id,
+            discord,
+        }) => match players::player(&state.pool, player_id).await {
+            Ok(Some(player)) => signed_in(&token, &player, discord.as_ref()),
+            Ok(None) => json_error(StatusCode::NOT_FOUND, "unknown sign-in"),
+            Err(error) => database_error(error),
+        },
         Poll::Ended(Outcome::Refused(message)) => {
             Json(json!({ "status": "refused", "message": message })).into_response()
         }
@@ -320,8 +408,14 @@ async fn poll_sign_in(State(state): State<Arc<ProfilesState>>, Path(id): Path<St
     }
 }
 
-fn signed_in(token: &str, player: &Player) -> Response {
-    Json(json!({ "status": "signed_in", "token": token, "player": player })).into_response()
+/// The launcher's session; with `discord`, the Discord Social SDK's tokens,
+/// which connect its Discord friends without a second authorization.
+fn signed_in(token: &str, player: &Player, discord: Option<&discord::SdkTokens>) -> Response {
+    let mut body = json!({ "status": "signed_in", "token": token, "player": player });
+    if let Some(tokens) = discord {
+        body["discord"] = json!(tokens);
+    }
+    Json(body).into_response()
 }
 
 #[derive(Deserialize)]
@@ -334,7 +428,7 @@ async fn api_test_sign_in(
     State(state): State<Arc<ProfilesState>>,
     Json(request): Json<TestSignIn>,
 ) -> Response {
-    if !state.config.test_sign_in {
+    if !state.test_sign_in().await {
         return json_error(StatusCode::FORBIDDEN, "this server has no test sign-in");
     }
     let Some(name) = test_name(&request.name) else {
@@ -346,7 +440,7 @@ async fn api_test_sign_in(
     let external_id = name.to_lowercase();
     match state.open(&test_identity(&name, &external_id)).await {
         Ok((player_id, token)) => match players::player(&state.pool, player_id).await {
-            Ok(Some(player)) => signed_in(&token, &player),
+            Ok(Some(player)) => signed_in(&token, &player, None),
             Ok(None) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "the player went away"),
             Err(error) => database_error(error),
         },
@@ -376,11 +470,16 @@ async fn me(State(state): State<Arc<ProfilesState>>, headers: HeaderMap) -> Resp
         Ok(discord_id) => discord_id,
         Err(error) => return database_error(error),
     };
+    let available = match players::available(&state.pool, player.id).await {
+        Ok(available) => available,
+        Err(error) => return database_error(error),
+    };
     match players::wfc_profiles(&state.pool, player.id).await {
         Ok(wfc) => {
             let mut me = serde_json::to_value(&player).expect("a player serializes");
             me["wfc"] = json!(wfc);
             me["discord_id"] = json!(discord_id);
+            me["available"] = json!(available);
             Json(me).into_response()
         }
         Err(error) => database_error(error),
@@ -405,28 +504,32 @@ async fn sign_in_page(
         );
     };
     let mut content = format!(
-        r#"<p>Signing in to Recharged's launcher. Check that the launcher shows this code:</p>
-<p class="code">{}</p>
-<p class="hint">If it doesn't, close this page: someone else started this sign-in.</p>"#,
-        sign_in::display_code(&code)
+        r#"<p class="lead">Check that Recharged's launcher shows this code:</p>
+{}
+<p class="hint">A different code? Close this page: someone else started this sign-in.</p>"#,
+        code_tiles(&sign_in::display_code(&code))
     );
     if state.config.discord.is_some() {
         content += &format!(
-            r#"<p><a class="button discord" href="/sign-in/discord?id={}">Continue with Discord</a></p>"#,
+            r#"<a class="button discord" href="/sign-in/discord?id={}">{DISCORD_MARK}Continue with Discord</a>"#,
             escape(&id)
         );
     }
-    if state.config.test_sign_in {
+    // Marked as the test server's extra, not a second way in: a test
+    // player has no Discord account behind it.
+    if state.test_sign_in().await {
         content += &format!(
-            r#"<form method="post" action="/sign-in/test">
+            r#"<form class="test-only" method="post" action="/sign-in/test">
+<p class="test-head"><span class="tag">Test server</span>Sign in without Discord</p>
+<p class="hint">Only for tests: a test player has no Discord friends and nobody finds it by its Discord name.</p>
 <input type="hidden" name="id" value="{}">
-<label>Test player <input name="name" maxlength="{MAX_TEST_NAME}" required autocomplete="off"></label>
+<label>Test player name <input name="name" maxlength="{MAX_TEST_NAME}" required autocomplete="off"></label>
 <button type="submit">Sign in as test player</button>
 </form>"#,
             escape(&id)
         );
     }
-    state.page(StatusCode::OK, "Sign in", &content)
+    state.page(StatusCode::OK, "sign-in", "", "Sign in", &content)
 }
 
 /// Sends the browser to Discord for the sign-in `id`.
@@ -460,7 +563,7 @@ async fn discord_callback(
     State(state): State<Arc<ProfilesState>>,
     Query(params): Query<CallbackParams>,
 ) -> Response {
-    let (id, account) = match state.discord_account(params).await {
+    let (id, account, tokens) = match state.discord_account(params).await {
         Ok(found) => found,
         Err(error) => {
             warn!(target: "profiles", %error, "Discord sign-in refused");
@@ -474,8 +577,8 @@ async fn discord_callback(
         display_name: &account.display_name,
         avatar_url: Some(&account.avatar_url),
     };
-    match state.finish(&id, &identity).await {
-        Ok(true) => state.signed_in_page(&account.display_name),
+    match state.finish(&id, &identity, tokens).await {
+        Ok(true) => state.signed_in_page(&account.display_name, Some(&account.avatar_url)),
         Ok(false) => state.notice_page(StatusCode::NOT_FOUND, &SignInError::Expired.message()),
         Err(error) => {
             warn!(target: "profiles", %error, "database error");
@@ -498,7 +601,7 @@ async fn page_test_sign_in(
     State(state): State<Arc<ProfilesState>>,
     Form(form): Form<TestSignInForm>,
 ) -> Response {
-    if !state.config.test_sign_in {
+    if !state.test_sign_in().await {
         return state.notice_page(StatusCode::FORBIDDEN, "This server has no test sign-in.");
     }
     let Some(name) = test_name(&form.name) else {
@@ -512,10 +615,10 @@ async fn page_test_sign_in(
     }
     let external_id = name.to_lowercase();
     match state
-        .finish(&form.id, &test_identity(&name, &external_id))
+        .finish(&form.id, &test_identity(&name, &external_id), None)
         .await
     {
-        Ok(true) => state.signed_in_page(&name),
+        Ok(true) => state.signed_in_page(&name, None),
         Ok(false) => state.notice_page(StatusCode::NOT_FOUND, &SignInError::Expired.message()),
         Err(error) => {
             warn!(target: "profiles", %error, "database error");
@@ -525,6 +628,21 @@ async fn page_test_sign_in(
             )
         }
     }
+}
+
+/// The sign-in code as one tile per character; screen readers get it whole.
+fn code_tiles(code: &str) -> String {
+    let tiles: String = code
+        .chars()
+        .map(|character| match character {
+            '-' => r#"<span class="dash"></span>"#.to_owned(),
+            _ => format!("<span>{}</span>", escape(&character.to_string())),
+        })
+        .collect();
+    format!(
+        r#"<p class="code" role="img" aria-label="{}">{tiles}</p>"#,
+        escape(code)
+    )
 }
 
 /// `name` as a test name, if it is one.
@@ -552,6 +670,10 @@ async fn stylesheet() -> impl IntoResponse {
         [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
         STYLESHEET,
     )
+}
+
+async fn image(bytes: &'static [u8]) -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "image/webp")], bytes)
 }
 
 /// Every response of the service: never cached, never framed.

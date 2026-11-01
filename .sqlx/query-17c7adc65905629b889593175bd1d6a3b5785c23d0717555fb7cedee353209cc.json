@@ -1,0 +1,54 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO switches (name, enabled, changed_by) VALUES ($1, $2, $3)\n         ON CONFLICT (name) DO UPDATE\n         SET enabled = excluded.enabled, changed_by = excluded.changed_by, changed_at = now()\n         RETURNING enabled, changed_by, changed_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "enabled",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "switches",
+            "name": "enabled"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "changed_by",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "switches",
+            "name": "changed_by"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "changed_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "switches",
+            "name": "changed_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bool",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "17c7adc65905629b889593175bd1d6a3b5785c23d0717555fb7cedee353209cc"
+}

@@ -13,11 +13,12 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use time::OffsetDateTime;
-use tracing::{info, warn};
+use tracing::info;
 
 use super::{
     ProfilesState, chat, database_error, friends, json_error,
     matches::{self, Game, Match, Refusal},
+    miis,
     players::{self, Player},
     rules,
 };
@@ -143,7 +144,6 @@ pub(super) async fn challenge(
     match matches::challenge(&state.pool, player.id, opponent, &rule_set, None).await {
         Ok(Ok(found)) => {
             info!(target: "profiles", match_id = found.id, home = player.id, away = opponent, rule_set = found.rule_set, "challenge");
-            befriend(&state, player.id, opponent).await;
             state.respond(StatusCode::CREATED, &found, &player).await
         }
         Ok(Err(refusal)) => refused(refusal),
@@ -210,10 +210,117 @@ pub(super) async fn players(
         Ok(recent) => recent,
         Err(error) => return database_error(error),
     };
-    match friends::list(&state.pool, player.id).await {
-        Ok(friends) => {
-            Json(json!({ "online": online, "recent": recent, "friends": friends })).into_response()
+    // The players available for random games, and the game's own online
+    // players, only for one who is available too.
+    let presence = state.gpcm.presence();
+    let (available, game_online) = match players::available(&state.pool, player.id).await {
+        Ok(true) => {
+            let available = match players::available_now(&state.pool, player.id).await {
+                Ok(available) => available,
+                Err(error) => return database_error(error),
+            };
+            match miis::online(&state.pool, player.id, &presence).await {
+                Ok(game_online) => (available, game_online),
+                Err(error) => return database_error(error),
+            }
         }
+        Ok(false) => (Vec::new(), Vec::new()),
+        Err(error) => return database_error(error),
+    };
+    let mii_friends = match miis::friends(&state.pool, player.id, &presence).await {
+        Ok(mii_friends) => mii_friends,
+        Err(error) => return database_error(error),
+    };
+    match friends::list(&state.pool, player.id).await {
+        Ok(friends) => Json(json!({
+            "online": online,
+            "recent": recent,
+            "friends": friends,
+            "available": available,
+            "mii_friends": mii_friends,
+            "game_online": game_online,
+        }))
+        .into_response(),
+        Err(error) => database_error(error),
+    }
+}
+
+#[derive(Deserialize)]
+pub(super) struct MiiFriend {
+    profile_id: i32,
+}
+
+/// Adds a Mii profile to the friends of the one who asks; the answer is the
+/// Mii friends.
+pub(super) async fn add_mii_friend(
+    State(state): State<Arc<ProfilesState>>,
+    headers: HeaderMap,
+    Json(request): Json<MiiFriend>,
+) -> Response {
+    let player = match state.signed_in(&headers).await {
+        Ok(player) => player,
+        Err(response) => return response,
+    };
+    match miis::add(&state.pool, player.id, request.profile_id).await {
+        Ok(None) => return json_error(StatusCode::NOT_FOUND, "no such profile"),
+        Ok(Some(false)) => {
+            // Already there, or the list is full.
+            let count = sqlx::query_scalar!(
+                r#"SELECT count(*) AS "count!" FROM friend_profiles WHERE player_id = $1"#,
+                player.id
+            )
+            .fetch_one(&state.pool)
+            .await;
+            if matches!(count, Ok(count) if count >= friends::MAX_FRIENDS) {
+                return json_error(StatusCode::CONFLICT, "the friends list is full");
+            }
+        }
+        Ok(Some(true)) => {}
+        Err(error) => return database_error(error),
+    }
+    mii_friends(&state, player.id).await
+}
+
+/// Takes a Mii profile off the friends of the one who asks.
+pub(super) async fn remove_mii_friend(
+    State(state): State<Arc<ProfilesState>>,
+    headers: HeaderMap,
+    Path(profile_id): Path<i32>,
+) -> Response {
+    let player = match state.signed_in(&headers).await {
+        Ok(player) => player,
+        Err(response) => return response,
+    };
+    if let Err(error) = miis::remove(&state.pool, player.id, profile_id).await {
+        return database_error(error);
+    }
+    mii_friends(&state, player.id).await
+}
+
+async fn mii_friends(state: &ProfilesState, player_id: i64) -> Response {
+    match miis::friends(&state.pool, player_id, &state.gpcm.presence()).await {
+        Ok(mii_friends) => Json(json!({ "mii_friends": mii_friends })).into_response(),
+        Err(error) => database_error(error),
+    }
+}
+
+#[derive(Deserialize)]
+pub(super) struct Available {
+    available: bool,
+}
+
+/// Switches the player's availability for random games.
+pub(super) async fn set_available(
+    State(state): State<Arc<ProfilesState>>,
+    headers: HeaderMap,
+    Json(request): Json<Available>,
+) -> Response {
+    let player = match state.signed_in(&headers).await {
+        Ok(player) => player,
+        Err(response) => return response,
+    };
+    match players::set_available(&state.pool, player.id, request.available).await {
+        Ok(()) => Json(json!({ "available": request.available })).into_response(),
         Err(error) => database_error(error),
     }
 }
@@ -389,14 +496,6 @@ pub(super) async fn send_chat(
     }
 }
 
-/// A challenge or an accepted one makes the two players friends of the one
-/// who acted; a failure here costs only that.
-async fn befriend(state: &ProfilesState, player_id: i64, friend_id: i64) {
-    if let Err(error) = friends::add(&state.pool, player_id, friend_id).await {
-        warn!(target: "profiles", player_id, friend_id, %error, "keeping a friend failed");
-    }
-}
-
 pub(super) async fn accept(
     state: State<Arc<ProfilesState>>,
     headers: HeaderMap,
@@ -429,9 +528,7 @@ async fn answer(
     match matches::answer(&state.pool, id, player.id, accept).await {
         Ok(Ok(found)) => {
             info!(target: "profiles", match_id = id, state = found.state, "answered");
-            if accept {
-                befriend(&state, player.id, found.home).await;
-            } else {
+            if !accept {
                 state.pairings.end(id);
             }
             state.respond(StatusCode::OK, &found, &player).await

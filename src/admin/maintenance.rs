@@ -3,6 +3,7 @@
 //! what it would delete; only a second one runs it, from the same admin
 //! within [`CONFIRM_TTL`], with the first one's token and the operation's
 //! phrase typed out ([`Confirmations`]). For now, wiping the leaderboards.
+//! Switches that can be turned back, like test sign-in, change at once.
 
 use std::{
     collections::HashMap,
@@ -15,7 +16,10 @@ use serde::Serialize;
 use sqlx::PgPool;
 use time::OffsetDateTime;
 
-use crate::gpcm::Gpcm;
+use crate::{
+    gpcm::Gpcm,
+    switches::{self, Switch},
+};
 
 /// How long an armed operation waits for its confirmation.
 const CONFIRM_TTL: Duration = Duration::from_secs(5 * 60);
@@ -25,6 +29,27 @@ const TOKEN_LEN: usize = 43;
 #[derive(Serialize)]
 pub struct Maintenance {
     leaderboards: Leaderboards,
+    /// None on a server without profiles.
+    test_sign_in: Option<TestSignIn>,
+}
+
+/// Sign-in with a name alone, without Discord (docs/profiles.md).
+#[derive(Debug, Serialize)]
+pub struct TestSignIn {
+    pub enabled: bool,
+    /// `PROFILES_TEST_SIGN_IN`: what stands until an owner switches it.
+    pub default: bool,
+    /// The owner's last switch.
+    pub switch: Option<Switch>,
+}
+
+pub async fn test_sign_in(pool: &PgPool, default: bool) -> Result<TestSignIn, sqlx::Error> {
+    let switch = switches::get(pool, switches::TEST_SIGN_IN).await?;
+    Ok(TestSignIn {
+        enabled: switch.as_ref().map_or(default, |switch| switch.enabled),
+        default,
+        switch,
+    })
 }
 
 /// What wiping the leaderboards deletes, and whom it misses for a while.
@@ -49,9 +74,18 @@ pub struct Wiped {
     past_scores: u64,
 }
 
-pub async fn read(pool: &PgPool, gpcm: &Gpcm) -> Result<Maintenance, sqlx::Error> {
+/// `test_sign_in`: `PROFILES_TEST_SIGN_IN` while profiles run.
+pub async fn read(
+    pool: &PgPool,
+    gpcm: &Gpcm,
+    test_sign_in: Option<bool>,
+) -> Result<Maintenance, sqlx::Error> {
     Ok(Maintenance {
         leaderboards: leaderboards(pool, gpcm).await?,
+        test_sign_in: match test_sign_in {
+            Some(default) => Some(self::test_sign_in(pool, default).await?),
+            None => None,
+        },
     })
 }
 
