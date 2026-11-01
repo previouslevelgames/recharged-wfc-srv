@@ -29,6 +29,7 @@ mod miis;
 mod play;
 mod players;
 pub(crate) mod rules;
+mod search;
 mod sign_in;
 mod social;
 
@@ -128,6 +129,10 @@ pub(crate) fn router(
         .route("/api/v1/rules", get(play::rule_sets))
         .route("/api/v1/wfc", post(play::bind))
         .route("/api/v1/matches", post(play::challenge))
+        .route(
+            "/api/v1/search",
+            post(play::search_start).delete(play::search_stop),
+        )
         .route("/api/v1/matches/current", get(play::current))
         .route("/api/v1/matches/{id}/accept", post(play::accept))
         .route("/api/v1/matches/{id}/decline", post(play::decline))

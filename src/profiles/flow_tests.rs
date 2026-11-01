@@ -373,6 +373,222 @@ async fn challenges_need_a_known_opponent(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn a_challenge_plays_by_rules_of_its_own(pool: PgPool) {
+    let world = World::new(pool);
+    let mario = world.sign_in("Mario").await;
+    let peach = world.sign_in("Peach").await;
+    world.sign_in("Luigi").await;
+    world.sign_in("Daisy").await;
+    let own = json!({"tweaks": ["fast_terrain"], "limit": "goals", "time": 180, "goals": 7, "games": 5,
+                     "stadium": "the_palace", "stadium_cheat": "field_tilt", "powerup_cheat": "shells"});
+    // No rules, and rules the game doesn't have, are refused.
+    let mut wrong = own.clone();
+    wrong["powerup_cheat"] = json!("butterfingers");
+    for body in [
+        json!({"opponent": "luigi"}),
+        json!({"opponent": "luigi", "rules": wrong}),
+        json!({"opponent": "luigi", "rules": own, "name": "x".repeat(49)}),
+    ] {
+        let (status, answer) = world.send("POST", "/api/v1/matches", &mario, body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{answer}");
+    }
+    // The preset's name goes with them; the skill and the cheats left out
+    // are the defaults.
+    let (status, challenge) = world
+        .send(
+            "POST",
+            "/api/v1/matches",
+            &mario,
+            json!({"opponent": "luigi", "rules": own, "name": " Palace tilt "}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{challenge}");
+    assert_eq!(challenge["rule_set"], "Palace tilt");
+    assert_eq!(challenge["rules"]["stadium_cheat"], "field_tilt");
+    assert_eq!(challenge["rules"]["powerup_cheat"], "shells");
+    assert_eq!(challenge["rules"]["player_cheat"], "none");
+    assert_eq!(challenge["rules"]["skill"], "rookie");
+    assert_eq!(challenge["rules_hash"].as_str().unwrap().len(), 64);
+    // Without a name: Custom.
+    let (status, challenge) = world
+        .send(
+            "POST",
+            "/api/v1/matches",
+            &peach,
+            json!({"opponent": "daisy", "rules": own}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{challenge}");
+    assert_eq!(challenge["rule_set"], "Custom");
+}
+
+#[sqlx::test]
+async fn a_search_asks_players_open_to_challenges(pool: PgPool) {
+    let world = World::new(pool);
+    // Mario searches; Peach and Luigi are open to challenges and play the
+    // US game; Daisy isn't open; Wario is, with the European game.
+    let names = ["Mario", "Peach", "Luigi", "Daisy", "Wario"];
+    let mut tokens = Vec::new();
+    for (n, name) in names.iter().enumerate() {
+        let token = world.sign_in(name).await;
+        let game = if *name == "Wario" {
+            "R4QPwwwwwww"
+        } else {
+            "R4QEaaaaaaa"
+        };
+        let pid = world.wfc_login(n as i64 + 1, game).await;
+        let (status, body) = world
+            .send(
+                "POST",
+                "/api/v1/wfc",
+                &token,
+                json!({"profile_id": pid, "login_ticket": format!("ticket-{pid}")}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        if *name != "Mario" && *name != "Daisy" {
+            let (status, _) = world
+                .send(
+                    "PUT",
+                    "/api/v1/me/available",
+                    &token,
+                    json!({"available": true}),
+                )
+                .await;
+            assert_eq!(status, StatusCode::OK);
+        }
+        tokens.push(token);
+    }
+    let mario = &tokens[0];
+    let token_of = |name: &str| tokens[names.iter().position(|n| *n == name).unwrap()].clone();
+    let own = json!({"tweaks": [], "limit": "time", "time": 120, "goals": 5, "games": 1,
+                     "stadium": "the_palace", "powerup_cheat": "shells"});
+
+    // A game id that isn't one is refused.
+    let (status, _) = world
+        .send(
+            "POST",
+            "/api/v1/search",
+            mario,
+            json!({"rules": own, "game": "R4"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, body) = world
+        .send(
+            "POST",
+            "/api/v1/search",
+            mario,
+            json!({"rules": own, "name": "Palace", "game": "R4QE"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["search"]["rule_set"], "Palace");
+    assert_eq!(body["search"]["asked"], 1);
+
+    // The first player asked: a random challenge by Mario's rules.
+    let current = |token: String| {
+        let world = &world;
+        async move {
+            world
+                .send("GET", "/api/v1/matches/current", &token, Value::Null)
+                .await
+                .1
+        }
+    };
+    let now = current(mario.clone()).await;
+    assert_eq!(now["search"]["asked"], 1);
+    assert_eq!(now["match"]["random"], true);
+    assert_eq!(now["match"]["state"], "challenged");
+    assert_eq!(now["match"]["rule_set"], "Palace");
+    assert_eq!(now["match"]["rules"]["powerup_cheat"], "shells");
+    let first = now["match"]["opponent"]["name"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(first == "Peach" || first == "Luigi", "{first}");
+    let other = if first == "Peach" { "Luigi" } else { "Peach" };
+
+    // They decline: the other one is asked.
+    let id = now["match"]["id"].as_i64().unwrap();
+    let (status, _) = world
+        .send(
+            "POST",
+            &format!("/api/v1/matches/{id}/decline"),
+            &token_of(&first),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let now = current(mario.clone()).await;
+    assert_eq!(now["search"]["asked"], 2);
+    assert_eq!(now["match"]["opponent"]["name"], other);
+    let id = now["match"]["id"].as_i64().unwrap();
+
+    // No answer in time: nobody left to ask (Daisy isn't open, Wario plays
+    // another game), the search waits.
+    sqlx::query!(
+        "UPDATE matches SET created_at = now() - interval '1 minute' WHERE match_id = $1",
+        id
+    )
+    .execute(&world.pool)
+    .await
+    .unwrap();
+    let now = current(mario.clone()).await;
+    let state = sqlx::query_scalar!("SELECT state FROM matches WHERE match_id = $1", id)
+        .fetch_one(&world.pool)
+        .await
+        .unwrap();
+    assert_eq!(state, "expired");
+    assert_eq!(now["search"]["asked"], 2);
+    assert_ne!(now["match"]["state"], "challenged");
+
+    // Stop, and search again: a challenge again, which its player accepts:
+    // the set goes on, the search ends.
+    let (status, _) = world
+        .send("DELETE", "/api/v1/search", mario, Value::Null)
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(current(mario.clone()).await["search"], Value::Null);
+    world
+        .send(
+            "POST",
+            "/api/v1/search",
+            mario,
+            json!({"rules": own, "name": "Palace", "game": "R4QE"}),
+        )
+        .await;
+    let now = current(mario.clone()).await;
+    let asked = now["match"]["opponent"]["name"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let id = now["match"]["id"].as_i64().unwrap();
+    let (status, _) = world
+        .send(
+            "POST",
+            &format!("/api/v1/matches/{id}/accept"),
+            &token_of(&asked),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let now = current(mario.clone()).await;
+    assert_eq!(now["match"]["state"], "accepted");
+    assert_eq!(now["search"], Value::Null);
+    // With a set to play, no search.
+    let (status, _) = world
+        .send(
+            "POST",
+            "/api/v1/search",
+            mario,
+            json!({"rules": own, "game": "R4QE"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+}
+
+#[sqlx::test]
 async fn a_set_from_the_lobby_to_a_rematch(pool: PgPool) {
     let world = World::new(pool);
     let mario = world.sign_in("Mario").await;

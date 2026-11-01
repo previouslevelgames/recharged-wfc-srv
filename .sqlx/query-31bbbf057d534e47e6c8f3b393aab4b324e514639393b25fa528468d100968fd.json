@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO searches (player_id, rule_set, rules, rules_hash, game)\n         VALUES ($1, $2, $3, $4, $5)\n         ON CONFLICT (player_id) DO UPDATE\n         SET rule_set = EXCLUDED.rule_set, rules = EXCLUDED.rules, rules_hash = EXCLUDED.rules_hash,\n             game = EXCLUDED.game, asked = '{}', match_id = NULL, started_at = now()",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "31bbbf057d534e47e6c8f3b393aab4b324e514639393b25fa528468d100968fd"
+}

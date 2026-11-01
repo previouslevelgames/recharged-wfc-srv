@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM searches USING players\n         WHERE searches.player_id = players.player_id\n           AND coalesce(players.heartbeat_at, searches.started_at) < now() - make_interval(secs => $1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Float8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "856dcee6544526055c3da8181de6fdceb261a63347767644bbafaaa545550e0a"
+}

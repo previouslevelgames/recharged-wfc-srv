@@ -1,0 +1,86 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT player_id, rule_set, rules, rules_hash, game, asked FROM searches\n         WHERE match_id IS NULL\n            OR NOT EXISTS (SELECT 1 FROM matches\n                           WHERE matches.match_id = searches.match_id AND matches.state = 'challenged')\n         ORDER BY started_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "player_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "searches",
+            "name": "player_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "rule_set",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "searches",
+            "name": "rule_set"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "rules",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "searches",
+            "name": "rules"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "rules_hash",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "searches",
+            "name": "rules_hash"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "game",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "searches",
+            "name": "game"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "asked",
+        "type_info": "Int8Array",
+        "origin": {
+          "Table": {
+            "table": "searches",
+            "name": "asked"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "63715bb8b3c80af7d92c6109c0390a0ca257e83fc3d9e53647050dbb5d57608c"
+}
