@@ -1,6 +1,7 @@
--- When each side's game last said it is ready for the set (docs/profiles.md,
--- "Meeting in RANKED"). A playing set whose two games both went quiet before
--- a report was broken off: it ends without a result ("Sets").
+-- When each side's game last said it is ready for the set, even if the server
+-- refused it (docs/profiles.md, "Meeting in RANKED"). A playing set with a
+-- game gone quiet before a report was broken off: it ends without a result
+-- ("Sets").
 ALTER TABLE matches
     ADD COLUMN home_game_ready_at TIMESTAMPTZ,
     ADD COLUMN away_game_ready_at TIMESTAMPTZ;

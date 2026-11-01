@@ -19,9 +19,9 @@ pub const HEARTBEAT_TIMEOUT_SECS: i32 = 60;
 /// Both players were ready this long ago, and their games never met: the set
 /// goes back to waiting for Ready to play!.
 const GO_TIMEOUT_SECS: i32 = 300;
-/// Both games of a playing set last said they are ready this long ago, and
-/// neither reported: the set was broken off and ends (`dissolved`).
-const GAMES_GONE_SECS: i32 = 60;
+/// A game of a playing set last called this long ago, and neither player
+/// reported: the set was broken off and ends (`dissolved`).
+const GAME_GONE_SECS: i32 = 60;
 
 /// A match as it is stored.
 #[derive(Clone, Debug, PartialEq)]
@@ -155,8 +155,8 @@ struct Row {
 ///   change (`expired`);
 /// - sets with a player who closed Recharged (no request for
 ///   [`HEARTBEAT_TIMEOUT_SECS`]) and has not reported (`dissolved`);
-/// - playing sets without a report whose two games both stopped saying they
-///   are ready [`GAMES_GONE_SECS`] ago (`dissolved`);
+/// - playing sets without a report with a game that stopped saying it is
+///   ready [`GAME_GONE_SECS`] ago (`dissolved`);
 /// - a go older than [`GO_TIMEOUT_SECS`] without the games meeting: both
 ///   players are not ready again.
 pub async fn sweep(pool: &PgPool) -> Result<Vec<i64>, sqlx::Error> {
@@ -187,18 +187,18 @@ pub async fn sweep(pool: &PgPool) -> Result<Vec<i64>, sqlx::Error> {
         .fetch_all(pool)
         .await?,
     );
-    // Both games went quiet with nothing to report: the players stay in
+    // A game went quiet with nothing to report: the players stay in
     // Recharged (their heartbeats go on), but the set was broken off.
     ended.extend(
         sqlx::query_scalar!(
             "UPDATE matches SET state = 'dissolved', updated_at = now()
              WHERE state = 'accepted' AND playing_at IS NOT NULL
-               AND coalesce(greatest(home_game_ready_at, away_game_ready_at), playing_at)
-                   < now() - make_interval(secs => $1)
+               AND (coalesce(home_game_ready_at, playing_at) < now() - make_interval(secs => $1)
+                    OR coalesce(away_game_ready_at, playing_at) < now() - make_interval(secs => $1))
                AND NOT EXISTS (
                    SELECT 1 FROM match_reports WHERE match_reports.match_id = matches.match_id)
              RETURNING match_id",
-            f64::from(GAMES_GONE_SECS),
+            f64::from(GAME_GONE_SECS),
         )
         .fetch_all(pool)
         .await?,
@@ -409,10 +409,25 @@ pub async fn ready_to_play(
     Ok(Ok(found))
 }
 
+/// The game of `side` said it is ready for the set, whether or not the
+/// server takes it: it still plays the set ([`sweep`]).
+pub async fn game_called(pool: &PgPool, match_id: i64, side: usize) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "UPDATE matches SET
+             home_game_ready_at = CASE WHEN $2 = 0 THEN now() ELSE home_game_ready_at END,
+             away_game_ready_at = CASE WHEN $2 = 1 THEN now() ELSE away_game_ready_at END
+         WHERE match_id = $1 AND state = 'accepted'",
+        match_id,
+        i32::try_from(side).unwrap_or(-1),
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// The game of `side` is online for the set and plays by its rules: that
 /// side is ready (an older launcher has no Ready to play!), and once the two
-/// games found each other (`paired`) the set is playing. The game says it
-/// again while it plays the set ([`sweep`]).
+/// games found each other (`paired`) the set is playing.
 pub async fn game_ready(
     pool: &PgPool,
     match_id: i64,
@@ -423,8 +438,6 @@ pub async fn game_ready(
         "UPDATE matches SET
              home_ready_at = CASE WHEN $2 = 0 THEN coalesce(home_ready_at, now()) ELSE home_ready_at END,
              away_ready_at = CASE WHEN $2 = 1 THEN coalesce(away_ready_at, now()) ELSE away_ready_at END,
-             home_game_ready_at = CASE WHEN $2 = 0 THEN now() ELSE home_game_ready_at END,
-             away_game_ready_at = CASE WHEN $2 = 1 THEN now() ELSE away_game_ready_at END,
              go_at = CASE WHEN $3 THEN coalesce(go_at, now()) ELSE go_at END,
              playing_at = CASE WHEN $3 THEN coalesce(playing_at, now()) ELSE playing_at END
          WHERE match_id = $1 AND state = 'accepted'",
@@ -1032,8 +1045,8 @@ mod tests {
         .unwrap();
     }
 
-    /// Mario and Bowser's set, whose games met in RANKED; both have
-    /// Recharged open.
+    /// Mario and Bowser's set, whose games said they are ready and met in
+    /// RANKED; both have Recharged open.
     async fn playing_set(pool: &PgPool) -> (Match, i64, i64) {
         let (mario, bowser) = (player(pool, "Mario").await, player(pool, "Bowser").await);
         let rules = competitive(pool).await;
@@ -1042,8 +1055,10 @@ mod tests {
             .unwrap()
             .unwrap();
         answer(pool, found.id, bowser, true).await.unwrap().unwrap();
-        game_ready(pool, found.id, 0, false).await.unwrap();
-        game_ready(pool, found.id, 1, true).await.unwrap();
+        for (side, paired) in [(0, false), (1, true)] {
+            game_called(pool, found.id, side).await.unwrap();
+            game_ready(pool, found.id, side, paired).await.unwrap();
+        }
         seen(pool, 5, &[mario, bowser]).await;
         let found = get(pool, found.id, mario).await.unwrap().unwrap();
         assert_eq!(found.stage(), "playing");
@@ -1052,34 +1067,34 @@ mod tests {
 
     #[sqlx::test]
     async fn a_set_broken_off_without_a_result_is_dissolved(pool: PgPool) {
-        let (found, mario, bowser) = playing_set(&pool).await;
-        assert!(sweep(&pool).await.unwrap().is_empty());
-        // One game still says it is ready: the set goes on.
-        for seconds in [[61, 5], [5, 61]] {
-            games_said_ready(&pool, found.id, seconds).await;
+        // Either game stops, the other may still say it is ready.
+        for quiet in [[61, 5], [5, 61]] {
+            let (found, mario, bowser) = playing_set(&pool).await;
+            assert!(sweep(&pool).await.unwrap().is_empty());
+            games_said_ready(&pool, found.id, [50, 5]).await;
             assert!(sweep(&pool).await.unwrap().is_empty());
             assert_eq!(
                 get(&pool, found.id, mario).await.unwrap().unwrap().stage(),
                 "playing"
             );
+            // Nothing to report, while both players still have Recharged
+            // open.
+            games_said_ready(&pool, found.id, quiet).await;
+            assert_eq!(sweep(&pool).await.unwrap(), [found.id]);
+            let ended = get(&pool, found.id, mario).await.unwrap().unwrap();
+            assert_eq!(
+                (ended.state.as_str(), ended.stage(), ended.winner),
+                ("dissolved", "dissolved", None)
+            );
+            // Neither is in a set any more.
+            assert!(!busy_now(&pool, mario, bowser).await);
         }
-        // Both games stopped, with nothing to report, while both players
-        // still have Recharged open.
-        games_said_ready(&pool, found.id, [61, 61]).await;
-        assert_eq!(sweep(&pool).await.unwrap(), [found.id]);
-        let ended = get(&pool, found.id, mario).await.unwrap().unwrap();
-        assert_eq!(
-            (ended.state.as_str(), ended.stage(), ended.winner),
-            ("dissolved", "dissolved", None)
-        );
-        // Neither is in a set any more.
-        let rules = competitive(&pool).await;
-        assert!(
-            challenge(&pool, bowser, mario, &rules, None)
-                .await
-                .unwrap()
-                .is_ok()
-        );
+    }
+
+    /// Whether `first` or `second` has a set to play.
+    async fn busy_now(pool: &PgPool, first: i64, second: i64) -> bool {
+        let mut transaction = pool.begin().await.unwrap();
+        busy(&mut transaction, first, second).await.unwrap()
     }
 
     #[sqlx::test]

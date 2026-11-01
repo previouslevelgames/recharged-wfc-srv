@@ -313,15 +313,16 @@ still work:
 
 - The accept is the challenged player's Ready to play!: with the
   challenger's, the set goes at once. Either may take theirs back before
-  the games met (`open`) and press it again.
+  the games met (`open`) and press it again; their game, if it said it is
+  ready, then counts as not ready until it says so again.
 - A set whose games haven't met 5 minutes after the go waits for Ready to
   play! again.
 - A player without a heartbeat for 60 seconds has closed Recharged: their
   sets without a report of theirs end (`dissolved`). So a challenger set
   lasts while both have Recharged open, and only a player with Recharged
   open can be challenged.
-- A playing set whose two games both stopped saying they are ready (below)
-  60 seconds ago, and that neither player reported, was broken off: it ends
+- A playing set with a game that stopped saying it is ready (below) 60
+  seconds ago, and that neither player reported, was broken off: it ends
   without a result (`dissolved`), even while both have Recharged open. A
   set with one report waits for the other's.
 - A game saying it is ready (below) counts as its player's Ready to play!,
@@ -337,7 +338,9 @@ applying the rules with `rules_hash`. Readiness lasts 30 seconds without being
 said again, so a game that went away stops being kept. The answer is
 `{"paired", "other_release"}`: `paired` once both games are ready, and the
 set's stage is then `playing`. The games go on saying it while they play the
-set; `matches.home_game_ready_at` and `away_game_ready_at` keep the last time.
+set; `matches.home_game_ready_at` and `away_game_ready_at` keep the last time
+each did, even when the answer was a 409 (such as a WFC login the server lost
+in a restart, while the match goes on).
 
 While a game is ready, RANKED in WFC Central works differently for it
 ([login.md](login.md), "Server browser"): its search lists only its
