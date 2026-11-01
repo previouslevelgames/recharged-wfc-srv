@@ -326,23 +326,27 @@ stay in `scores` until their player's next ranked game, are left out.
 
 ## Rules
 
-A rule set is what a match is played by, and the server's admins keep them on
-`/admin/competitive`. `GET /api/v1/rules`, without a session, lists them:
-`{"rule_sets": [{"id", "name", "rules", "hash"}]}`.
+A match is played by rules: one of the server's rule sets, which its admins
+keep on `/admin/competitive`, or rules a challenge brings along (a player's own
+preset, perhaps changed for that challenge). `GET /api/v1/rules`, without a
+session, lists the rule sets: `{"rule_sets": [{"id", "name", "rules", "hash"}]}`.
 
 | Rule | Values |
 |---|---|
 | `tweaks` | The port's gameplay tweaks for both teams: `fast_terrain`, `no_mega_strikes`, `thunder_island_walls`. The others stay off; fair ball contests are always on online. |
-| `skill` | `training`, `rookie`, `professional`, `superstar`, `legend` |
+| `skill` | `training`, `rookie`, `professional`, `superstar`, `legend`; `rookie` when left out. The CPU's skill: no effect on a match between two games (the game gives both teams the human level) |
 | `limit` | `time` or `goals`: what ends a game |
 | `time` | A game's length in seconds, 60 to 900 in steps of 30 |
 | `goals` | The goals that end a game, 1 to 10 |
 | `games` | Games in the series: 1, 3, 5 or 7 |
 | `stadium` | `random` (the host picks, as in the game) or one stadium: `battle_dome`, `bowser_stadium`, `crater_field`, `crystal_canyon`, `the_dump`, `galactic_stadium`, `konga_coliseum`, `lava_pit`, `pipeline_central`, `storm_ship`, `the_palace`, `thunder_island`, `the_underground`, `the_vice`, `the_wastelands`, `sand_tomb` |
+| `stadium_cheat` | The game's stadium cheat: `none`, `secure_stadiums`, `power_shortage`, `high_voltage`, `field_tilt`, `always_white_ball`; `none` when left out |
+| `player_cheat` | `none`, `devastating_hits`, `safe_megastrike`, `always_sidekick_skillshot`, `classic_mode`; `none` when left out |
+| `powerup_cheat` | `none`, `explosives`, `freezing`, `shells`, `giant`, `accelerator`, `peelin_out`, `seek_and_destroy`, `bombs_away`, `super_captains`, `infinite`, `no_power_ups`; `none` when left out |
 
 The hash is the SHA-256 of the rules' canonical JSON: the fields in this
 order, the tweaks sorted, no spaces, e.g.
-`{"tweaks":["no_mega_strikes"],"skill":"rookie","limit":"time","time":180,"goals":5,"games":3,"stadium":"random"}`.
+`{"tweaks":["no_mega_strikes"],"skill":"rookie","limit":"time","time":180,"goals":5,"games":3,"stadium":"random","stadium_cheat":"none","player_cheat":"none","powerup_cheat":"none"}`.
 Both games must play by the very same rules or the match goes out of sync, so
 the server pairs them only once both confirmed it. A match keeps the rules it
 was made with when its rule set changes.
@@ -356,7 +360,7 @@ with no Mega Strikes, fast terrain and Thunder Island walls).
 | Route | |
 |---|---|
 | `GET /api/v1/players` | `{"online": [...], "recent": [...], "friends": [...]}`: who has Recharged open (by name, at most 100), the last 10 players played a set with, and the player's friends (see "Friends"). Each is a player as in a sign-in, with `online`, `busy` (has a set to play), `activity` (while online: `launcher`, `game` or `match`, see "Activity"), `last_online` (their last heartbeat in Unix seconds, `null` before the first) and `friend` (the player keeps them as one). |
-| `POST /api/v1/matches` | `{"opponent": "<Discord username>", "rule_set": <id>}`, or `"opponent_id": <player id>` instead of the name (a Mii player only by id): a challenge, 201. 404 for nobody of that name, 409 when either already has a match to play, or the opponent doesn't have Recharged open or is playing a match (see "Activity"). |
+| `POST /api/v1/matches` | `{"opponent": "<Discord username>", "rule_set": <id>}`, or `"opponent_id": <player id>` instead of the name (a Mii player only by id): a challenge, 201. Instead of a rule set, `"rules": {…}` (see "Rules") and `"name"`, the preset they come from (1 to 48 characters; `Custom` without one): the match's `rule_set` then is that name; 400 for rules the game doesn't have. 404 for nobody of that name, 409 when either already has a match to play, or the opponent doesn't have Recharged open or is playing a match (see "Activity"). |
 | `GET /api/v1/matches/current` | `{"match": …, "poll_interval": 2, "server_time": <unix seconds>}`: the match still to be played, or the last one that ended within the hour, or `null`; `poll_interval` is how soon to ask again (2 while the set waits for its players, 10 while they play, 5 otherwise) |
 | `POST /api/v1/matches/<id>/accept`, `…/decline` | The challenged player's answer |
 | `POST /api/v1/matches/<id>/cancel` | Either player, before the result |

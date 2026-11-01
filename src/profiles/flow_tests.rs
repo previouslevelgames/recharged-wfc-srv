@@ -373,6 +373,56 @@ async fn challenges_need_a_known_opponent(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn a_challenge_plays_by_rules_of_its_own(pool: PgPool) {
+    let world = World::new(pool);
+    let mario = world.sign_in("Mario").await;
+    let peach = world.sign_in("Peach").await;
+    world.sign_in("Luigi").await;
+    world.sign_in("Daisy").await;
+    let own = json!({"tweaks": ["fast_terrain"], "limit": "goals", "time": 180, "goals": 7, "games": 5,
+                     "stadium": "the_palace", "stadium_cheat": "field_tilt", "powerup_cheat": "shells"});
+    // No rules, and rules the game doesn't have, are refused.
+    let mut wrong = own.clone();
+    wrong["powerup_cheat"] = json!("butterfingers");
+    for body in [
+        json!({"opponent": "luigi"}),
+        json!({"opponent": "luigi", "rules": wrong}),
+        json!({"opponent": "luigi", "rules": own, "name": "x".repeat(49)}),
+    ] {
+        let (status, answer) = world.send("POST", "/api/v1/matches", &mario, body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{answer}");
+    }
+    // The preset's name goes with them; the skill and the cheats left out
+    // are the defaults.
+    let (status, challenge) = world
+        .send(
+            "POST",
+            "/api/v1/matches",
+            &mario,
+            json!({"opponent": "luigi", "rules": own, "name": " Palace tilt "}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{challenge}");
+    assert_eq!(challenge["rule_set"], "Palace tilt");
+    assert_eq!(challenge["rules"]["stadium_cheat"], "field_tilt");
+    assert_eq!(challenge["rules"]["powerup_cheat"], "shells");
+    assert_eq!(challenge["rules"]["player_cheat"], "none");
+    assert_eq!(challenge["rules"]["skill"], "rookie");
+    assert_eq!(challenge["rules_hash"].as_str().unwrap().len(), 64);
+    // Without a name: Custom.
+    let (status, challenge) = world
+        .send(
+            "POST",
+            "/api/v1/matches",
+            &peach,
+            json!({"opponent": "daisy", "rules": own}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{challenge}");
+    assert_eq!(challenge["rule_set"], "Custom");
+}
+
+#[sqlx::test]
 async fn a_set_from_the_lobby_to_a_rematch(pool: PgPool) {
     let world = World::new(pool);
     let mario = world.sign_in("Mario").await;

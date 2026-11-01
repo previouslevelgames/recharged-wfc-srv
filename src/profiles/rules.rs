@@ -1,6 +1,7 @@
-//! The rules a match is played by (docs/profiles.md, "Rules"), which the
-//! server's admins set: gameplay tweaks, skill level, how a game ends, the
-//! games of a series and the stadium. The port applies them in both games.
+//! The rules a match is played by (docs/profiles.md, "Rules"): gameplay
+//! tweaks, skill level, how a game ends, the games of a series, the stadium
+//! and the game's three cheats. The server's admins set rule sets; a
+//! challenge plays by one of them or by rules of its own. The port applies them in both games.
 //! Both must play by the very same rules, or the match goes out of sync, so
 //! the server pairs two games only once both confirmed the rules' hash.
 
@@ -37,6 +38,38 @@ pub const STADIUMS: [&str; 16] = [
 ];
 /// Games in a series.
 pub const SERIES: [u8; 4] = [1, 3, 5, 7];
+/// The game's cheats, by the names its settings screen shows, in the order
+/// of its enums: the stadium (`eEnvironmentCheat`), the players
+/// (`ePlayerCheat`) and the power-ups (`ePowerupCheat`).
+pub const STADIUM_CHEATS: [&str; 6] = [
+    "none",
+    "secure_stadiums",
+    "power_shortage",
+    "high_voltage",
+    "field_tilt",
+    "always_white_ball",
+];
+pub const PLAYER_CHEATS: [&str; 5] = [
+    "none",
+    "devastating_hits",
+    "safe_megastrike",
+    "always_sidekick_skillshot",
+    "classic_mode",
+];
+pub const POWERUP_CHEATS: [&str; 12] = [
+    "none",
+    "explosives",
+    "freezing",
+    "shells",
+    "giant",
+    "accelerator",
+    "peelin_out",
+    "seek_and_destroy",
+    "bombs_away",
+    "super_captains",
+    "infinite",
+    "no_power_ups",
+];
 
 /// A rule set's rules. Serialized in this field order with the tweaks
 /// sorted, which is what [`Rules::hash`] hashes.
@@ -44,6 +77,9 @@ pub const SERIES: [u8; 4] = [1, 3, 5, 7];
 #[serde(deny_unknown_fields)]
 pub struct Rules {
     pub tweaks: Vec<String>,
+    /// The CPU's skill: no effect on a match between two games (the game
+    /// gives both teams the human level), kept for the rules' form.
+    #[serde(default = "rookie")]
     pub skill: String,
     /// `time` or `goals`: what ends a game.
     pub limit: String,
@@ -55,6 +91,23 @@ pub struct Rules {
     pub games: u8,
     /// One of [`STADIUMS`], or `random`.
     pub stadium: String,
+    /// One of [`STADIUM_CHEATS`].
+    #[serde(default = "none")]
+    pub stadium_cheat: String,
+    /// One of [`PLAYER_CHEATS`].
+    #[serde(default = "none")]
+    pub player_cheat: String,
+    /// One of [`POWERUP_CHEATS`].
+    #[serde(default = "none")]
+    pub powerup_cheat: String,
+}
+
+fn rookie() -> String {
+    "rookie".into()
+}
+
+fn none() -> String {
+    "none".into()
 }
 
 impl Rules {
@@ -90,6 +143,15 @@ impl Rules {
         }
         if self.stadium != "random" && !STADIUMS.contains(&self.stadium.as_str()) {
             return Err(format!("stadium: random or one of {}", STADIUMS.join(", ")));
+        }
+        for (field, value, names) in [
+            ("stadium_cheat", &self.stadium_cheat, &STADIUM_CHEATS[..]),
+            ("player_cheat", &self.player_cheat, &PLAYER_CHEATS[..]),
+            ("powerup_cheat", &self.powerup_cheat, &POWERUP_CHEATS[..]),
+        ] {
+            if !names.contains(&value.as_str()) {
+                return Err(format!("{field}: one of {}", names.join(", ")));
+            }
         }
         Ok(self)
     }
@@ -261,6 +323,9 @@ mod tests {
             goals: 5,
             games: 3,
             stadium: "random".into(),
+            stadium_cheat: "none".into(),
+            player_cheat: "none".into(),
+            powerup_cheat: "none".into(),
         }
     }
 
@@ -273,16 +338,25 @@ mod tests {
         );
         assert_eq!(
             rules.to_json(),
-            r#"{"tweaks":["fast_terrain","no_mega_strikes","thunder_island_walls"],"skill":"rookie","limit":"time","time":180,"goals":5,"games":3,"stadium":"random"}"#
+            r#"{"tweaks":["fast_terrain","no_mega_strikes","thunder_island_walls"],"skill":"rookie","limit":"time","time":180,"goals":5,"games":3,"stadium":"random","stadium_cheat":"none","player_cheat":"none","powerup_cheat":"none"}"#
         );
         assert_eq!(rules.hash().len(), 64);
         assert_eq!(Rules::from_json(&rules.to_json()).unwrap(), rules);
+        // Rules saved before the cheats (and a challenge without a skill)
+        // read with none and the rookie level.
+        assert_eq!(
+            Rules::from_json(
+                r#"{"tweaks":["fast_terrain","no_mega_strikes","thunder_island_walls"],"limit":"time","time":180,"goals":5,"games":3,"stadium":"random"}"#
+            )
+            .unwrap(),
+            rules
+        );
     }
 
     #[test]
     fn invalid_rules_say_what_is_wrong() {
         type Change = fn(&mut Rules);
-        let cases: [(&str, Change); 7] = [
+        let cases: [(&str, Change); 10] = [
             ("tweaks", |rules| rules.tweaks.push("super_team".into())),
             ("skill", |rules| rules.skill = "easy".into()),
             ("limit", |rules| rules.limit = "score".into()),
@@ -290,6 +364,13 @@ mod tests {
             ("goals", |rules| rules.goals = 0),
             ("games", |rules| rules.games = 2),
             ("stadium", |rules| rules.stadium = "tutorial_field".into()),
+            ("stadium_cheat", |rules| rules.stadium_cheat = "tilt".into()),
+            ("player_cheat", |rules| {
+                rules.player_cheat = "glass_jaw".into()
+            }),
+            ("powerup_cheat", |rules| {
+                rules.powerup_cheat = "butterfingers".into()
+            }),
         ];
         for (field, change) in cases {
             let mut rules = competitive();

@@ -53,6 +53,9 @@ struct Choices {
     skills: &'static [&'static str],
     stadiums: &'static [&'static str],
     series: &'static [u8],
+    stadium_cheats: &'static [&'static str],
+    player_cheats: &'static [&'static str],
+    powerup_cheats: &'static [&'static str],
 }
 
 pub async fn read(pool: &PgPool) -> Result<Competitive, sqlx::Error> {
@@ -104,6 +107,9 @@ pub async fn read(pool: &PgPool) -> Result<Competitive, sqlx::Error> {
             skills: &rules::SKILLS,
             stadiums: &rules::STADIUMS,
             series: &rules::SERIES,
+            stadium_cheats: &rules::STADIUM_CHEATS,
+            player_cheats: &rules::PLAYER_CHEATS,
+            powerup_cheats: &rules::POWERUP_CHEATS,
         },
     })
 }

@@ -20,7 +20,7 @@ use super::{
     matches::{self, Game, Match, Refusal},
     miis,
     players::{self, Player},
-    rules,
+    rules::{self, RuleSet, Rules},
 };
 use crate::pairing::Pairing;
 
@@ -99,7 +99,15 @@ pub(super) struct Challenge {
     /// ...or their player id, from the lists of `GET /api/v1/players`.
     #[serde(default)]
     opponent_id: Option<i64>,
-    rule_set: i64,
+    /// One of the server's rule sets...
+    #[serde(default)]
+    rule_set: Option<i64>,
+    /// ...or rules of the challenger's own, under `name` (the preset they
+    /// started from; `Custom` without one).
+    #[serde(default)]
+    rules: Option<Rules>,
+    #[serde(default)]
+    name: Option<String>,
 }
 
 pub(super) async fn challenge(
@@ -153,10 +161,29 @@ pub(super) async fn challenge(
         }
         Err(error) => return database_error(error),
     }
-    let rule_set = match rules::get(&state.pool, request.rule_set).await {
-        Ok(Some(rule_set)) => rule_set,
-        Ok(None) => return json_error(StatusCode::NOT_FOUND, "no such rule set"),
-        Err(error) => return database_error(error),
+    let rule_set = match (request.rules, request.rule_set) {
+        (Some(own), _) => {
+            let name = request.name.as_deref().map(str::trim).unwrap_or("");
+            let name = if name.is_empty() { "Custom" } else { name };
+            if name.chars().count() > 48 {
+                return json_error(StatusCode::BAD_REQUEST, "name: up to 48 characters");
+            }
+            match own.check() {
+                Ok(rules) => RuleSet {
+                    id: 0,
+                    name: name.to_owned(),
+                    hash: rules.hash(),
+                    rules,
+                },
+                Err(problem) => return json_error(StatusCode::BAD_REQUEST, &problem),
+            }
+        }
+        (None, Some(id)) => match rules::get(&state.pool, id).await {
+            Ok(Some(rule_set)) => rule_set,
+            Ok(None) => return json_error(StatusCode::NOT_FOUND, "no such rule set"),
+            Err(error) => return database_error(error),
+        },
+        (None, None) => return json_error(StatusCode::BAD_REQUEST, "which rules?"),
     };
     match matches::challenge(&state.pool, player.id, opponent, &rule_set, None).await {
         Ok(Ok(found)) => {
