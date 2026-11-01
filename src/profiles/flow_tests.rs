@@ -485,6 +485,113 @@ async fn a_set_from_the_lobby_to_a_rematch(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn a_set_lasts_while_its_games_call(pool: PgPool) {
+    let world = World::new(pool);
+    let mario = world.sign_in("Mario").await;
+    let bowser = world.sign_in("Bowser").await;
+    let (_, challenge) = world
+        .send(
+            "POST",
+            "/api/v1/matches",
+            &mario,
+            json!({"opponent": "bowser", "rule_set": 2}),
+        )
+        .await;
+    let id = challenge["id"].as_i64().unwrap();
+    let (_, go) = world
+        .send(
+            "POST",
+            &format!("/api/v1/matches/{id}/accept"),
+            &bowser,
+            Value::Null,
+        )
+        .await;
+    assert_eq!(go["stage"], "go");
+    let mut pids = Vec::new();
+    for (token, user, gsbrcd) in [(&mario, 1, "R4QEaaaaaaa"), (&bowser, 2, "R4QEbbbbbbb")] {
+        let pid = world.wfc_login(user, gsbrcd).await;
+        world
+            .send(
+                "POST",
+                "/api/v1/wfc",
+                token,
+                json!({"profile_id": pid, "login_ticket": format!("ticket-{pid}")}),
+            )
+            .await;
+        pids.push(pid);
+    }
+    let ready = async |world: &World, token: &str, pid: i32| {
+        let body = json!({"profile_id": pid, "rules_hash": go["rules_hash"]});
+        world
+            .send("POST", &format!("/api/v1/matches/{id}/ready"), token, body)
+            .await
+    };
+    let stage = async |world: &World, token: &str| {
+        let (_, current) = world
+            .send("GET", "/api/v1/matches/current", token, Value::Null)
+            .await;
+        current["match"]["stage"].clone()
+    };
+
+    // Mario's game says it is ready, then his Ready to play! is taken back:
+    // Bowser's game doesn't pair with it until it says so again.
+    let (_, answer) = ready(&world, &mario, pids[0]).await;
+    assert_eq!(answer["paired"], false);
+    let (_, open) = world
+        .send(
+            "POST",
+            &format!("/api/v1/matches/{id}/ready-to-play"),
+            &mario,
+            json!({"ready": false}),
+        )
+        .await;
+    assert_eq!(open["stage"], "open");
+    let (_, answer) = ready(&world, &bowser, pids[1]).await;
+    assert_eq!(answer["paired"], false);
+    assert_eq!(stage(&world, &bowser).await, "open");
+    let (_, answer) = ready(&world, &mario, pids[0]).await;
+    assert_eq!(answer["paired"], true);
+    assert_eq!(stage(&world, &bowser).await, "playing");
+
+    // The server restarts during the match: the games' GPCM logins are gone,
+    // so their ready calls are refused, but they still play the set.
+    let restarted = World::new(world.pool.clone());
+    sqlx::query!(
+        "UPDATE matches SET home_game_ready_at = now() - interval '61 seconds',
+                            away_game_ready_at = now() - interval '61 seconds'
+         WHERE match_id = $1",
+        id,
+    )
+    .execute(&world.pool)
+    .await
+    .unwrap();
+    for (token, pid) in [(&mario, pids[0]), (&bowser, pids[1])] {
+        let (status, refused) = ready(&restarted, token, pid).await;
+        assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    }
+    assert_eq!(stage(&restarted, &mario).await, "playing");
+
+    // Bowser's game stops calling, Mario's goes on: the set was broken off,
+    // though both still have Recharged open.
+    sqlx::query!(
+        "UPDATE matches SET away_game_ready_at = now() - interval '61 seconds'
+         WHERE match_id = $1",
+        id,
+    )
+    .execute(&world.pool)
+    .await
+    .unwrap();
+    ready(&restarted, &mario, pids[0]).await;
+    let (_, current) = restarted
+        .send("GET", "/api/v1/matches/current", &bowser, Value::Null)
+        .await;
+    assert_eq!(
+        (&current["match"]["stage"], &current["match"]["reason"]),
+        (&json!("dissolved"), &json!("dissolved"))
+    );
+}
+
+#[sqlx::test]
 async fn friends_who_keep_each_other_chat(pool: PgPool) {
     let world = World::new(pool);
     let mario = world.sign_in("Mario").await;

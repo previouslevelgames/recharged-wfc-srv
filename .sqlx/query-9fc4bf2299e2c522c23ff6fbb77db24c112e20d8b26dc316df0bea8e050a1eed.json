@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE matches SET state = 'dissolved', updated_at = now()\n             WHERE state = 'accepted'\n               AND (SELECT count(*) FROM match_reports\n                    WHERE match_reports.match_id = matches.match_id) = 1\n               AND (SELECT min(reported_at) FROM match_reports\n                    WHERE match_reports.match_id = matches.match_id)\n                   < now() - make_interval(secs => $1)\n             RETURNING match_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "match_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "match_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Float8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9fc4bf2299e2c522c23ff6fbb77db24c112e20d8b26dc316df0bea8e050a1eed"
+}

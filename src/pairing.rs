@@ -88,6 +88,18 @@ impl Pairings {
         pairing(sides, now)
     }
 
+    /// The player of side `side` took back Ready to play! for `match_id`:
+    /// their game is not ready until it says so again.
+    pub fn unready(&self, match_id: i64, side: usize) {
+        let mut matches = self.matches.lock().unwrap();
+        if let Some(sides) = matches.get_mut(&match_id) {
+            sides[side] = None;
+            if sides.iter().all(Option::is_none) {
+                matches.remove(&match_id);
+            }
+        }
+    }
+
     /// The match `match_id` ended: its games are no longer kept.
     pub fn end(&self, match_id: i64) {
         self.matches.lock().unwrap().remove(&match_id);
@@ -164,6 +176,19 @@ mod tests {
         pairings.end(7);
         assert_eq!(pairings.visible_to(1), Visible::Everyone);
         assert!(!pairings.kept(2));
+    }
+
+    #[test]
+    fn a_game_taken_back_is_not_ready() {
+        let pairings = Pairings::default();
+        pairings.ready(7, 0, 1, "R4QE");
+        pairings.unready(7, 0);
+        assert_eq!(pairings.visible_to(1), Visible::Everyone);
+        assert_eq!(pairings.ready(7, 1, 2, "R4QE"), Pairing::Waiting);
+        assert_eq!(pairings.ready(7, 0, 1, "R4QE"), Pairing::Paired);
+        pairings.unready(7, 1);
+        assert_eq!(pairings.pairing(7), Pairing::Waiting);
+        assert_eq!(pairings.visible_to(1), Visible::Nobody);
     }
 
     #[test]
