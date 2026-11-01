@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT players.player_id, players.display_name,\n                  discord.username AS \"discord?\", discord.avatar_url AS \"avatar_url?\",\n                  test.username AS \"test?\"\n           FROM players\n           LEFT JOIN player_identities discord\n                  ON discord.player_id = players.player_id AND discord.provider = 'discord'\n           LEFT JOIN player_identities test\n                  ON test.player_id = players.player_id AND test.provider = 'test'\n           WHERE players.player_id = $1",
+  "query": "SELECT players.player_id, players.display_name,\n                  discord.username AS \"discord?\", discord.avatar_url AS \"avatar_url?\",\n                  test.username AS \"test?\", wfc.username AS \"friend_code?\"\n           FROM players\n           LEFT JOIN player_identities discord\n                  ON discord.player_id = players.player_id AND discord.provider = 'discord'\n           LEFT JOIN player_identities test\n                  ON test.player_id = players.player_id AND test.provider = 'test'\n           LEFT JOIN player_identities wfc\n                  ON wfc.player_id = players.player_id AND wfc.provider = 'wfc'\n           WHERE players.player_id = $1",
   "describe": {
     "columns": [
       {
@@ -57,6 +57,17 @@
             "name": "username"
           }
         }
+      },
+      {
+        "ordinal": 5,
+        "name": "friend_code?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "player_identities",
+            "name": "username"
+          }
+        }
       }
     ],
     "parameters": {
@@ -69,8 +80,9 @@
       false,
       true,
       true,
+      true,
       true
     ]
   },
-  "hash": "cbfab665c325bdb81f73971de02906a304fc630e38d081dc7b971975cb25345e"
+  "hash": "c67868d2e5e857501275268853dedc9608d8ad1bdb6c380adf8b641653a348cb"
 }

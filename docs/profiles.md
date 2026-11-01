@@ -2,7 +2,8 @@
 
 Recharged's launcher signs players in to a **Recharged profile** for
 competitive play. A profile is a player, not a console: it is made the first
-time someone signs in with Discord, and it is no part of WFC. The game's own
+time someone signs in with Discord, or plays with a Mii instead (see "Playing
+without Discord"), and it is no part of WFC. The game's own
 logins stay NAS and GPCM's ([login.md](login.md)). Signed in, a player
 challenges another to a set by a rule set the server's admins keep; both press
 **Ready to play!**, their launchers start the games, the port proves which
@@ -20,7 +21,8 @@ The service is off unless it is configured, and the routes below then answer
 | `PROFILES_TEST_SIGN_IN` | `true` lets anyone sign in with a name alone, so a second game on one PC has a player of its own. **Only on a local or test server.** An owner can switch it on or off on the admin dashboard's **Maintenance** page instead; that switch wins from then on. |
 
 Discord, test sign-in, or both turn the service on, and then `PUBLIC_URL` is
-needed too. In the Discord app, add the redirect
+needed too. Playing with a Mii needs no setting of its own: it works on every
+server with the service on. In the Discord app, add the redirect
 `<PUBLIC_URL>/sign-in/discord/callback` under **OAuth2 → Redirects**, e.g.
 `https://wfc.example.com/sign-in/discord/callback`, or
 `http://127.0.0.1:8080/sign-in/discord/callback` for a server on your own
@@ -74,6 +76,44 @@ page in the browser and asks the server until the sign-in ends.
 Sign-ins wait in the server's memory; a restart drops them, and the launcher
 starts again.
 
+### Playing without Discord
+
+Discord is not needed to play: the launcher's **Play with a Mii** makes a
+player without an account, under a name of its own.
+
+`POST /api/v1/sign-in/mii` with `{"name": "Nelly"}` makes the player and
+signs in at once, answering like a sign-in that ended:
+`{"status": "signed_in", "token": "…", "player": {…, "account": "mii",
+"friend_code": null}}`. The name is the profile's, which other players see,
+as long as a Discord display name may be: 1 to 32 characters (counted as
+characters, not bytes), without spaces around it and without control
+characters or invisible formatting ones. (The Mii's own name in its record
+has 10 at most; the launcher fits it.) Mii players' names need not be unique,
+so the launcher shows them with their friend code. 400 for a name that isn't
+one; 429 `{"error": "too many new players from here: try again in an hour"}`
+after 5 new players from one address within an hour (an IPv6 address counts
+with its /64). The address is the caller's, or, from a proxy on the server's
+own network (loopback, private or link-local, such as a Cloudflare Tunnel's
+connector), the one it names in `CF-Connecting-IP`, else last in
+`X-Forwarded-For`. The count lives in memory: a restart forgets it.
+
+A Mii player is the same as any other: friends, chat, challenges and sets,
+rematches and the leaderboard. Others find it in their lists and challenge or
+add it by its player id; a name looks up Discord usernames (and test names)
+only.
+
+**What identifies it.** A Mii player has nothing to sign in with until its
+game logs in to WFC: the first WFC profile its port proves (`POST
+/api/v1/wfc`, see "Friend codes") becomes its identity, kept in
+`player_identities` as provider `wfc` with the profile id. A WFC profile
+identifies one player at most, and a player keeps its first: a profile that
+identifies another player, proven by a second Mii player (the same Mii on
+another computer that made a new player), is only bound to that one, as any
+profile is, and still identifies the first. Players with Discord or a test
+name get no `wfc` identity.
+
+### Test sign-in
+
 On a test server, `POST /api/v1/sign-in/test` with `{"name": "Mario"}`
 signs in at once and answers like a sign-in that ended. A test name has 1 to
 16 letters, digits, `-` or `_`; the same name in other letters is the same
@@ -89,8 +129,8 @@ days. The database keeps only the token's SHA-256.
 
 | Route | Answer |
 |---|---|
-| `GET /api/v1/server` | `{"version", "revision", "sign_in": {"discord": true, "test": false}, "discord_application": "<client id>"}`, without a session: what the launcher can offer (`discord_application` is `null` without Discord sign-in; see "Discord friends") |
-| `GET /api/v1/me` | the player, as in a sign-in, with `wfc` (see "Friend codes") and `discord_id`: the Discord account id (a string; `null` for test players), from which the launcher makes the player's Mii |
+| `GET /api/v1/server` | `{"version", "revision", "sign_in": {"discord": true, "test": false, "mii": true}, "discord_application": "<client id>"}`, without a session: what the launcher can offer (`discord_application` is `null` without Discord sign-in; see "Discord friends"; `mii` from 1.2.3) |
+| `GET /api/v1/me` | the player, as in a sign-in, with `wfc` (see "Friend codes") and `discord_id`: the Discord account id (a string; `null` for test and Mii players), from which the launcher makes the player's Mii |
 | `POST /api/v1/sign-out` | 204; the session is closed |
 
 Every request with a session is also the player's heartbeat, as is a
@@ -113,10 +153,25 @@ Errors are JSON, `{"error": "<what went wrong>"}`. Every response is
 ## Players
 
 `players` has one row per player, with the name to show: the Discord display
-name (or the username) at the last sign-in, and the time of the last
-heartbeat. `player_identities` holds the
-accounts a player signs in with, one per provider (`discord`, `test`), with
-the username other players look them up by and the avatar.
+name (or the username) at the last sign-in, a Mii player's own name, and the
+time of the last heartbeat. `player_identities` holds the
+accounts a player signs in with, one per provider (`discord`, `test`, and
+`wfc`, a Mii player's WFC profile), with the username other players look
+them up by (for `wfc` the profile's friend code, which looks up nobody) and
+the avatar.
+
+A player as the launcher sees it, in a sign-in, `GET /api/v1/me`, the lists
+of `GET /api/v1/players` and a match's opponent:
+
+```json
+{"id": 7, "name": "Nelly", "avatar_url": null, "discord": null, "test": false,
+ "account": "mii", "friend_code": "0868-9934-5920"}
+```
+
+`account` is what the player signs in with: `discord`, `test` (a test name),
+or `mii` (neither, see "Playing without Discord"). `friend_code` is the
+friend code of the WFC profile that identifies the player (a Mii player's
+first proven profile), `null` without one. Both from 1.2.3.
 `player_sessions` holds the sessions, `player_wfc_profiles` the friend codes
 proven theirs, `rule_sets` the rules, `matches` and `match_reports` the
 matches and what each game reported. The series every Recharged build reports
@@ -170,7 +225,7 @@ then the others by when they were last online.
 
 | Route | |
 |---|---|
-| `POST /api/v1/friends` | `{"player_id": <id>}`, or `{"name": "<Discord username>"}` instead: adds them, and answers `{"friends": [...]}` as in `GET /api/v1/players`. One already there changes nothing. 400 for yourself, 404 for nobody of that name, 409 with the list full. |
+| `POST /api/v1/friends` | `{"player_id": <id>}`, or `{"name": "<Discord username>"}` instead (a Mii player only by id): adds them, and answers `{"friends": [...]}` as in `GET /api/v1/players`. One already there changes nothing. 400 for yourself, 404 for nobody of that name, 409 with the list full. |
 | `DELETE /api/v1/friends/<id>` | Removes them (one not there is no error) and answers the list the same way |
 
 ## Chat
@@ -220,7 +275,8 @@ reach the server through a proxy or over IPv6 while the game uses IPv4. The
 profile is then the player's, until another player proves it, and the answer
 is `{"profile_id", "game": "R4QE", "friend_code": "0868-9934-5920", "mii"}`.
 403 for a profile not logged in with that ticket. `GET /api/v1/me` lists the
-player's profiles as `wfc`, the latest first.
+player's profiles as `wfc`, the latest first. A Mii player's first proven
+profile also identifies it from then on (see "Playing without Discord").
 
 ## Leaderboard
 
@@ -269,7 +325,7 @@ with no Mega Strikes, fast terrain and Thunder Island walls).
 | Route | |
 |---|---|
 | `GET /api/v1/players` | `{"online": [...], "recent": [...], "friends": [...]}`: who has Recharged open (by name, at most 100), the last 10 players played a set with, and the player's friends (see "Friends"). Each is a player as in a sign-in, with `online`, `busy` (has a set to play), `activity` (while online: `launcher`, `game` or `match`, see "Activity"), `last_online` (their last heartbeat in Unix seconds, `null` before the first) and `friend` (the player keeps them as one). |
-| `POST /api/v1/matches` | `{"opponent": "<Discord username>", "rule_set": <id>}`, or `"opponent_id": <player id>` instead of the name: a challenge, 201. 404 for nobody of that name, 409 when either already has a match to play, or the opponent doesn't have Recharged open or is playing a match (see "Activity"). |
+| `POST /api/v1/matches` | `{"opponent": "<Discord username>", "rule_set": <id>}`, or `"opponent_id": <player id>` instead of the name (a Mii player only by id): a challenge, 201. 404 for nobody of that name, 409 when either already has a match to play, or the opponent doesn't have Recharged open or is playing a match (see "Activity"). |
 | `GET /api/v1/matches/current` | `{"match": …, "poll_interval": 2, "server_time": <unix seconds>}`: the match still to be played, or the last one that ended within the hour, or `null`; `poll_interval` is how soon to ask again (2 while the set waits for its players, 10 while they play, 5 otherwise) |
 | `POST /api/v1/matches/<id>/accept`, `…/decline` | The challenged player's answer |
 | `POST /api/v1/matches/<id>/cancel` | Either player, before the result |
@@ -283,6 +339,7 @@ A match as the player sees it:
 ```json
 {"id": 12, "state": "accepted", "side": "challenger",
  "opponent": {"id": 8, "name": "Sam", "avatar_url": "…", "discord": "sam",
+              "account": "discord", "friend_code": null,
               "wfc": [{"profile_id": 1000000001, "game": "R4QE", "friend_code": "…", "mii": "Sam"}]},
  "rule_set": "Competitive", "rules": {…}, "rules_hash": "…",
  "paired": false, "reported": false, "winner": null, "games": [], "created_at": 1792771200,

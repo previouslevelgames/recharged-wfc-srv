@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO player_identities (provider, external_id, player_id, username)\n         SELECT 'wfc', $1, $2, $3\n         WHERE NOT EXISTS (SELECT 1 FROM player_identities\n                           WHERE player_id = $2 AND provider IN ('discord', 'test'))\n         ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "852a83f653cb50e3be61a66796fef65e47aa9ed711f14abfcc11c8cbe32098d1"
+}

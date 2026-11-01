@@ -83,6 +83,8 @@ async fn the_launcher_signs_in_with_discord(pool: PgPool) {
     assert_eq!(signed_in["player"]["name"], "Nelly");
     assert_eq!(signed_in["player"]["discord"], "nelly");
     assert_eq!(signed_in["player"]["test"], false);
+    assert_eq!(signed_in["player"]["account"], "discord");
+    assert_eq!(signed_in["player"]["friend_code"], Value::Null);
     // The Discord SDK's tokens of the same sign-in, for the launcher's
     // Discord friends: no second authorization.
     assert_eq!(
@@ -412,13 +414,17 @@ async fn a_test_player_signs_in_and_out(pool: PgPool) {
     let (status, _, body) = send(&app, Request::get("/api/v1/server"), None).await;
     assert_eq!(status, 200);
     let server: Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(server["sign_in"], json!({"discord": true, "test": true}));
+    assert_eq!(
+        server["sign_in"],
+        json!({"discord": true, "test": true, "mii": true})
+    );
     assert_eq!(server["discord_application"], CLIENT_ID);
     assert_eq!(server["version"], recharged_wfc_srv::VERSION);
 
     let signed_in = test_sign_in(&app, "Mario").await;
     assert_eq!(signed_in["player"]["name"], "Mario");
     assert_eq!(signed_in["player"]["test"], true);
+    assert_eq!(signed_in["player"]["account"], "test");
     let token = signed_in["token"].as_str().unwrap();
     assert_eq!(
         send(&app, Request::get("/api/v1/me"), Some(token)).await.0,

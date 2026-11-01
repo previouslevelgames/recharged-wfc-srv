@@ -14,7 +14,8 @@ const USE_RESOLUTION: Duration = Duration::hours(1);
 /// Session tokens: 32 random bytes in Base64url.
 const TOKEN_LEN: usize = 43;
 
-/// An account to sign in with: Discord's, or a test name.
+/// An account to sign in with: Discord's, or a test name. (A Mii player's
+/// WFC profile is one too, made by [`bind_identity`].)
 pub struct Identity<'a> {
     /// `discord` or `test`.
     pub provider: &'static str,
@@ -34,6 +35,21 @@ pub struct Player {
     pub discord: Option<String>,
     /// A test player (PROFILES_TEST_SIGN_IN).
     pub test: bool,
+    /// What they sign in with: `discord`, `test`, or `mii` for a player
+    /// without either (docs/profiles.md, "Players").
+    pub account: &'static str,
+    /// The friend code of the WFC profile that identifies them: a Mii
+    /// player's first proven profile, once there is one.
+    pub friend_code: Option<String>,
+}
+
+/// The account of a player with or without a Discord and a test identity.
+fn account(discord: bool, test: bool) -> &'static str {
+    match (discord, test) {
+        (true, _) => "discord",
+        (false, true) => "test",
+        (false, false) => "mii",
+    }
 }
 
 /// Signs in with `identity`: its player, made at the first sign-in. The
@@ -95,16 +111,54 @@ pub async fn sign_in(pool: &PgPool, identity: &Identity<'_>) -> Result<i64, sqlx
     }
 }
 
+/// A new player without an account to sign in with, under the name it chose:
+/// a Mii player (docs/profiles.md, "Signing in"). Its making is a heartbeat.
+pub async fn create_mii(pool: &PgPool, name: &str) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar!(
+        "INSERT INTO players (display_name, heartbeat_at) VALUES ($1, now()) RETURNING player_id",
+        name,
+    )
+    .fetch_one(pool)
+    .await
+}
+
+/// Makes the WFC profile `profile_id`, whose friend code is `friend_code`,
+/// the identity of `player_id` if that is a Mii player without one yet and
+/// the profile identifies nobody else. Whether it did.
+pub async fn bind_identity(
+    pool: &PgPool,
+    player_id: i64,
+    profile_id: i32,
+    friend_code: &str,
+) -> Result<bool, sqlx::Error> {
+    let bound = sqlx::query!(
+        "INSERT INTO player_identities (provider, external_id, player_id, username)
+         SELECT 'wfc', $1, $2, $3
+         WHERE NOT EXISTS (SELECT 1 FROM player_identities
+                           WHERE player_id = $2 AND provider IN ('discord', 'test'))
+         ON CONFLICT DO NOTHING",
+        profile_id.to_string(),
+        player_id,
+        friend_code,
+    )
+    .execute(pool)
+    .await?
+    .rows_affected();
+    Ok(bound == 1)
+}
+
 pub async fn player(pool: &PgPool, player_id: i64) -> Result<Option<Player>, sqlx::Error> {
     let row = sqlx::query!(
         r#"SELECT players.player_id, players.display_name,
                   discord.username AS "discord?", discord.avatar_url AS "avatar_url?",
-                  test.username AS "test?"
+                  test.username AS "test?", wfc.username AS "friend_code?"
            FROM players
            LEFT JOIN player_identities discord
                   ON discord.player_id = players.player_id AND discord.provider = 'discord'
            LEFT JOIN player_identities test
                   ON test.player_id = players.player_id AND test.provider = 'test'
+           LEFT JOIN player_identities wfc
+                  ON wfc.player_id = players.player_id AND wfc.provider = 'wfc'
            WHERE players.player_id = $1"#,
         player_id,
     )
@@ -114,8 +168,10 @@ pub async fn player(pool: &PgPool, player_id: i64) -> Result<Option<Player>, sql
         id: row.player_id,
         name: row.display_name,
         avatar_url: row.avatar_url,
+        account: account(row.discord.is_some(), row.test.is_some()),
         discord: row.discord,
         test: row.test.is_some(),
+        friend_code: row.friend_code,
     }))
 }
 
@@ -374,12 +430,14 @@ pub(super) async fn listed(
                   (SELECT count(*) FROM chat_messages
                    WHERE chat_messages.sender = players.player_id AND chat_messages.recipient = $3
                      AND chat_messages.read_at IS NULL) AS "unread!",
-                  discord.external_id AS "discord_id?"
+                  discord.external_id AS "discord_id?", wfc.username AS "friend_code?"
            FROM players
            LEFT JOIN player_identities discord
                   ON discord.player_id = players.player_id AND discord.provider = 'discord'
            LEFT JOIN player_identities test
                   ON test.player_id = players.player_id AND test.provider = 'test'
+           LEFT JOIN player_identities wfc
+                  ON wfc.player_id = players.player_id AND wfc.provider = 'wfc'
            WHERE players.player_id = ANY($1)"#,
         ids,
         f64::from(super::matches::HEARTBEAT_TIMEOUT_SECS),
@@ -394,8 +452,10 @@ pub(super) async fn listed(
                 id: row.player_id,
                 name: row.display_name,
                 avatar_url: row.avatar_url,
+                account: account(row.discord.is_some(), row.test.is_some()),
                 discord: row.discord,
                 test: row.test.is_some(),
+                friend_code: row.friend_code,
             },
             online: row.online,
             busy: row.busy,
@@ -416,11 +476,11 @@ pub(super) async fn listed(
 }
 
 /// The player who signs in with `name`: a Discord username, or on a test
-/// server a test name.
+/// server a test name. Mii players have neither: they are found by id.
 pub async fn find(pool: &PgPool, name: &str) -> Result<Option<i64>, sqlx::Error> {
     sqlx::query_scalar!(
         "SELECT player_id FROM player_identities
-         WHERE lower(username) = lower($1)
+         WHERE lower(username) = lower($1) AND provider IN ('discord', 'test')
          ORDER BY provider = 'discord' DESC
          LIMIT 1",
         name.trim(),
@@ -613,6 +673,79 @@ mod tests {
         bind_wfc(&pool, sam, profile.profile_id).await.unwrap();
         assert!(wfc_profiles(&pool, nelly).await.unwrap().is_empty());
         assert_eq!(wfc_profiles(&pool, sam).await.unwrap().len(), 1);
+    }
+
+    #[sqlx::test]
+    async fn a_mii_players_first_proven_profile_identifies_it(pool: PgPool) {
+        let mut profiles = Vec::new();
+        for (user_id, gsbrcd) in [
+            (42, "R4QEabcdefg"),
+            (43, "R4QPabcdefg"),
+            (44, "R4QEhijklmn"),
+        ] {
+            crate::accounts::log_in(&pool, user_id).await.unwrap();
+            let profile =
+                crate::accounts::profile_login(&pool, user_id, gsbrcd, Some("Mii"), "10.0.0.1")
+                    .await
+                    .unwrap();
+            let game = &gsbrcd[..4];
+            profiles.push((
+                profile.profile_id,
+                crate::accounts::friend_code(profile.profile_id, game),
+            ));
+        }
+        let [
+            (first, first_code),
+            (second, second_code),
+            (third, third_code),
+        ] = profiles.try_into().unwrap();
+
+        let mii = create_mii(&pool, "Nelly").await.unwrap();
+        let other_mii = create_mii(&pool, "Nelly").await.unwrap();
+        assert_ne!(mii, other_mii);
+        let nelly = player(&pool, mii).await.unwrap().unwrap();
+        assert_eq!(
+            (
+                nelly.name.as_str(),
+                nelly.account,
+                nelly.discord,
+                nelly.test
+            ),
+            ("Nelly", "mii", None, false)
+        );
+        assert_eq!(nelly.friend_code, None);
+
+        // The first profile only, and a profile identifies one player.
+        assert!(bind_identity(&pool, mii, first, &first_code).await.unwrap());
+        assert!(
+            !bind_identity(&pool, mii, second, &second_code)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !bind_identity(&pool, other_mii, first, &first_code)
+                .await
+                .unwrap()
+        );
+        let nelly = player(&pool, mii).await.unwrap().unwrap();
+        assert_eq!(nelly.friend_code.as_deref(), Some(first_code.as_str()));
+        assert_eq!(
+            listed(&pool, other_mii, &[mii]).await.unwrap()[0].player,
+            nelly
+        );
+
+        // Players with an account of their own get none.
+        let sam = sign_in(&pool, &discord("2", "sam", "Sam")).await.unwrap();
+        assert!(!bind_identity(&pool, sam, third, &third_code).await.unwrap());
+        assert_eq!(
+            player(&pool, sam).await.unwrap().unwrap().account,
+            "discord"
+        );
+
+        // Neither the Mii player's name nor its friend code finds it.
+        assert_eq!(find(&pool, "Nelly").await.unwrap(), None);
+        assert_eq!(find(&pool, &first_code).await.unwrap(), None);
+        assert_eq!(find(&pool, "sam").await.unwrap(), Some(sam));
     }
 
     #[sqlx::test]

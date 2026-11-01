@@ -60,6 +60,20 @@ impl World {
         activity: Option<&str>,
         body: Value,
     ) -> (StatusCode, Value) {
+        let activity = activity.map(|activity| ("recharged-activity", activity));
+        self.send_with(method, uri, token, activity.as_slice(), body)
+            .await
+    }
+
+    /// A request with the extra `headers`.
+    async fn send_with(
+        &self,
+        method: &str,
+        uri: &str,
+        token: &str,
+        headers: &[(&str, &str)],
+        body: Value,
+    ) -> (StatusCode, Value) {
         let mut request = Request::builder()
             .method(method)
             .uri(uri)
@@ -67,8 +81,8 @@ impl World {
         if !token.is_empty() {
             request = request.header(header::AUTHORIZATION, format!("Bearer {token}"));
         }
-        if let Some(activity) = activity {
-            request = request.header("recharged-activity", activity);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
         }
         let body = if body.is_null() {
             Body::empty()
@@ -95,6 +109,30 @@ impl World {
             .await;
         assert_eq!(status, StatusCode::OK);
         body["token"].as_str().unwrap().to_owned()
+    }
+
+    /// **Play with a Mii** from the launcher at `address`, which the
+    /// server's proxy names.
+    async fn mii_sign_in(&self, name: &str, address: &str) -> (StatusCode, Value) {
+        self.send_with(
+            "POST",
+            "/api/v1/sign-in/mii",
+            "",
+            &[("cf-connecting-ip", address)],
+            json!({ "name": name }),
+        )
+        .await
+    }
+
+    /// The port proves its game's WFC login for the player of `token`.
+    async fn prove(&self, token: &str, profile_id: i32) -> (StatusCode, Value) {
+        self.send(
+            "POST",
+            "/api/v1/wfc",
+            token,
+            json!({"profile_id": profile_id, "login_ticket": format!("ticket-{profile_id}")}),
+        )
+        .await
     }
 
     /// A console logged in to WFC as a Mii slot of `game`: its profile id.
@@ -945,4 +983,116 @@ async fn friends_are_added_by_hand_and_follow_the_player(pool: PgPool) {
         )
         .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[sqlx::test]
+async fn a_player_without_discord_plays_by_its_mii(pool: PgPool) {
+    let world = World::new(pool);
+    let (_, server) = world.send("GET", "/api/v1/server", "", Value::Null).await;
+    assert_eq!(server["sign_in"]["mii"], true);
+
+    for name in ["", "   ", &"x".repeat(33), "two\nlines"] {
+        let (status, body) = world.mii_sign_in(name, "198.51.100.1").await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{name:?}: {body}");
+    }
+    let (status, signed_in) = world.mii_sign_in("  Nelly ☆ ", "198.51.100.1").await;
+    assert_eq!(status, StatusCode::OK, "{signed_in}");
+    assert_eq!(signed_in["status"], "signed_in");
+    let player = &signed_in["player"];
+    assert_eq!(player["name"], "Nelly ☆");
+    assert_eq!(player["account"], "mii");
+    assert_eq!(
+        (&player["discord"], &player["test"], &player["friend_code"]),
+        (&Value::Null, &json!(false), &Value::Null)
+    );
+    let nelly_id = player["id"].as_i64().unwrap();
+    let nelly = signed_in["token"].as_str().unwrap().to_owned();
+    let (_, me) = world.send("GET", "/api/v1/me", &nelly, Value::Null).await;
+    assert_eq!(
+        (&me["account"], &me["discord_id"], &me["wfc"]),
+        (&json!("mii"), &Value::Null, &json!([]))
+    );
+
+    // Nelly's game logs in to WFC: its first profile is what identifies her
+    // from now on, a second one is only hers.
+    let first = world.wfc_login(1, "R4QEaaaaaaa").await;
+    let second = world.wfc_login(2, "R4QPaaaaaaa").await;
+    for pid in [first, second] {
+        let (status, body) = world.prove(&nelly, pid).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let first_code = accounts::friend_code(first, "R4QE");
+    let (_, me) = world.send("GET", "/api/v1/me", &nelly, Value::Null).await;
+    assert_eq!(me["friend_code"], first_code.as_str());
+    assert_eq!(me["wfc"].as_array().unwrap().len(), 2);
+
+    // Others see her as a Mii player with that friend code, and challenge
+    // her by id: her name is no Discord username.
+    let mario = world.sign_in("Mario").await;
+    let mario_pid = world.wfc_login(3, "R4QEbbbbbbb").await;
+    world.prove(&mario, mario_pid).await;
+    let (_, me) = world.send("GET", "/api/v1/me", &mario, Value::Null).await;
+    assert_eq!(
+        (&me["account"], &me["friend_code"]),
+        (&json!("test"), &Value::Null)
+    );
+    let (_, lists) = world
+        .send("GET", "/api/v1/players", &mario, Value::Null)
+        .await;
+    let online = &lists["online"][0];
+    assert_eq!(online["id"], nelly_id);
+    assert_eq!(
+        (&online["account"], &online["friend_code"]),
+        (&json!("mii"), &json!(first_code))
+    );
+    let (status, _) = world
+        .send(
+            "POST",
+            "/api/v1/matches",
+            &mario,
+            json!({"opponent": "Nelly ☆", "rule_set": 1}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, challenge) = world
+        .send(
+            "POST",
+            "/api/v1/matches",
+            &mario,
+            json!({"opponent_id": nelly_id, "rule_set": 1}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{challenge}");
+    assert_eq!(challenge["opponent"]["account"], "mii");
+    assert_eq!(challenge["opponent"]["friend_code"], first_code.as_str());
+    let (_, current) = world
+        .send("GET", "/api/v1/matches/current", &nelly, Value::Null)
+        .await;
+    assert_eq!(current["match"]["opponent"]["account"], "test");
+}
+
+#[sqlx::test]
+async fn an_address_makes_a_few_mii_players_an_hour(pool: PgPool) {
+    let world = World::new(pool);
+    // A refused name doesn't count.
+    assert_eq!(
+        world.mii_sign_in("", "198.51.100.7").await.0,
+        StatusCode::BAD_REQUEST
+    );
+    for count in 0..super::mii_sign_in::NEW_PLAYERS_PER_WINDOW {
+        let (status, body) = world
+            .mii_sign_in(&format!("Mii {count}"), "198.51.100.7")
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let (status, body) = world.mii_sign_in("One more", "198.51.100.7").await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert!(
+        body["error"].as_str().unwrap().contains("too many"),
+        "{body}"
+    );
+    assert_eq!(
+        world.mii_sign_in("Elsewhere", "198.51.100.8").await.0,
+        StatusCode::OK
+    );
 }

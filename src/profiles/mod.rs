@@ -5,8 +5,10 @@
 //! The launcher asks for a sign-in ([`sign_in`]), opens its page in the
 //! browser and asks again until the session arrives. The page shows the
 //! launcher's code and goes on to Discord ([`discord`]), or, on test servers,
-//! takes a name. Players, their accounts and sessions are in the database
-//! ([`players`]); the launcher sends its session as a bearer token.
+//! takes a name. A player can also start without Discord, under a name of
+//! its own ([`mii_sign_in`]).
+//! Players, their accounts and sessions are in the database ([`players`]);
+//! the launcher sends its session as a bearer token.
 //!
 //! Signed in, a player challenges another to a test match ([`matches`]) by
 //! a rule set the server's admins keep ([`rules`]). The port proves which
@@ -22,6 +24,7 @@ mod flow_tests;
 mod friends;
 mod leaderboard;
 mod matches;
+mod mii_sign_in;
 mod miis;
 mod play;
 mod players;
@@ -80,6 +83,8 @@ struct ProfilesState {
     /// For Discord's token and user endpoints.
     http: reqwest::Client,
     sign_ins: SignIns,
+    /// The Mii players each address made lately.
+    mii_players: mii_sign_in::Creations,
     /// Who is logged in to WFC with which login ticket.
     gpcm: Arc<Gpcm>,
     /// Matches' games kept for RANKED, which the server browser reads.
@@ -105,6 +110,7 @@ pub(crate) fn router(
         pool,
         http,
         sign_ins: SignIns::default(),
+        mii_players: mii_sign_in::Creations::default(),
         gpcm,
         pairings,
         page,
@@ -113,6 +119,7 @@ pub(crate) fn router(
         .route("/api/v1/server", get(server))
         .route("/api/v1/sign-in", post(start_sign_in))
         .route("/api/v1/sign-in/test", post(api_test_sign_in))
+        .route("/api/v1/sign-in/mii", post(mii_sign_in::sign_in_mii))
         .route("/api/v1/sign-in/{id}", get(poll_sign_in))
         .route("/api/v1/sign-out", post(sign_out))
         .route("/api/v1/me", get(me))
@@ -361,6 +368,7 @@ async fn server(State(state): State<Arc<ProfilesState>>) -> Response {
         "sign_in": {
             "discord": state.config.discord.is_some(),
             "test": state.test_sign_in().await,
+            "mii": true,
         },
         // The launcher's Discord Social SDK signs in to this application
         // (docs/profiles.md, "Discord friends").
