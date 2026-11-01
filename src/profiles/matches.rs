@@ -9,6 +9,9 @@ use time::OffsetDateTime;
 
 use super::rules::{RuleSet, Rules};
 
+/// A random challenge (a search's) waits this long for its answer; then the
+/// search asks another player.
+pub const RANDOM_ANSWER_SECS: i32 = 30;
 /// The states of a match still to be played.
 const OPEN: [&str; 2] = ["challenged", "accepted"];
 /// The most games a report can hold: a series of 7.
@@ -51,6 +54,9 @@ pub struct Match {
     pub playing_at: Option<OffsetDateTime>,
     /// The set this one plays again.
     pub rematch_of: Option<i64>,
+    /// The server sent the challenge for the challenger's search for a
+    /// random opponent ([`super::search`]).
+    pub random: bool,
 }
 
 impl Match {
@@ -150,12 +156,13 @@ struct Row {
     go_at: Option<OffsetDateTime>,
     playing_at: Option<OffsetDateTime>,
     rematch_of: Option<i64>,
+    random: bool,
 }
 
 /// Ends the sets that waited too long or lost a player, and sends back the
 /// ones whose games never met. Returns the ended ones:
-/// - challenges after 10 minutes, accepted sets after 2 hours without a
-///   change (`expired`);
+/// - challenges after 10 minutes (random ones after [`RANDOM_ANSWER_SECS`]),
+///   accepted sets after 2 hours without a change (`expired`);
 /// - sets with a player who closed Recharged (no request for
 ///   [`HEARTBEAT_TIMEOUT_SECS`]) and has not reported (`dissolved`);
 /// - playing sets without a report with a game that stopped saying it is
@@ -168,8 +175,11 @@ pub async fn sweep(pool: &PgPool) -> Result<Vec<i64>, sqlx::Error> {
     let mut ended = sqlx::query_scalar!(
         "UPDATE matches SET state = 'expired', updated_at = now()
          WHERE state = 'challenged' AND created_at < now() - interval '10 minutes'
+            OR state = 'challenged' AND random
+               AND created_at < now() - make_interval(secs => $1)
             OR state = 'accepted' AND updated_at < now() - interval '2 hours'
          RETURNING match_id",
+        f64::from(RANDOM_ANSWER_SECS),
     )
     .fetch_all(pool)
     .await?;
@@ -242,7 +252,7 @@ pub async fn current(pool: &PgPool, player_id: i64) -> Result<Option<Match>, sql
     let row = sqlx::query_as!(
         Row,
         "SELECT match_id, state, home, away, rule_set, rules, rules_hash, winner, created_at,
-                home_ready_at, away_ready_at, go_at, playing_at, rematch_of
+                home_ready_at, away_ready_at, go_at, playing_at, rematch_of, random
          FROM matches
          WHERE (home = $1 OR away = $1)
            AND (state IN ('challenged', 'accepted') OR updated_at > now() - interval '1 hour')
@@ -264,7 +274,7 @@ pub async fn get(
     let row = sqlx::query_as!(
         Row,
         "SELECT match_id, state, home, away, rule_set, rules, rules_hash, winner, created_at,
-                home_ready_at, away_ready_at, go_at, playing_at, rematch_of
+                home_ready_at, away_ready_at, go_at, playing_at, rematch_of, random
          FROM matches WHERE match_id = $1 AND (home = $2 OR away = $2)",
         match_id,
         player_id,
@@ -275,13 +285,15 @@ pub async fn get(
 }
 
 /// `home` challenges `away` to a match by `rule_set`, perhaps again
-/// (`rematch_of`). Each may have one match still to be played at a time.
+/// (`rematch_of`), or for `home`'s search (`random`). Each may have one match
+/// still to be played at a time.
 pub async fn challenge(
     pool: &PgPool,
     home: i64,
     away: i64,
     rule_set: &RuleSet,
     rematch_of: Option<i64>,
+    random: bool,
 ) -> Result<Result<Match, Refusal>, sqlx::Error> {
     let mut transaction = pool.begin().await?;
     lock_players(&mut transaction, home, away).await?;
@@ -292,8 +304,8 @@ pub async fn challenge(
     // set.
     let row = sqlx::query!(
         "INSERT INTO matches (kind, state, home, away, rule_set, rules, rules_hash, rematch_of,
-                              home_ready_at)
-         VALUES ('test', 'challenged', $1, $2, $3, $4, $5, $6, now())
+                              home_ready_at, random)
+         VALUES ('test', 'challenged', $1, $2, $3, $4, $5, $6, now(), $7)
          RETURNING match_id, created_at, home_ready_at",
         home,
         away,
@@ -301,6 +313,7 @@ pub async fn challenge(
         rule_set.rules.to_json(),
         rule_set.hash,
         rematch_of,
+        random,
     )
     .fetch_one(&mut *transaction)
     .await?;
@@ -319,6 +332,7 @@ pub async fn challenge(
         go_at: None,
         playing_at: None,
         rematch_of,
+        random,
     }))
 }
 
@@ -504,7 +518,7 @@ pub async fn rematch(
         rules: found.rules.clone(),
         hash: found.rules_hash.clone(),
     };
-    challenge(pool, player_id, opponent, &rule_set, Some(match_id)).await
+    challenge(pool, player_id, opponent, &rule_set, Some(match_id), false).await
 }
 
 /// `player_id`'s game reports the series. The second report settles it: the
@@ -708,6 +722,7 @@ fn stored(row: Row) -> Option<Match> {
         go_at: row.go_at,
         playing_at: row.playing_at,
         rematch_of: row.rematch_of,
+        random: row.random,
     })
 }
 
@@ -758,7 +773,7 @@ mod tests {
     async fn a_challenge_is_accepted_played_and_settled(pool: PgPool) {
         let (mario, bowser) = (player(&pool, "Mario").await, player(&pool, "Bowser").await);
         let rules = competitive(&pool).await;
-        let made = challenge(&pool, mario, bowser, &rules, None)
+        let made = challenge(&pool, mario, bowser, &rules, None, false)
             .await
             .unwrap()
             .unwrap();
@@ -801,7 +816,7 @@ mod tests {
 
         // Both are free for the next one, which the finished one stays
         // behind.
-        let next = challenge(&pool, bowser, mario, &rules, None)
+        let next = challenge(&pool, bowser, mario, &rules, None, false)
             .await
             .unwrap()
             .unwrap();
@@ -812,7 +827,7 @@ mod tests {
     async fn reports_that_disagree_dispute_the_match(pool: PgPool) {
         let (mario, bowser) = (player(&pool, "Mario").await, player(&pool, "Bowser").await);
         let rules = competitive(&pool).await;
-        let found = challenge(&pool, mario, bowser, &rules, None)
+        let found = challenge(&pool, mario, bowser, &rules, None, false)
             .await
             .unwrap()
             .unwrap();
@@ -841,16 +856,20 @@ mod tests {
             player(&pool, "Luigi").await,
         );
         let rules = competitive(&pool).await;
-        let found = challenge(&pool, mario, bowser, &rules, None)
+        let found = challenge(&pool, mario, bowser, &rules, None, false)
             .await
             .unwrap()
             .unwrap();
         assert_eq!(
-            challenge(&pool, luigi, bowser, &rules, None).await.unwrap(),
+            challenge(&pool, luigi, bowser, &rules, None, false)
+                .await
+                .unwrap(),
             Err(Refusal::Busy)
         );
         assert_eq!(
-            challenge(&pool, mario, luigi, &rules, None).await.unwrap(),
+            challenge(&pool, mario, luigi, &rules, None, false)
+                .await
+                .unwrap(),
             Err(Refusal::Busy)
         );
         let declined = answer(&pool, found.id, bowser, false)
@@ -862,7 +881,7 @@ mod tests {
             cancel(&pool, found.id, mario).await.unwrap(),
             Err(Refusal::State("declined".into()))
         );
-        let again = challenge(&pool, luigi, bowser, &rules, None)
+        let again = challenge(&pool, luigi, bowser, &rules, None, false)
             .await
             .unwrap()
             .unwrap();
@@ -874,7 +893,7 @@ mod tests {
     async fn reports_must_fit_the_series(pool: PgPool) {
         let (mario, bowser) = (player(&pool, "Mario").await, player(&pool, "Bowser").await);
         let rules = competitive(&pool).await;
-        let found = challenge(&pool, mario, bowser, &rules, None)
+        let found = challenge(&pool, mario, bowser, &rules, None, false)
             .await
             .unwrap()
             .unwrap();
@@ -905,7 +924,7 @@ mod tests {
     async fn waiting_too_long_expires_a_challenge(pool: PgPool) {
         let (mario, bowser) = (player(&pool, "Mario").await, player(&pool, "Bowser").await);
         let rules = competitive(&pool).await;
-        let found = challenge(&pool, mario, bowser, &rules, None)
+        let found = challenge(&pool, mario, bowser, &rules, None, false)
             .await
             .unwrap()
             .unwrap();
@@ -941,7 +960,7 @@ mod tests {
     async fn both_ready_go_and_their_games_play(pool: PgPool) {
         let (mario, bowser) = (player(&pool, "Mario").await, player(&pool, "Bowser").await);
         let rules = competitive(&pool).await;
-        let found = challenge(&pool, mario, bowser, &rules, None)
+        let found = challenge(&pool, mario, bowser, &rules, None, false)
             .await
             .unwrap()
             .unwrap();
@@ -1003,7 +1022,7 @@ mod tests {
     async fn an_older_launchers_game_counts_as_ready(pool: PgPool) {
         let (mario, bowser) = (player(&pool, "Mario").await, player(&pool, "Bowser").await);
         let rules = competitive(&pool).await;
-        let found = challenge(&pool, mario, bowser, &rules, None)
+        let found = challenge(&pool, mario, bowser, &rules, None, false)
             .await
             .unwrap()
             .unwrap();
@@ -1023,7 +1042,7 @@ mod tests {
     async fn closing_recharged_dissolves_the_set(pool: PgPool) {
         let (mario, bowser) = (player(&pool, "Mario").await, player(&pool, "Bowser").await);
         let rules = competitive(&pool).await;
-        let found = challenge(&pool, mario, bowser, &rules, None)
+        let found = challenge(&pool, mario, bowser, &rules, None, false)
             .await
             .unwrap()
             .unwrap();
@@ -1071,7 +1090,7 @@ mod tests {
     async fn playing_set(pool: &PgPool) -> (Match, i64, i64) {
         let (mario, bowser) = (player(pool, "Mario").await, player(pool, "Bowser").await);
         let rules = competitive(pool).await;
-        let found = challenge(pool, mario, bowser, &rules, None)
+        let found = challenge(pool, mario, bowser, &rules, None, false)
             .await
             .unwrap()
             .unwrap();
@@ -1170,7 +1189,7 @@ mod tests {
     async fn a_go_whose_games_went_quiet_is_not_broken_off(pool: PgPool) {
         let (mario, bowser) = (player(&pool, "Mario").await, player(&pool, "Bowser").await);
         let rules = competitive(&pool).await;
-        let found = challenge(&pool, mario, bowser, &rules, None)
+        let found = challenge(&pool, mario, bowser, &rules, None, false)
             .await
             .unwrap()
             .unwrap();
@@ -1193,7 +1212,7 @@ mod tests {
     async fn a_go_without_the_games_meeting_waits_again(pool: PgPool) {
         let (mario, bowser) = (player(&pool, "Mario").await, player(&pool, "Bowser").await);
         let rules = competitive(&pool).await;
-        let found = challenge(&pool, mario, bowser, &rules, None)
+        let found = challenge(&pool, mario, bowser, &rules, None, false)
             .await
             .unwrap()
             .unwrap();
@@ -1227,7 +1246,7 @@ mod tests {
     async fn a_rematch_by_both_starts_the_next_set(pool: PgPool) {
         let (mario, bowser) = (player(&pool, "Mario").await, player(&pool, "Bowser").await);
         let rules = competitive(&pool).await;
-        let found = challenge(&pool, mario, bowser, &rules, None)
+        let found = challenge(&pool, mario, bowser, &rules, None, false)
             .await
             .unwrap()
             .unwrap();

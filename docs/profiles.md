@@ -217,7 +217,30 @@ A player can make themselves available for random games
 `available` in `GET /api/v1/players` lists the other available players who
 have Recharged open (at most 100, by name, as the other lists show players);
 for a player who isn't, it is empty. So only those who take part see each
-other.
+other. The game calls it **Open to challenges**.
+
+## Random opponents
+
+A player can search for a random opponent by rules they choose: `POST
+/api/v1/search` with the rules as a challenge has them (`"rule_set": <id>`, or
+`"rules": {…}` and `"name"`) and `"game"`, the first four characters of their
+game's id (`R4QE`). It answers `{"search": {"rule_set", "rules", "since",
+"asked"}}` (`since` in Unix seconds, `asked` how many players it asked so
+far); 409 while the player has a set to play. Searching again starts over with
+the new rules; `DELETE /api/v1/search` stops (204), withdrawing the
+challenge that waits for an answer (`cancelled`).
+
+The server sends the searcher's rules as a challenge (`"random": true`) to a
+player who has Recharged open, is open to challenges or searching too, has
+played the same game online (a WFC profile of the same id), isn't in a match
+and has no set to play, at random among them; the oldest search asks first,
+so of two searchers the one who searched first decides. The player asked
+answers it as any challenge. A decline, or no answer in 30 seconds
+(`expired`), and the search asks another player it hasn't asked yet; an
+accepted one ends the search, and the set goes on as a challenge's. A search
+whose player closed Recharged ends. Searches move on with every request to the
+server. `GET /api/v1/matches/current` has the player's `search` (`null` when
+they don't search) and asks again every 2 seconds while they search.
 
 ## Mii profiles
 
@@ -361,7 +384,8 @@ with no Mega Strikes, fast terrain and Thunder Island walls).
 |---|---|
 | `GET /api/v1/players` | `{"online": [...], "recent": [...], "friends": [...]}`: who has Recharged open (by name, at most 100), the last 10 players played a set with, and the player's friends (see "Friends"). Each is a player as in a sign-in, with `online`, `busy` (has a set to play), `activity` (while online: `launcher`, `game` or `match`, see "Activity"), `last_online` (their last heartbeat in Unix seconds, `null` before the first) and `friend` (the player keeps them as one). |
 | `POST /api/v1/matches` | `{"opponent": "<Discord username>", "rule_set": <id>}`, or `"opponent_id": <player id>` instead of the name (a Mii player only by id): a challenge, 201. Instead of a rule set, `"rules": {…}` (see "Rules") and `"name"`, the preset they come from (1 to 48 characters; `Custom` without one): the match's `rule_set` then is that name; 400 for rules the game doesn't have. 404 for nobody of that name, 409 when either already has a match to play, or the opponent doesn't have Recharged open or is playing a match (see "Activity"). |
-| `GET /api/v1/matches/current` | `{"match": …, "poll_interval": 2, "server_time": <unix seconds>}`: the match still to be played, or the last one that ended within the hour, or `null`; `poll_interval` is how soon to ask again (2 while the set waits for its players, 10 while they play, 5 otherwise) |
+| `GET /api/v1/matches/current` | `{"match": …, "search": …, "poll_interval": 2, "server_time": <unix seconds>}`: the match still to be played, or the last one that ended within the hour, or `null`; the player's search (see "Random opponents"); `poll_interval` is how soon to ask again (2 while the set waits for its players or the player searches, 10 while they play, 5 otherwise) |
+| `POST /api/v1/search`, `DELETE /api/v1/search` | Search for a random opponent, and stop (see "Random opponents") |
 | `POST /api/v1/matches/<id>/accept`, `…/decline` | The challenged player's answer |
 | `POST /api/v1/matches/<id>/cancel` | Either player, before the result |
 | `POST /api/v1/matches/<id>/ready-to-play` | `{"ready": true}` or `false`: the launcher's Ready to play!, see "Sets" |
@@ -379,12 +403,13 @@ A match as the player sees it:
  "rule_set": "Competitive", "rules": {…}, "rules_hash": "…",
  "paired": false, "reported": false, "winner": null, "games": [], "created_at": 1792771200,
  "stage": "open", "reason": null, "you_ready": true, "opponent_ready": false,
- "opponent_online": true, "go_at": null, "playing_at": null, "rematch_of": null}
+ "opponent_online": true, "go_at": null, "playing_at": null, "rematch_of": null, "random": false}
 ```
 
-`state` is `challenged`, `accepted`, `declined`, `cancelled`, `expired` (a
-challenge unanswered for 10 minutes, or an accepted match unchanged for 2
-hours), `dissolved` (a player closed Recharged, or the set was broken off,
+`random` marks a challenge a search sent (see "Random opponents"). `state` is
+`challenged`, `accepted`, `declined`, `cancelled`, `expired` (a challenge
+unanswered for 10 minutes, a random one for 30 seconds, or an accepted match
+unchanged for 2 hours), `dissolved` (a player closed Recharged, or the set was broken off,
 see "Sets"), `finished` or `disputed`. Each player has one match to play at
 a time.
 

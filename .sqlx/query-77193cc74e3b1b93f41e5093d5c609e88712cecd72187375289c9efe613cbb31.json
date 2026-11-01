@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE searches SET match_id = $2, asked = array_append(asked, $3)\n                 WHERE player_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "77193cc74e3b1b93f41e5093d5c609e88712cecd72187375289c9efe613cbb31"
+}
