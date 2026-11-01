@@ -292,8 +292,9 @@ A match as the player sees it:
 
 `state` is `challenged`, `accepted`, `declined`, `cancelled`, `expired` (a
 challenge unanswered for 10 minutes, or an accepted match unchanged for 2
-hours), `dissolved` (a player closed Recharged, see "Sets"), `finished` or
-`disputed`. Each player has one match to play at a time.
+hours), `dissolved` (a player closed Recharged, or the set was broken off,
+see "Sets"), `finished` or `disputed`. Each player has one match to play at
+a time.
 
 ### Sets
 
@@ -319,6 +320,10 @@ still work:
   sets without a report of theirs end (`dissolved`). So a challenger set
   lasts while both have Recharged open, and only a player with Recharged
   open can be challenged.
+- A playing set whose two games both stopped saying they are ready (below)
+  60 seconds ago, and that neither player reported, was broken off: it ends
+  without a result (`dissolved`), even while both have Recharged open. A
+  set with one report waits for the other's.
 - A game saying it is ready (below) counts as its player's Ready to play!,
   for launchers without the button.
 - `rematch`: the first player to ask challenges the other with the ended
@@ -331,7 +336,8 @@ ready: logged in to WFC as `profile_id`, one of the player's profiles, and
 applying the rules with `rules_hash`. Readiness lasts 30 seconds without being
 said again, so a game that went away stops being kept. The answer is
 `{"paired", "other_release"}`: `paired` once both games are ready, and the
-set's stage is then `playing`.
+set's stage is then `playing`. The games go on saying it while they play the
+set; `matches.home_game_ready_at` and `away_game_ready_at` keep the last time.
 
 While a game is ready, RANKED in WFC Central works differently for it
 ([login.md](login.md), "Server browser"): its search lists only its
