@@ -324,7 +324,9 @@ still work:
 - A playing set with a game that stopped saying it is ready (below) 60
   seconds ago, and that neither player reported, was broken off: it ends
   without a result (`dissolved`), even while both have Recharged open. A
-  set with one report waits for the other's.
+  set with one report waits for the other's, 5 minutes at most: then it
+  ends without a result too (`dissolved`), as when the games disagreed on
+  the series or a report got lost.
 - A game saying it is ready (below) counts as its player's Ready to play!,
   for launchers without the button.
 - `rematch`: the first player to ask challenges the other with the ended
