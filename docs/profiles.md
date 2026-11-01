@@ -112,6 +112,17 @@ another computer that made a new player), is only bound to that one, as any
 profile is, and still identifies the first. Players with Discord or a test
 name get no `wfc` identity.
 
+**Coming back.** `POST /api/v1/sign-in/wfc` with
+`{"profile_id": 1000000000, "login_ticket": "<lt>"}` (the proof of `POST
+/api/v1/wfc`, sent by the game after its WFC login, without a session)
+answers a new session for the player that profile identifies, as a sign-in
+that ended, and binds the profile to it again. So a Mii player gets its
+profile back on another computer, or after signing out or losing its session,
+by logging in to WFC with the same Mii. 403 for a profile not logged in with
+that ticket, 404 `{"error": "no Recharged profile signs in with this WFC
+profile"}` when it identifies nobody (no player is made). A Mii player that
+signs out before its game ever logged in to WFC can't come back.
+
 ### Test sign-in
 
 On a test server, `POST /api/v1/sign-in/test` with `{"name": "Mario"}`
@@ -131,7 +142,7 @@ days. The database keeps only the token's SHA-256.
 |---|---|
 | `GET /api/v1/server` | `{"version", "revision", "sign_in": {"discord": true, "test": false, "mii": true}, "discord_application": "<client id>"}`, without a session: what the launcher can offer (`discord_application` is `null` without Discord sign-in; see "Discord friends"; `mii` from 1.2.3) |
 | `GET /api/v1/me` | the player, as in a sign-in, with `wfc` (see "Friend codes") and `discord_id`: the Discord account id (a string; `null` for test and Mii players), from which the launcher makes the player's Mii |
-| `POST /api/v1/sign-out` | 204; the session is closed |
+| `POST /api/v1/sign-out` | 204; the session is closed. A Mii player comes back by its game's WFC login (see "Playing without Discord") |
 
 Every request with a session is also the player's heartbeat, as is a
 sign-in: their Recharged (the launcher, or the game it started) is open. A

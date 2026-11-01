@@ -6,7 +6,7 @@
 //! browser and asks again until the session arrives. The page shows the
 //! launcher's code and goes on to Discord ([`discord`]), or, on test servers,
 //! takes a name. A player can also start without Discord, under a name of
-//! its own ([`mii_sign_in`]).
+//! its own, and come back by its game's WFC login ([`mii_sign_in`]).
 //! Players, their accounts and sessions are in the database ([`players`]);
 //! the launcher sends its session as a bearer token.
 //!
@@ -120,6 +120,7 @@ pub(crate) fn router(
         .route("/api/v1/sign-in", post(start_sign_in))
         .route("/api/v1/sign-in/test", post(api_test_sign_in))
         .route("/api/v1/sign-in/mii", post(mii_sign_in::sign_in_mii))
+        .route("/api/v1/sign-in/wfc", post(mii_sign_in::sign_in_wfc))
         .route("/api/v1/sign-in/{id}", get(poll_sign_in))
         .route("/api/v1/sign-out", post(sign_out))
         .route("/api/v1/me", get(me))

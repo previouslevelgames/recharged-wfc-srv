@@ -147,6 +147,16 @@ pub async fn bind_identity(
     Ok(bound == 1)
 }
 
+/// The player the WFC profile `profile_id` identifies.
+pub async fn by_wfc_identity(pool: &PgPool, profile_id: i32) -> Result<Option<i64>, sqlx::Error> {
+    sqlx::query_scalar!(
+        "SELECT player_id FROM player_identities WHERE provider = 'wfc' AND external_id = $1",
+        profile_id.to_string(),
+    )
+    .fetch_optional(pool)
+    .await
+}
+
 pub async fn player(pool: &PgPool, player_id: i64) -> Result<Option<Player>, sqlx::Error> {
     let row = sqlx::query!(
         r#"SELECT players.player_id, players.display_name,
@@ -727,6 +737,8 @@ mod tests {
                 .await
                 .unwrap()
         );
+        assert_eq!(by_wfc_identity(&pool, first).await.unwrap(), Some(mii));
+        assert_eq!(by_wfc_identity(&pool, second).await.unwrap(), None);
         let nelly = player(&pool, mii).await.unwrap().unwrap();
         assert_eq!(nelly.friend_code.as_deref(), Some(first_code.as_str()));
         assert_eq!(

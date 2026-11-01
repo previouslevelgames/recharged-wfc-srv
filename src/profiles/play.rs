@@ -34,8 +34,8 @@ pub(super) async fn rule_sets(State(state): State<Arc<ProfilesState>>) -> Respon
 
 #[derive(Deserialize)]
 pub(super) struct WfcLogin {
-    profile_id: i32,
-    login_ticket: String,
+    pub(super) profile_id: i32,
+    pub(super) login_ticket: String,
 }
 
 /// The port proves that its game is logged in to WFC as `profile_id`: that

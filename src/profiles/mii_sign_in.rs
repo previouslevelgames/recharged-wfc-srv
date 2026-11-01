@@ -1,7 +1,8 @@
 //! Players without Discord (docs/profiles.md, "Playing without Discord"):
 //! the launcher's **Play with a Mii** makes a player under a name of its own,
 //! without an account. The first WFC profile it proves becomes what
-//! identifies it ([`super::players::bind_identity`]).
+//! identifies it ([`super::players::bind_identity`]), and the game's WFC
+//! login then signs it in again on any computer.
 
 use std::{
     collections::HashMap,
@@ -20,7 +21,12 @@ use axum::{
 use serde::Deserialize;
 use tracing::info;
 
-use super::{ProfilesState, database_error, json_error, players, signed_in};
+use super::{
+    ProfilesState, database_error, json_error,
+    play::WfcLogin,
+    players::{self, Activity},
+    signed_in,
+};
 
 /// The longest profile name, in characters, as long as a Discord display
 /// name the launcher shows. (The Mii's own name in its record is the
@@ -156,6 +162,49 @@ pub(super) async fn sign_in_mii(
         Err(error) => return database_error(error),
     };
     info!(target: "profiles", player_id, "Mii player made");
+    session(&state, player_id).await
+}
+
+/// The game, after its WFC login, signs in the player whose identity that
+/// WFC profile is: a Mii player back on another computer, or without its
+/// session. The proof is the one of `POST /api/v1/wfc`, and binds the
+/// profile as that does.
+pub(super) async fn sign_in_wfc(
+    State(state): State<Arc<ProfilesState>>,
+    headers: HeaderMap,
+    Json(login): Json<WfcLogin>,
+) -> Response {
+    if !state
+        .gpcm
+        .logged_in_with(login.profile_id, &login.login_ticket)
+    {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "that profile is not logged in to WFC with this login ticket",
+        );
+    }
+    let player_id = match players::by_wfc_identity(&state.pool, login.profile_id).await {
+        Ok(Some(player_id)) => player_id,
+        Ok(None) => {
+            return json_error(
+                StatusCode::NOT_FOUND,
+                "no Recharged profile signs in with this WFC profile",
+            );
+        }
+        Err(error) => return database_error(error),
+    };
+    if let Err(error) = players::bind_wfc(&state.pool, player_id, login.profile_id).await {
+        return database_error(error);
+    }
+    let activity = Activity::from_header(
+        headers
+            .get("recharged-activity")
+            .and_then(|value| value.to_str().ok()),
+    );
+    if let Err(error) = players::heartbeat(&state.pool, player_id, activity).await {
+        return database_error(error);
+    }
+    info!(target: "profiles", player_id, profile_id = login.profile_id, "signed in by WFC login");
     session(&state, player_id).await
 }
 

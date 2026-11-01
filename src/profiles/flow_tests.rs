@@ -1072,6 +1072,80 @@ async fn a_player_without_discord_plays_by_its_mii(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn a_mii_player_comes_back_by_its_wfc_login(pool: PgPool) {
+    let world = World::new(pool);
+    let (_, signed_in) = world.mii_sign_in("Nelly", "198.51.100.1").await;
+    let nelly_id = signed_in["player"]["id"].clone();
+    let nelly = signed_in["token"].as_str().unwrap().to_owned();
+    let pid = world.wfc_login(1, "R4QEaaaaaaa").await;
+    world.prove(&nelly, pid).await;
+    let (status, _) = world
+        .send("POST", "/api/v1/sign-out", &nelly, Value::Null)
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let recover = |profile_id: i32, ticket: String| {
+        let world = &world;
+        async move {
+            world
+                .send(
+                    "POST",
+                    "/api/v1/sign-in/wfc",
+                    "",
+                    json!({"profile_id": profile_id, "login_ticket": ticket}),
+                )
+                .await
+        }
+    };
+    // The game's login proves it, as for POST /api/v1/wfc.
+    assert_eq!(recover(pid, "wrong".into()).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(
+        recover(1_999_999, "ticket-1999999".into()).await.0,
+        StatusCode::FORBIDDEN
+    );
+    // A profile that identifies nobody signs nobody in: proving it is not
+    // enough for a player with an account of its own.
+    let mario = world.sign_in("Mario").await;
+    let mario_pid = world.wfc_login(2, "R4QEbbbbbbb").await;
+    world.prove(&mario, mario_pid).await;
+    let (status, body) = recover(mario_pid, format!("ticket-{mario_pid}")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+
+    let (status, back) = recover(pid, format!("ticket-{pid}")).await;
+    assert_eq!(status, StatusCode::OK, "{back}");
+    assert_eq!(back["status"], "signed_in");
+    assert_eq!(back["player"]["id"], nelly_id);
+    assert_eq!(back["player"]["account"], "mii");
+    let token = back["token"].as_str().unwrap();
+    assert_ne!(token, nelly);
+    let (status, me) = world.send("GET", "/api/v1/me", token, Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(me["wfc"][0]["profile_id"], pid);
+
+    // A second Mii player with the same Mii takes the profile, not what it
+    // identifies: the login still signs Nelly in.
+    let (_, other) = world.mii_sign_in("Nelly", "198.51.100.2").await;
+    let other_token = other["token"].as_str().unwrap().to_owned();
+    assert_eq!(world.prove(&other_token, pid).await.0, StatusCode::OK);
+    let (_, other_me) = world
+        .send("GET", "/api/v1/me", &other_token, Value::Null)
+        .await;
+    assert_eq!(other_me["friend_code"], Value::Null);
+    assert_eq!(other_me["wfc"][0]["profile_id"], pid);
+    let (_, again) = recover(pid, format!("ticket-{pid}")).await;
+    assert_eq!(again["player"]["id"], nelly_id);
+    let (_, me) = world
+        .send(
+            "GET",
+            "/api/v1/me",
+            again["token"].as_str().unwrap(),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(me["wfc"][0]["profile_id"], pid);
+}
+
+#[sqlx::test]
 async fn an_address_makes_a_few_mii_players_an_hour(pool: PgPool) {
     let world = World::new(pool);
     // A refused name doesn't count.
