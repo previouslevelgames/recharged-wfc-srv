@@ -581,6 +581,13 @@ pub(super) async fn ready_to_play(
     match matches::ready_to_play(&state.pool, id, player.id, request.ready).await {
         Ok(Ok(found)) => {
             info!(target: "profiles", match_id = id, player_id = player.id, ready = request.ready, stage = found.stage(), "ready to play");
+            // Taken back: the player's game, which may have said it is ready
+            // a moment ago, must not pair the set with the opponent's.
+            if !request.ready
+                && let Some(side) = found.side(player.id)
+            {
+                state.pairings.unready(id, side);
+            }
             state.respond(StatusCode::OK, &found, &player).await
         }
         Ok(Err(refusal)) => refused(refusal),
@@ -638,6 +645,13 @@ pub(super) async fn ready(
         Ok(None) => return refused(Refusal::NotFound),
         Err(error) => return database_error(error),
     };
+    let side = found.side(player.id).expect("the match is the player's");
+    // The game still plays the set, even if the checks below refuse it (a
+    // GPCM login lost after a restart, while the match goes on): the sweep
+    // ends a set only once its game stopped calling.
+    if let Err(error) = matches::game_called(&state.pool, found.id, side).await {
+        return database_error(error);
+    }
     if request.rules_hash != found.rules_hash {
         return json_error(
             StatusCode::CONFLICT,
@@ -659,7 +673,6 @@ pub(super) async fn ready(
     if state.gpcm.logged_in_from(profile.profile_id).is_none() {
         return json_error(StatusCode::CONFLICT, "that WFC profile is not online");
     }
-    let side = found.side(player.id).expect("the match is the player's");
     let pairing = state
         .pairings
         .ready(found.id, side, profile.profile_id, &profile.game);

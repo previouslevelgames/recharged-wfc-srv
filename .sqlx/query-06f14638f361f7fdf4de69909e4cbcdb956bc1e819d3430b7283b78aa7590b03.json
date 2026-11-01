@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE matches SET away_game_ready_at = now() - interval '61 seconds'\n         WHERE match_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "06f14638f361f7fdf4de69909e4cbcdb956bc1e819d3430b7283b78aa7590b03"
+}

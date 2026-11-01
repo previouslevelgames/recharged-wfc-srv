@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE matches SET home_game_ready_at = now() - make_interval(secs => $2),\n                                away_game_ready_at = now() - make_interval(secs => $3)\n             WHERE match_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Float8",
+        "Float8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e63ae25b2b5a2187610296a66a8d2915bde2034da1dc3438fc9487e4df62cc42"
+}
