@@ -42,11 +42,13 @@ page in the browser and asks the server until the sign-in ends.
    ```json
    {"id": "<43 letters and digits>", "code": "ABCD-EFGH",
     "url": "https://wfc.example.com/sign-in?id=<id>",
-    "expires_in": 600, "poll_interval": 2}
+    "expires_in": 600, "poll_interval": 2, "link": false}
    ```
 
    The launcher shows the code and opens `url`; a Steam Deck can show it as a
-   QR code instead. 503 when too many sign-ins are waiting (1000).
+   QR code instead. 503 when too many sign-ins are waiting (1000). `link` is
+   `true` for a sign-in that connects Discord to a Mii player (see "Playing
+   without Discord").
 2. The page shows the same code, so that someone who got a sign-in link from
    somebody else can tell that it isn't theirs, and **Continue with
    Discord**: `/sign-in/discord` sends the browser to Discord (authorization
@@ -67,7 +69,8 @@ page in the browser and asks the server until the sign-in ends.
                 "scope": "identify openid sdk.social_layer_presence"}}
    ```
 
-   or `{"status": "refused", "message": "Sign-in was cancelled."}`. After
+   or `{"status": "refused", "message": "Sign-in was cancelled."}`, or for
+   a link that can't be made a 409 (see "Playing without Discord"). After
    that, or 10 minutes after it began, it is 404. `discord` comes with a
    Discord sign-in that Discord granted the SDK's scopes: Discord's tokens for
    the launcher's Discord friends, kept in memory with the sign-in until this
@@ -122,6 +125,22 @@ by logging in to WFC with the same Mii. 403 for a profile not logged in with
 that ticket, 404 `{"error": "no Recharged profile signs in with this WFC
 profile"}` when it identifies nobody (no player is made). A Mii player that
 signs out before its game ever logged in to WFC can't come back.
+
+**Connecting Discord.** A Mii player can connect Discord to the same profile,
+keeping its friends, chat, sets and WFC profiles: the launcher starts the
+sign-in above with the player's session (`Authorization: Bearer <token>` on
+`POST /api/v1/sign-in`), whose answer then has `"link": true`. The page says
+which profile Discord joins and offers Discord only (no test name). When
+Discord returns, the player gets the Discord account; its name and picture
+are Discord's from then on, it signs in with Discord, and the poll answers
+`signed_in` with a new session for the same player (the old one goes on). A
+Discord account that already has a Recharged profile, or a player that got
+another Discord account meanwhile, ends the sign-in with 409
+`{"error": "This Discord account already has a Recharged profile"}` (or
+`"Your Recharged profile has a Discord account already"`), and nothing
+changes. A session of any other player, an expired one or none starts an
+ordinary sign-in, as before. The `wfc` identity stays: the game's login
+still signs the player in too.
 
 ### Test sign-in
 
@@ -182,7 +201,8 @@ of `GET /api/v1/players` and a match's opponent:
 `account` is what the player signs in with: `discord`, `test` (a test name),
 or `mii` (neither, see "Playing without Discord"). `friend_code` is the
 friend code of the WFC profile that identifies the player (a Mii player's
-first proven profile), `null` without one. Both from 1.2.3.
+first proven profile; it stays after Discord is connected), `null` without
+one. Both from 1.2.3.
 `player_sessions` holds the sessions, `player_wfc_profiles` the friend codes
 proven theirs, `rule_sets` the rules, `matches` and `match_reports` the
 matches and what each game reported. The series every Recharged build reports

@@ -55,8 +55,8 @@ use crate::{
 
 pub use config::{Config, DiscordClient, DiscordEndpoints, VARIABLES};
 use discord::SignInError;
-use players::{Identity, Player};
-use sign_in::{Outcome, Poll, SIGN_IN_TTL, SignIns};
+use players::{Identity, LinkRefusal, Player};
+use sign_in::{Link, Outcome, Poll, SIGN_IN_TTL, SignIns};
 
 /// How often the launcher should ask whether a sign-in has ended, in seconds.
 const POLL_INTERVAL: u64 = 2;
@@ -232,14 +232,30 @@ impl ProfilesState {
     }
 
     /// Ends the sign-in `id` with a session for `identity`, and the Discord
-    /// Social SDK's tokens for the launcher.
+    /// Social SDK's tokens for the launcher. A sign-in that links (`link`)
+    /// links `identity` to its player first.
     async fn finish(
         &self,
         id: &str,
         identity: &Identity<'_>,
         discord: Option<discord::SdkTokens>,
-    ) -> Result<bool, sqlx::Error> {
-        let (player_id, token) = self.open(identity).await?;
+        link: Option<&Link>,
+    ) -> Result<Finished, sqlx::Error> {
+        let (player_id, token) = match link {
+            Some(link) => match players::link(&self.pool, link.player_id, identity).await? {
+                Ok(()) => {
+                    info!(target: "profiles", player_id = link.player_id, provider = identity.provider, "account linked");
+                    let token = players::open_session(&self.pool, link.player_id).await?;
+                    (link.player_id, token)
+                }
+                Err(refusal) => {
+                    self.sign_ins
+                        .finish(id, Outcome::Conflict(link_refusal(&refusal).into()));
+                    return Ok(Finished::Refused(refusal));
+                }
+            },
+            None => self.open(identity).await?,
+        };
         if self.sign_ins.finish(
             id,
             Outcome::SignedIn {
@@ -248,11 +264,26 @@ impl ProfilesState {
                 discord,
             },
         ) {
-            return Ok(true);
+            return Ok(Finished::SignedIn);
         }
         // It expired meanwhile: nobody will pick the session up.
         players::close_session(&self.pool, &token).await?;
-        Ok(false)
+        Ok(Finished::Expired)
+    }
+
+    /// The Mii player signed in with `token`, for a sign-in that links
+    /// Discord to it; none for any other player, or without a session.
+    async fn mii_player(&self, token: &str) -> Result<Option<Link>, sqlx::Error> {
+        let Some(player_id) = players::session(&self.pool, token).await? else {
+            return Ok(None);
+        };
+        Ok(players::player(&self.pool, player_id)
+            .await?
+            .filter(|player| player.account == "mii")
+            .map(|player| Link {
+                player_id: player.id,
+                name: player.name,
+            }))
     }
 
     /// The Discord callback: the sign-in it ends, the account and the SDK's
@@ -350,6 +381,23 @@ impl ProfilesState {
     }
 }
 
+/// How [`ProfilesState::finish`] ended a sign-in.
+enum Finished {
+    SignedIn,
+    /// It expired before.
+    Expired,
+    /// The link it was for can't be made.
+    Refused(LinkRefusal),
+}
+
+/// What the launcher and the page say when a link can't be made.
+fn link_refusal(refusal: &LinkRefusal) -> &'static str {
+    match refusal {
+        LinkRefusal::Taken => "This Discord account already has a Recharged profile",
+        LinkRefusal::NotMii => "Your Recharged profile has a Discord account already",
+    }
+}
+
 /// The token of an `Authorization: Bearer` header.
 fn bearer(headers: &HeaderMap) -> Option<&str> {
     headers
@@ -378,9 +426,18 @@ async fn server(State(state): State<Arc<ProfilesState>>) -> Response {
     .into_response()
 }
 
-/// A new sign-in: the page for the browser and the code it shows.
-async fn start_sign_in(State(state): State<Arc<ProfilesState>>) -> Response {
-    let Some((id, code)) = state.sign_ins.start() else {
+/// A new sign-in: the page for the browser and the code it shows. With a
+/// Mii player's session it links Discord to that player.
+async fn start_sign_in(State(state): State<Arc<ProfilesState>>, headers: HeaderMap) -> Response {
+    let link = match bearer(&headers) {
+        Some(token) if state.config.discord.is_some() => match state.mii_player(token).await {
+            Ok(link) => link,
+            Err(error) => return database_error(error),
+        },
+        _ => None,
+    };
+    let linking = link.is_some();
+    let Some((id, code)) = state.sign_ins.start(link) else {
         warn!(target: "profiles", "too many sign-ins waiting");
         return json_error(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -393,6 +450,7 @@ async fn start_sign_in(State(state): State<Arc<ProfilesState>>) -> Response {
         "url": format!("{}/sign-in?id={id}", state.config.public_url),
         "expires_in": SIGN_IN_TTL.as_secs(),
         "poll_interval": POLL_INTERVAL,
+        "link": linking,
     }))
     .into_response()
 }
@@ -413,6 +471,7 @@ async fn poll_sign_in(State(state): State<Arc<ProfilesState>>, Path(id): Path<St
         Poll::Ended(Outcome::Refused(message)) => {
             Json(json!({ "status": "refused", "message": message })).into_response()
         }
+        Poll::Ended(Outcome::Conflict(message)) => json_error(StatusCode::CONFLICT, &message),
         Poll::Unknown => json_error(StatusCode::NOT_FOUND, "unknown sign-in"),
     }
 }
@@ -518,6 +577,13 @@ async fn sign_in_page(
 <p class="hint">A different code? Close this page: someone else started this sign-in.</p>"#,
         code_tiles(&sign_in::display_code(&code))
     );
+    let link = state.sign_ins.link(&id);
+    if let Some(link) = &link {
+        content += &format!(
+            r#"<p class="hint">Discord joins your Recharged profile <b>{}</b>: your friends and sets stay, and you sign in with Discord from now on.</p>"#,
+            escape(&link.name)
+        );
+    }
     if state.config.discord.is_some() {
         content += &format!(
             r#"<a class="button discord" href="/sign-in/discord?id={}">{DISCORD_MARK}Continue with Discord</a>"#,
@@ -525,8 +591,8 @@ async fn sign_in_page(
         );
     }
     // Marked as the test server's extra, not a second way in: a test
-    // player has no Discord account behind it.
-    if state.test_sign_in().await {
+    // player has no Discord account behind it. A link is Discord's only.
+    if link.is_none() && state.test_sign_in().await {
         content += &format!(
             r#"<form class="test-only" method="post" action="/sign-in/test">
 <p class="test-head"><span class="tag">Test server</span>Sign in without Discord</p>
@@ -586,9 +652,21 @@ async fn discord_callback(
         display_name: &account.display_name,
         avatar_url: Some(&account.avatar_url),
     };
-    match state.finish(&id, &identity, tokens).await {
-        Ok(true) => state.signed_in_page(&account.display_name, Some(&account.avatar_url)),
-        Ok(false) => state.notice_page(StatusCode::NOT_FOUND, &SignInError::Expired.message()),
+    let link = state.sign_ins.link(&id);
+    match state.finish(&id, &identity, tokens, link.as_ref()).await {
+        Ok(Finished::SignedIn) => {
+            state.signed_in_page(&account.display_name, Some(&account.avatar_url))
+        }
+        Ok(Finished::Expired) => {
+            state.notice_page(StatusCode::NOT_FOUND, &SignInError::Expired.message())
+        }
+        Ok(Finished::Refused(refusal)) => {
+            info!(target: "profiles", ?refusal, "Discord not linked");
+            state.notice_page(
+                StatusCode::CONFLICT,
+                &format!("{}. Nothing changed.", link_refusal(&refusal)),
+            )
+        }
         Err(error) => {
             warn!(target: "profiles", %error, "database error");
             state.notice_page(
@@ -622,13 +700,21 @@ async fn page_test_sign_in(
     if state.sign_ins.code(&form.id).is_none() {
         return state.notice_page(StatusCode::NOT_FOUND, &SignInError::Expired.message());
     }
+    if state.sign_ins.link(&form.id).is_some() {
+        return state.notice_page(
+            StatusCode::BAD_REQUEST,
+            "This sign-in joins Discord to your Recharged profile: continue with Discord.",
+        );
+    }
     let external_id = name.to_lowercase();
     match state
-        .finish(&form.id, &test_identity(&name, &external_id), None)
+        .finish(&form.id, &test_identity(&name, &external_id), None, None)
         .await
     {
-        Ok(true) => state.signed_in_page(&name, None),
-        Ok(false) => state.notice_page(StatusCode::NOT_FOUND, &SignInError::Expired.message()),
+        Ok(Finished::SignedIn) => state.signed_in_page(&name, None),
+        Ok(Finished::Expired | Finished::Refused(_)) => {
+            state.notice_page(StatusCode::NOT_FOUND, &SignInError::Expired.message())
+        }
         Err(error) => {
             warn!(target: "profiles", %error, "database error");
             state.notice_page(

@@ -157,6 +157,93 @@ pub async fn by_wfc_identity(pool: &PgPool, profile_id: i32) -> Result<Option<i6
     .await
 }
 
+/// Why an account was not linked to a Mii player.
+#[derive(Debug, PartialEq, Eq)]
+pub enum LinkRefusal {
+    /// The account signs in to another player.
+    Taken,
+    /// The player has an account of its own already, or is gone.
+    NotMii,
+}
+
+/// Links the account `identity` (Discord's) to the Mii player `player_id`,
+/// which signs in with it from now on, under its name and picture, and keeps
+/// its friends, sets and WFC profiles. The link is a heartbeat.
+pub async fn link(
+    pool: &PgPool,
+    player_id: i64,
+    identity: &Identity<'_>,
+) -> Result<Result<(), LinkRefusal>, sqlx::Error> {
+    let mut transaction = pool.begin().await?;
+    // One link at a time: the player's row stays locked until the end.
+    let Some(has_account) = sqlx::query_scalar!(
+        r#"SELECT EXISTS (SELECT 1 FROM player_identities
+                          WHERE player_identities.player_id = players.player_id
+                            AND provider IN ('discord', 'test')) AS "has_account!"
+           FROM players WHERE player_id = $1
+           FOR UPDATE"#,
+        player_id,
+    )
+    .fetch_optional(&mut *transaction)
+    .await?
+    else {
+        return Ok(Err(LinkRefusal::NotMii));
+    };
+    let owner = sqlx::query_scalar!(
+        "SELECT player_id FROM player_identities WHERE provider = $1 AND external_id = $2",
+        identity.provider,
+        identity.external_id,
+    )
+    .fetch_optional(&mut *transaction)
+    .await?;
+    match owner {
+        // Linked already, e.g. by the same link a moment ago.
+        Some(owner) if owner == player_id => {}
+        Some(_) => return Ok(Err(LinkRefusal::Taken)),
+        None if has_account => return Ok(Err(LinkRefusal::NotMii)),
+        None => {
+            // A first sign-in of the same account elsewhere may come first.
+            if sqlx::query_scalar!(
+                "INSERT INTO player_identities (provider, external_id, player_id, username, avatar_url)
+                 VALUES ($1, $2, $3, $4, $5)
+                 ON CONFLICT DO NOTHING
+                 RETURNING player_id",
+                identity.provider,
+                identity.external_id,
+                player_id,
+                identity.username,
+                identity.avatar_url,
+            )
+            .fetch_optional(&mut *transaction)
+            .await?
+            .is_none()
+            {
+                return Ok(Err(LinkRefusal::Taken));
+            }
+        }
+    }
+    sqlx::query!(
+        "UPDATE player_identities SET username = $3, avatar_url = $4
+         WHERE provider = $1 AND external_id = $2",
+        identity.provider,
+        identity.external_id,
+        identity.username,
+        identity.avatar_url,
+    )
+    .execute(&mut *transaction)
+    .await?;
+    sqlx::query!(
+        "UPDATE players SET display_name = $2, last_seen_at = now(), heartbeat_at = now(), activity = NULL
+         WHERE player_id = $1",
+        player_id,
+        identity.display_name,
+    )
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    Ok(Ok(()))
+}
+
 pub async fn player(pool: &PgPool, player_id: i64) -> Result<Option<Player>, sqlx::Error> {
     let row = sqlx::query!(
         r#"SELECT players.player_id, players.display_name,
@@ -758,6 +845,47 @@ mod tests {
         assert_eq!(find(&pool, "Nelly").await.unwrap(), None);
         assert_eq!(find(&pool, &first_code).await.unwrap(), None);
         assert_eq!(find(&pool, "sam").await.unwrap(), Some(sam));
+    }
+
+    #[sqlx::test]
+    async fn discord_links_to_a_mii_player_once(pool: PgPool) {
+        let mii = create_mii(&pool, "Nelly").await.unwrap();
+        let other_mii = create_mii(&pool, "Kiki").await.unwrap();
+        let nelly = discord("1", "nelly", "Nelly D.");
+
+        assert_eq!(link(&pool, mii, &nelly).await.unwrap(), Ok(()));
+        let linked = player(&pool, mii).await.unwrap().unwrap();
+        assert_eq!(
+            (
+                linked.name.as_str(),
+                linked.account,
+                linked.discord.as_deref()
+            ),
+            ("Nelly D.", "discord", Some("nelly"))
+        );
+        // Signing in with Discord is that player now; the same link again
+        // changes nothing.
+        assert_eq!(sign_in(&pool, &nelly).await.unwrap(), mii);
+        assert_eq!(link(&pool, mii, &nelly).await.unwrap(), Ok(()));
+
+        // Another player's Discord account, or a second account: refused.
+        assert_eq!(
+            link(&pool, other_mii, &nelly).await.unwrap(),
+            Err(LinkRefusal::Taken)
+        );
+        assert_eq!(
+            link(&pool, mii, &discord("2", "sam", "Sam")).await.unwrap(),
+            Err(LinkRefusal::NotMii)
+        );
+        assert_eq!(
+            link(&pool, 999_999, &discord("3", "bo", "Bo"))
+                .await
+                .unwrap(),
+            Err(LinkRefusal::NotMii)
+        );
+        let kiki = player(&pool, other_mii).await.unwrap().unwrap();
+        assert_eq!((kiki.name.as_str(), kiki.account), ("Kiki", "mii"));
+        assert_eq!(find(&pool, "sam").await.unwrap(), None);
     }
 
     #[sqlx::test]
