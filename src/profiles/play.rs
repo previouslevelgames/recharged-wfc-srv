@@ -34,12 +34,13 @@ pub(super) async fn rule_sets(State(state): State<Arc<ProfilesState>>) -> Respon
 
 #[derive(Deserialize)]
 pub(super) struct WfcLogin {
-    profile_id: i32,
-    login_ticket: String,
+    pub(super) profile_id: i32,
+    pub(super) login_ticket: String,
 }
 
 /// The port proves that its game is logged in to WFC as `profile_id`: that
-/// WFC profile is the player's from now on.
+/// WFC profile is the player's from now on. A Mii player's first one also
+/// identifies it (docs/profiles.md, "Playing without Discord").
 pub(super) async fn bind(
     State(state): State<Arc<ProfilesState>>,
     headers: HeaderMap,
@@ -62,16 +63,32 @@ pub(super) async fn bind(
         return database_error(error);
     }
     info!(target: "profiles", player_id = player.id, profile_id = login.profile_id, "WFC profile bound");
-    match players::wfc_profiles(&state.pool, player.id).await {
-        Ok(profiles) => match profiles
+    let profile = match players::wfc_profiles(&state.pool, player.id).await {
+        Ok(profiles) => profiles
             .into_iter()
-            .find(|profile| profile.profile_id == login.profile_id)
+            .find(|profile| profile.profile_id == login.profile_id),
+        Err(error) => return database_error(error),
+    };
+    let Some(profile) = profile else {
+        return json_error(StatusCode::NOT_FOUND, "the profile went away");
+    };
+    if player.account == "mii" && player.friend_code.is_none() {
+        match players::bind_identity(
+            &state.pool,
+            player.id,
+            profile.profile_id,
+            &profile.friend_code,
+        )
+        .await
         {
-            Some(profile) => Json(profile).into_response(),
-            None => json_error(StatusCode::NOT_FOUND, "the profile went away"),
-        },
-        Err(error) => database_error(error),
+            Ok(true) => {
+                info!(target: "profiles", player_id = player.id, profile_id = profile.profile_id, "WFC profile identifies the player")
+            }
+            Ok(false) => {}
+            Err(error) => return database_error(error),
+        }
     }
+    Json(profile).into_response()
 }
 
 #[derive(Deserialize)]
@@ -767,6 +784,8 @@ impl ProfilesState {
                 "name": opponent.name,
                 "avatar_url": opponent.avatar_url,
                 "discord": opponent.discord,
+                "account": opponent.account,
+                "friend_code": opponent.friend_code,
                 "wfc": opponent_wfc,
             })),
             "rule_set": found.rule_set,

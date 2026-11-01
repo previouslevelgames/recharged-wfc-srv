@@ -83,6 +83,8 @@ async fn the_launcher_signs_in_with_discord(pool: PgPool) {
     assert_eq!(signed_in["player"]["name"], "Nelly");
     assert_eq!(signed_in["player"]["discord"], "nelly");
     assert_eq!(signed_in["player"]["test"], false);
+    assert_eq!(signed_in["player"]["account"], "discord");
+    assert_eq!(signed_in["player"]["friend_code"], Value::Null);
     // The Discord SDK's tokens of the same sign-in, for the launcher's
     // Discord friends: no second authorization.
     assert_eq!(
@@ -412,13 +414,17 @@ async fn a_test_player_signs_in_and_out(pool: PgPool) {
     let (status, _, body) = send(&app, Request::get("/api/v1/server"), None).await;
     assert_eq!(status, 200);
     let server: Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(server["sign_in"], json!({"discord": true, "test": true}));
+    assert_eq!(
+        server["sign_in"],
+        json!({"discord": true, "test": true, "mii": true})
+    );
     assert_eq!(server["discord_application"], CLIENT_ID);
     assert_eq!(server["version"], recharged_wfc_srv::VERSION);
 
     let signed_in = test_sign_in(&app, "Mario").await;
     assert_eq!(signed_in["player"]["name"], "Mario");
     assert_eq!(signed_in["player"]["test"], true);
+    assert_eq!(signed_in["player"]["account"], "test");
     let token = signed_in["token"].as_str().unwrap();
     assert_eq!(
         send(&app, Request::get("/api/v1/me"), Some(token)).await.0,
@@ -526,6 +532,136 @@ async fn test_sign_in_needs_its_setting(pool: PgPool) {
     assert_eq!(status, 403);
 }
 
+#[sqlx::test]
+async fn a_mii_player_links_discord_to_its_profile(pool: PgPool) {
+    let (config, discord) = fake_discord(true).await;
+    let app = recharged_wfc_srv::App::new(pool).router(None, Some(config));
+    let nelly = mii_sign_in(&app, "Nelly").await;
+    let nelly_id = nelly["player"]["id"].clone();
+    let token = nelly["token"].as_str().unwrap();
+    // A friend, whom the link keeps.
+    let mario = test_sign_in(&app, "Mario").await;
+    let (status, _, body) = send(
+        &app,
+        Request::post("/api/v1/friends")
+            .header(header::CONTENT_TYPE, "application/json")
+            .with_body(&json!({"player_id": mario["player"]["id"]}).to_string()),
+        Some(token),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+
+    // The sign-in started with Nelly's session links Discord to her.
+    let (status, _, body) = send(&app, Request::post("/api/v1/sign-in"), Some(token)).await;
+    assert_eq!(status, 200);
+    let sign_in: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(sign_in["link"], true);
+    let id = sign_in["id"].as_str().unwrap();
+    let (_, _, page) = get_page(&app, &format!("/sign-in?id={id}")).await;
+    assert!(
+        page.contains("joins your Recharged profile <b>Nelly</b>"),
+        "{page}"
+    );
+    assert!(!page.contains("Sign in as test player"), "{page}");
+    let (status, _, _) = send(
+        &app,
+        Request::post("/sign-in/test")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .with_body(&format!("id={id}&name=Luigi")),
+        None,
+    )
+    .await;
+    assert_eq!(status, 400);
+
+    let params = to_discord(&app, id).await;
+    discord.approve(&params, "80351110224678912", "nelly", Some("Nelly D."));
+    let (status, _, page) = get_page(
+        &app,
+        &format!(
+            "/sign-in/discord/callback?code={CODE}&state={}",
+            params["state"]
+        ),
+    )
+    .await;
+    assert_eq!(status, 200, "{page}");
+    let (status, linked) = poll(&app, id).await;
+    assert_eq!(status, 200, "{linked}");
+    assert_eq!(linked["status"], "signed_in");
+    assert_eq!(linked["player"]["id"], nelly_id);
+    assert_eq!(linked["player"]["account"], "discord");
+    assert_eq!(linked["player"]["name"], "Nelly D.");
+    assert_eq!(linked["discord"]["access_token"], ACCESS_TOKEN);
+
+    // Her old session goes on, with Discord and her friend.
+    let (_, _, body) = send(&app, Request::get("/api/v1/me"), Some(token)).await;
+    let me: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        (&me["account"], &me["discord"], &me["discord_id"]),
+        (
+            &json!("discord"),
+            &json!("nelly"),
+            &json!("80351110224678912")
+        )
+    );
+    let (_, _, body) = send(&app, Request::get("/api/v1/players"), Some(token)).await;
+    let lists: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(lists["friends"][0]["id"], mario["player"]["id"]);
+
+    // Discord signs her in from now on; her session no longer links.
+    let again = discord_sign_in(&app, &discord, "80351110224678912", "nelly").await;
+    let (_, _, body) = send(&app, Request::get("/api/v1/me"), Some(&again)).await;
+    let me: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(me["id"], nelly_id);
+    let (_, _, body) = send(&app, Request::post("/api/v1/sign-in"), Some(token)).await;
+    let sign_in: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(sign_in["link"], false);
+}
+
+#[sqlx::test]
+async fn a_discord_account_with_a_profile_links_to_no_other(pool: PgPool) {
+    let (config, discord) = fake_discord(false).await;
+    let app = recharged_wfc_srv::App::new(pool).router(None, Some(config));
+    discord_sign_in(&app, &discord, "80351110224678912", "sam").await;
+    let kiki = mii_sign_in(&app, "Kiki").await;
+    let token = kiki["token"].as_str().unwrap();
+
+    let (_, _, body) = send(&app, Request::post("/api/v1/sign-in"), Some(token)).await;
+    let sign_in: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(sign_in["link"], true);
+    let id = sign_in["id"].as_str().unwrap();
+    let params = to_discord(&app, id).await;
+    discord.approve(&params, "80351110224678912", "sam", None);
+    let (status, _, page) = get_page(
+        &app,
+        &format!(
+            "/sign-in/discord/callback?code={CODE}&state={}",
+            params["state"]
+        ),
+    )
+    .await;
+    assert_eq!(status, 409);
+    assert!(
+        page.contains("This Discord account already has a Recharged profile"),
+        "{page}"
+    );
+    assert_eq!(
+        poll(&app, id).await,
+        (
+            StatusCode::CONFLICT,
+            json!({"error": "This Discord account already has a Recharged profile"})
+        )
+    );
+    assert_eq!(poll(&app, id).await.0, 404);
+
+    // Nothing changed.
+    let (_, _, body) = send(&app, Request::get("/api/v1/me"), Some(token)).await;
+    let me: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        (&me["name"], &me["account"], &me["discord_id"]),
+        (&json!("Kiki"), &json!("mii"), &Value::Null)
+    );
+}
+
 #[tokio::test]
 async fn profiles_are_not_served_without_their_configuration() {
     let app = recharged_wfc_srv::App::new(lazy_pool()).router(None, None);
@@ -601,6 +737,22 @@ async fn discord_sign_in(app: &Router, discord: &FakeDiscord, id: &str, username
 async fn poll(app: &Router, id: &str) -> (StatusCode, Value) {
     let (status, _, body) = send(app, Request::get(format!("/api/v1/sign-in/{id}")), None).await;
     (status, serde_json::from_str(&body).unwrap())
+}
+
+/// **Play with a Mii** as `name`: the sign-in's answer.
+async fn mii_sign_in(app: &Router, name: &str) -> Value {
+    let (status, _, body) = send(
+        app,
+        Request::post("/api/v1/sign-in/mii")
+            .header(header::CONTENT_TYPE, "application/json")
+            .with_body(&json!({ "name": name }).to_string()),
+        None,
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    let signed_in: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(signed_in["player"]["account"], "mii");
+    signed_in
 }
 
 async fn test_sign_in(app: &Router, name: &str) -> Value {

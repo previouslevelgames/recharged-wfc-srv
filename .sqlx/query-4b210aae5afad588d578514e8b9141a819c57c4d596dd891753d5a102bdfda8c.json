@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE player_identities SET username = $3, avatar_url = $4\n         WHERE provider = $1 AND external_id = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4b210aae5afad588d578514e8b9141a819c57c4d596dd891753d5a102bdfda8c"
+}

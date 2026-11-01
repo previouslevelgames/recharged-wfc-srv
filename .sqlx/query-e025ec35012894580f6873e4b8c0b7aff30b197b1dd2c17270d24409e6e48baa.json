@@ -1,0 +1,56 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT\n             (SELECT count(*) FROM players) AS \"players!\",\n             (SELECT count(*) FROM player_identities WHERE provider = 'discord') AS \"discord!\",\n             (SELECT count(*) FROM player_identities WHERE provider = 'test') AS \"test!\",\n             (SELECT count(*) FROM players\n              WHERE NOT EXISTS (SELECT 1 FROM player_identities\n                                WHERE player_identities.player_id = players.player_id\n                                  AND provider IN ('discord', 'test'))) AS \"mii!\",\n             (SELECT count(*) FROM matches) AS \"matches!\",\n             (SELECT count(*) FROM matches WHERE state = 'finished') AS \"finished!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "players!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "discord!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "test!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "mii!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "matches!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "finished!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "e025ec35012894580f6873e4b8c0b7aff30b197b1dd2c17270d24409e6e48baa"
+}

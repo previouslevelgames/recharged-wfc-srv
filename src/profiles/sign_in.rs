@@ -5,6 +5,9 @@
 //! The launcher shows a code, and so does the browser page it opens. A
 //! sign-in link sent to someone else would sign them in to the sender's
 //! launcher; the code is how they can tell.
+//!
+//! A sign-in started with a Mii player's session links the Discord account
+//! to that player instead ([`Link`]).
 
 use std::{
     collections::HashMap,
@@ -36,9 +39,19 @@ pub struct SignIns {
 struct Pending {
     code: String,
     started: Instant,
+    /// The Mii player whose session started it, which Discord links to.
+    link: Option<Link>,
     /// The trip to Discord under way, if the browser went there.
     discord: Option<Authorization>,
     outcome: Option<Outcome>,
+}
+
+/// The Mii player a sign-in links Discord to.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Link {
+    pub player_id: i64,
+    /// Its name, for the sign-in page.
+    pub name: String,
 }
 
 /// How a sign-in ended.
@@ -53,6 +66,9 @@ pub enum Outcome {
     },
     /// Why not, for the launcher to show.
     Refused(String),
+    /// The link the sign-in was for can't be made: why, for the launcher to
+    /// show.
+    Conflict(String),
 }
 
 /// What the launcher learns when it asks.
@@ -66,8 +82,9 @@ pub enum Poll {
 }
 
 impl SignIns {
-    /// A new sign-in: its id and code. `None` while too many are waiting.
-    pub fn start(&self) -> Option<(String, String)> {
+    /// A new sign-in, linking Discord to `link`'s player if given: its id
+    /// and code. `None` while too many are waiting.
+    pub fn start(&self, link: Option<Link>) -> Option<(String, String)> {
         let mut pending = self.pending.lock().unwrap();
         pending.retain(|_, sign_in| sign_in.started.elapsed() < SIGN_IN_TTL);
         if pending.len() >= MAX_PENDING {
@@ -82,6 +99,7 @@ impl SignIns {
             Pending {
                 code: code.clone(),
                 started: Instant::now(),
+                link,
                 discord: None,
                 outcome: None,
             },
@@ -92,6 +110,11 @@ impl SignIns {
     /// The code of the sign-in `id`, while it waits for the browser.
     pub fn code(&self, id: &str) -> Option<String> {
         self.waiting(id, |sign_in| sign_in.code.clone())
+    }
+
+    /// The player the sign-in `id` links Discord to, while it waits.
+    pub fn link(&self, id: &str) -> Option<Link> {
+        self.waiting(id, |sign_in| sign_in.link.clone()).flatten()
     }
 
     /// A trip to Discord for the sign-in `id`. It replaces an earlier one,
@@ -166,7 +189,7 @@ mod tests {
     #[test]
     fn a_sign_in_ends_once() {
         let sign_ins = SignIns::default();
-        let (id, code) = sign_ins.start().unwrap();
+        let (id, code) = sign_ins.start(None).unwrap();
         assert_eq!(id.len(), ID_LEN);
         assert_eq!(code.len(), CODE_LEN);
         assert!(code.bytes().all(|byte| CODE_ALPHABET.contains(&byte)));
@@ -189,7 +212,7 @@ mod tests {
     #[test]
     fn a_trip_to_discord_comes_back_once() {
         let sign_ins = SignIns::default();
-        let (id, _) = sign_ins.start().unwrap();
+        let (id, _) = sign_ins.start(None).unwrap();
         let first = sign_ins.authorize(&id).unwrap();
         let second = sign_ins.authorize(&id).unwrap();
         assert!(sign_ins.take_authorization(&first.state).is_none());
@@ -197,6 +220,23 @@ mod tests {
         assert_eq!(back, id);
         assert_eq!(authorization.verifier, second.verifier);
         assert!(sign_ins.take_authorization(&second.state).is_none());
+    }
+
+    #[test]
+    fn a_sign_in_keeps_the_player_it_links_until_it_ends() {
+        let sign_ins = SignIns::default();
+        let (plain, _) = sign_ins.start(None).unwrap();
+        let link = Link {
+            player_id: 7,
+            name: "Nelly".into(),
+        };
+        let (id, _) = sign_ins.start(Some(link.clone())).unwrap();
+        assert_eq!(sign_ins.link(&plain), None);
+        assert_eq!(sign_ins.link(&id), Some(link));
+        let taken = Outcome::Conflict("taken".into());
+        assert!(sign_ins.finish(&id, taken.clone()));
+        assert_eq!(sign_ins.link(&id), None);
+        assert_eq!(sign_ins.poll(&id), Poll::Ended(taken));
     }
 
     #[test]

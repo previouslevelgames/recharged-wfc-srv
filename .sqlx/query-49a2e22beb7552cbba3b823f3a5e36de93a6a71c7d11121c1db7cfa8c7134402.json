@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS (SELECT 1 FROM player_identities\n                          WHERE player_identities.player_id = players.player_id\n                            AND provider IN ('discord', 'test')) AS \"has_account!\"\n           FROM players WHERE player_id = $1\n           FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "has_account!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "49a2e22beb7552cbba3b823f3a5e36de93a6a71c7d11121c1db7cfa8c7134402"
+}

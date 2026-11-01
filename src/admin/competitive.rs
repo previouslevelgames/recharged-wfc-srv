@@ -26,6 +26,8 @@ struct Totals {
     players: i64,
     discord: i64,
     test: i64,
+    /// Players without Discord or a test name (docs/profiles.md, "Players").
+    mii: i64,
     matches: i64,
     finished: i64,
 }
@@ -61,6 +63,10 @@ pub async fn read(pool: &PgPool) -> Result<Competitive, sqlx::Error> {
              (SELECT count(*) FROM players) AS "players!",
              (SELECT count(*) FROM player_identities WHERE provider = 'discord') AS "discord!",
              (SELECT count(*) FROM player_identities WHERE provider = 'test') AS "test!",
+             (SELECT count(*) FROM players
+              WHERE NOT EXISTS (SELECT 1 FROM player_identities
+                                WHERE player_identities.player_id = players.player_id
+                                  AND provider IN ('discord', 'test'))) AS "mii!",
              (SELECT count(*) FROM matches) AS "matches!",
              (SELECT count(*) FROM matches WHERE state = 'finished') AS "finished!""#,
     )
@@ -88,6 +94,7 @@ pub async fn read(pool: &PgPool) -> Result<Competitive, sqlx::Error> {
             players: totals.players,
             discord: totals.discord,
             test: totals.test,
+            mii: totals.mii,
             matches: totals.matches,
             finished: totals.finished,
         },

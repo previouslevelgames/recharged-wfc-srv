@@ -2150,7 +2150,7 @@ function renderCompetitive(data, now) {
     h(
       'div',
       { class: 'tiles' },
-      tile('Players', count(totals.players), `${count(totals.discord)} with Discord · ${count(totals.test)} test`),
+      tile('Players', count(totals.players), `${count(totals.discord)} with Discord · ${count(totals.mii)} by Mii · ${count(totals.test)} test`),
       tile('Matches', count(totals.matches), `${count(totals.finished)} finished`),
       tile('Rule sets', count(ruleSets.length), 'for challenges'),
     ),

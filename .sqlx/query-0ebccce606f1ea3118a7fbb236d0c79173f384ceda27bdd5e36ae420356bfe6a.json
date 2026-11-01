@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT players.player_id, players.display_name,\n                  discord.username AS \"discord?\", discord.avatar_url AS \"avatar_url?\",\n                  test.username AS \"test?\",\n                  coalesce(players.heartbeat_at > now() - make_interval(secs => $2), false)\n                      AS \"online!\",\n                  players.activity,\n                  EXISTS (SELECT 1 FROM matches\n                          WHERE state IN ('challenged', 'accepted')\n                            AND (home = players.player_id OR away = players.player_id))\n                      AS \"busy!\",\n                  extract(epoch FROM players.heartbeat_at)::bigint AS last_online,\n                  EXISTS (SELECT 1 FROM friends\n                          WHERE friends.player_id = $3 AND friends.friend_id = players.player_id)\n                      AS \"friend!\",\n                  EXISTS (SELECT 1 FROM friends\n                          WHERE friends.player_id = players.player_id AND friends.friend_id = $3)\n                      AS \"keeps_you!\",\n                  (SELECT count(*) FROM chat_messages\n                   WHERE chat_messages.sender = players.player_id AND chat_messages.recipient = $3\n                     AND chat_messages.read_at IS NULL) AS \"unread!\",\n                  discord.external_id AS \"discord_id?\"\n           FROM players\n           LEFT JOIN player_identities discord\n                  ON discord.player_id = players.player_id AND discord.provider = 'discord'\n           LEFT JOIN player_identities test\n                  ON test.player_id = players.player_id AND test.provider = 'test'\n           WHERE players.player_id = ANY($1)",
+  "query": "SELECT players.player_id, players.display_name,\n                  discord.username AS \"discord?\", discord.avatar_url AS \"avatar_url?\",\n                  test.username AS \"test?\",\n                  coalesce(players.heartbeat_at > now() - make_interval(secs => $2), false)\n                      AS \"online!\",\n                  players.activity,\n                  EXISTS (SELECT 1 FROM matches\n                          WHERE state IN ('challenged', 'accepted')\n                            AND (home = players.player_id OR away = players.player_id))\n                      AS \"busy!\",\n                  extract(epoch FROM players.heartbeat_at)::bigint AS last_online,\n                  EXISTS (SELECT 1 FROM friends\n                          WHERE friends.player_id = $3 AND friends.friend_id = players.player_id)\n                      AS \"friend!\",\n                  EXISTS (SELECT 1 FROM friends\n                          WHERE friends.player_id = players.player_id AND friends.friend_id = $3)\n                      AS \"keeps_you!\",\n                  (SELECT count(*) FROM chat_messages\n                   WHERE chat_messages.sender = players.player_id AND chat_messages.recipient = $3\n                     AND chat_messages.read_at IS NULL) AS \"unread!\",\n                  discord.external_id AS \"discord_id?\", wfc.username AS \"friend_code?\"\n           FROM players\n           LEFT JOIN player_identities discord\n                  ON discord.player_id = players.player_id AND discord.provider = 'discord'\n           LEFT JOIN player_identities test\n                  ON test.player_id = players.player_id AND test.provider = 'test'\n           LEFT JOIN player_identities wfc\n                  ON wfc.player_id = players.player_id AND wfc.provider = 'wfc'\n           WHERE players.player_id = ANY($1)",
   "describe": {
     "columns": [
       {
@@ -115,6 +115,17 @@
             "name": "external_id"
           }
         }
+      },
+      {
+        "ordinal": 13,
+        "name": "friend_code?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "player_identities",
+            "name": "username"
+          }
+        }
       }
     ],
     "parameters": {
@@ -137,8 +148,9 @@
       null,
       null,
       null,
+      true,
       true
     ]
   },
-  "hash": "0e22a14e10d0f49b22f84f5f0f234bd2b25298ccd7e4bba4c66ae0212e5a2038"
+  "hash": "0ebccce606f1ea3118a7fbb236d0c79173f384ceda27bdd5e36ae420356bfe6a"
 }
