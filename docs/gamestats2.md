@@ -274,16 +274,35 @@ chooses:
 
 - One leaderboard per category for every region: the request's region is
   ignored.
+- One row per player (below): the WFC profiles of one Recharged player count
+  as one row.
 - Rows are sorted by score in the asked order, the earlier update first on a
   tie. Equal scores share a rank ("1, 2, 2, 4"). `total` is the number of rows
-  that pass the `since` filter.
+  that pass the `since` filter, a player's counting once.
 - `since = 0` keeps every row, in every mode.
 - NEAR: `limit` rows centred on the caller, shifted to stay inside the board;
   the top of the board when the caller has no row.
 - FRIENDS: the rows of the listed pids (zero slots skipped) and of the caller,
-  best first, at most `limit`, with their rank on the whole board.
+  best first, at most `limit`, with their rank on the whole board. A player's
+  row counts when any of their profiles is listed.
 - ORDER: the caller's rank (0 without a row) and `total`.
 - `lastupdate`: minutes since the row was stored.
+
+### One row per player
+
+A player who plays the US and the European game has a WFC profile in each
+(the profile belongs to the game code), and so a row in each: two rows on
+one board for one player. The profiles a launcher proved for one Recharged
+player (`player_wfc_profiles`, docs/profiles.md "Friend codes") are that
+player's, so their rows are merged before a get is answered
+(`src/gamestats/players.rs`): the score, wins and losses (userdata 0x04 and
+0x08) added up (at most 999999 and 9999, as a put and the game allow), and
+the row of the player's best profile otherwise (its pid, region, Mii and the
+rest of its userdata), last updated when the latest of them was. The caller's
+own profile stands for its player, so the game finds itself (NEAR, ORDER) and
+shows its own Mii; in FRIENDS, a listed profile stands for its player before
+the others. Rows of profiles no launcher proved stay as they are. The
+launcher's Leaderboard and the admin site's Leaders merge alike.
 
 ### Response
 

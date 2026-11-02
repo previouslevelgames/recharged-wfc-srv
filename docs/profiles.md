@@ -126,6 +126,16 @@ that ticket, 404 `{"error": "no Recharged profile signs in with this WFC
 profile"}` when it identifies nobody (no player is made). A Mii player that
 signs out before its game ever logged in to WFC can't come back.
 
+**Before a new profile.** `POST /api/v1/sign-in/wfc/known` with
+`{"profile_ids": [1000000000, 1000000001]}` (at most 32, no session) answers
+`{"profiles": [{"profile_id": 1000000000, "sign_in": "game"}]}`: of the WFC
+profiles asked about, those that play for a player already, and how that
+player signs in again: `game` (the profile identifies it: its WFC login, as
+above), otherwise the account of the player it is bound to (`discord`,
+`test`). The signed-out launcher asks it for the Miis of its game save, so a
+player picking one of them gets their profile back instead of a new one. It
+names no player.
+
 **Connecting Discord.** A Mii player can connect Discord to the same profile,
 keeping its friends, chat, sets and WFC profiles: the launcher starts the
 sign-in above with the player's session (`Authorization: Bearer <token>` on
@@ -339,8 +349,10 @@ leaderboards, as its LEADERBOARD menu shows them: `{"season": {...},
 "daily": {...}}`, the season's board (category 0) and the striker of the
 day's (category 1) of `docs/gamestats2.md`. Each has `first_day` and
 `last_day` of the current season (or the day), `players` on it, the first 20
-as `top`, and `you`, the player's best row among the WFC profiles they proved
-(see "Friend codes"), or `null`. A row is `{"rank", "mii", "player", "wins",
+as `top`, and `you`, the player's row, or `null`. As on the game's boards, a
+player's WFC profiles (see "Friend codes": one for each game they play) are
+one row, their points, wins and losses added up, with the Mii of the best one
+(`docs/gamestats2.md`, "One row per player"). A row is `{"rank", "mii", "player", "wins",
 "losses", "points", "region", "you"}`: the rank as the game counts it (equal
 points share it), the Mii's name and record from the game's submission, the
 Recharged player whose profile it is (`null` when no launcher proved it), and
@@ -356,7 +368,7 @@ session, lists the rule sets: `{"rule_sets": [{"id", "name", "rules", "hash"}]}`
 
 | Rule | Values |
 |---|---|
-| `tweaks` | The port's gameplay tweaks for both teams: `fast_terrain`, `no_mega_strikes`, `thunder_island_walls`. The others stay off; fair ball contests are always on online. |
+| `tweaks` | The port's gameplay tweaks for both teams: `fast_terrain`, `no_mega_strikes`, `thunder_island_walls`, and `mirror_match` (both players may draft the same captain). The others stay off; fair ball contests are always on online. |
 | `skill` | `training`, `rookie`, `professional`, `superstar`, `legend`; `rookie` when left out. The CPU's skill: no effect on a match between two games (the game gives both teams the human level) |
 | `limit` | `time` or `goals`: what ends a game |
 | `time` | A game's length in seconds, 60 to 900 in steps of 30 |

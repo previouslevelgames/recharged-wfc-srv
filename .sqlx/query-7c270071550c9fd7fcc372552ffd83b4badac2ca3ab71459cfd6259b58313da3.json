@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO scores (profile_id, category, region, score, userdata) VALUES ($1, 0, 2, $2, $3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int4",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7c270071550c9fd7fcc372552ffd83b4badac2ca3ab71459cfd6259b58313da3"
+}

@@ -1362,6 +1362,48 @@ async fn a_mii_player_comes_back_by_its_wfc_login(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn a_signed_out_launcher_learns_which_miis_have_a_profile(pool: PgPool) {
+    let world = World::new(pool);
+    let (_, signed_in) = world.mii_sign_in("Nelly", "198.51.100.1").await;
+    let nelly = signed_in["token"].as_str().unwrap().to_owned();
+    let nelly_pid = world.wfc_login(1, "R4QEaaaaaaa").await;
+    world.prove(&nelly, nelly_pid).await;
+    let mario = world.sign_in("Mario").await;
+    let mario_pid = world.wfc_login(2, "R4QEbbbbbbb").await;
+    world.prove(&mario, mario_pid).await;
+    let nobody_pid = world.wfc_login(3, "R4QEccccccc").await;
+
+    let known = |ids: Value| {
+        let world = &world;
+        async move {
+            world
+                .send(
+                    "POST",
+                    "/api/v1/sign-in/wfc/known",
+                    "",
+                    json!({ "profile_ids": ids }),
+                )
+                .await
+        }
+    };
+    // Nelly's Mii signs her in again through the game; Mario's plays for a
+    // player with an account; nobody's is left out. No names.
+    let (status, body) = known(json!([nelly_pid, mario_pid, nobody_pid, 1_999_999])).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let mut profiles = body["profiles"].as_array().unwrap().clone();
+    profiles.sort_by_key(|profile| profile["profile_id"].as_i64());
+    assert_eq!(
+        Value::Array(profiles),
+        json!([
+            {"profile_id": nelly_pid, "sign_in": "game"},
+            {"profile_id": mario_pid, "sign_in": "test"},
+        ])
+    );
+    let too_many: Vec<i32> = (0..=super::mii_sign_in::MAX_KNOWN as i32).collect();
+    assert_eq!(known(json!(too_many)).await.0, StatusCode::BAD_REQUEST);
+}
+
+#[sqlx::test]
 async fn an_address_makes_a_few_mii_players_an_hour(pool: PgPool) {
     let world = World::new(pool);
     // A refused name doesn't count.

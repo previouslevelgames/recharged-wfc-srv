@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO player_wfc_profiles (profile_id, player_id) VALUES ($1, $2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9b34c7e6d1d7405827798be25c0a3ce257d2b70e61d98c168b87e3e57f1f2064"
+}

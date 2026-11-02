@@ -10,9 +10,15 @@ use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 
 /// The port's gameplay tweaks a rule set may switch on: the ones that change
-/// play for both teams alike. Its other tweaks stay off in a match; fair ball
-/// contests are always on online.
-pub const TWEAKS: [&str; 3] = ["fast_terrain", "no_mega_strikes", "thunder_island_walls"];
+/// play for both teams alike, and mirror match (both players may draft the
+/// same captain; 1.2 clients from its release on). Its other tweaks stay off
+/// in a match; fair ball contests are always on online.
+pub const TWEAKS: [&str; 4] = [
+    "fast_terrain",
+    "mirror_match",
+    "no_mega_strikes",
+    "thunder_island_walls",
+];
 /// The game's skill levels (`GameplaySettings::eSkillLevel`).
 pub const SKILLS: [&str; 5] = ["training", "rookie", "professional", "superstar", "legend"];
 /// The stadiums a match can be played in (`eStadiumID` without the tutorial
@@ -350,6 +356,18 @@ mod tests {
             )
             .unwrap(),
             rules
+        );
+        // Mirror match sorts in with the others.
+        let mut mirror = competitive();
+        mirror.tweaks.push("mirror_match".into());
+        assert_eq!(
+            mirror.check().unwrap().tweaks,
+            [
+                "fast_terrain",
+                "mirror_match",
+                "no_mega_strikes",
+                "thunder_island_walls"
+            ]
         );
     }
 

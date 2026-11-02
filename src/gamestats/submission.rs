@@ -52,6 +52,18 @@ impl Submission {
     }
 }
 
+/// `userdata` with its wins and losses replaced by these, as far as they are
+/// given and it has room for them; clamped as the game clamps them.
+pub fn with_record(userdata: &[u8], wins: Option<i32>, losses: Option<i32>) -> Vec<u8> {
+    let mut userdata = userdata.to_vec();
+    for (at, value) in [(0x04, wins), (0x08, losses)] {
+        if let (Some(value), Some(bytes)) = (value, userdata.get_mut(at..at + 4)) {
+            bytes.copy_from_slice(&value.clamp(0, MAX_RECORD).to_le_bytes());
+        }
+    }
+    userdata
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
