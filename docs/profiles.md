@@ -187,6 +187,15 @@ builds before 1.2.0's games. `players.activity` keeps the value of the last
 heartbeat (`NULL` for the launcher); a changed activity is written at once.
 The lists show it, and nobody can challenge a player in a match.
 
+In a match, games from Recharged 1.2.0 (test builds since 2026-11-02) also
+say its kind in a `Recharged-Match` header: `ranked` and `friends` (online, or friends on a LAN), `tournament`
+(an online tournament), `cpu` (Domination against the computer, or the
+computer against itself), `local` (Domination with players on both teams at
+one computer), `cup` (Road to the Striker Cup), `challenge` (a Striker
+Challenge) or `training` (a Strikers 101 lesson). `players.match_kind`
+keeps it with the activity; the lists show it as `match` (`null` outside a
+match, for kinds this server doesn't know and from games that don't say).
+
 Errors are JSON, `{"error": "<what went wrong>"}`. Every response is
 `no-store`; the pages allow no scripts and no framing.
 
@@ -256,12 +265,16 @@ they don't search) and asks again every 2 seconds while they search.
 
 The game's own online players without a Recharged launcher show in the
 launcher by their Mii and friend code: the WFC profiles logged in to GPCM, as
-`{"profile_id", "mii", "game", "friend_code", "online", "status",
+`{"profile_id", "mii", "game", "friend_code", "online", "status", "match",
 "last_online", "friend"}`. `mii` is the Mii name of the profile's last login,
 `game` the release (`R4QE`, `R4QP`, `R4QJ`, `R4QK`), `friend_code` the code
 the game shows for it (`0868-9934-5920`), `status` while logged in what the
-game does (`menu`, `matchmaking` or `match`, from DWC's status) and
-`last_online` the last login in Unix seconds.
+game does (`menu`, `matchmaking` or `match`, from DWC's status), `match`
+whom that matchmaking or match is with (`ranked`: the game matches with
+anybody only for ranked matches; `friends`: in a room one of them hosts,
+whose host plays once a friend has joined; `null` otherwise, and for a game
+that was already playing when the server started) and `last_online` the last
+login in Unix seconds.
 
 `GET /api/v1/players` has them twice: `mii_friends`, the Mii profiles the
 player keeps as friends (`friend_profiles`, those logged in first by name,
@@ -394,7 +407,7 @@ with no Mega Strikes, fast terrain and Thunder Island walls).
 
 | Route | |
 |---|---|
-| `GET /api/v1/players` | `{"online": [...], "recent": [...], "friends": [...]}`: who has Recharged open (by name, at most 100), the last 10 players played a set with, and the player's friends (see "Friends"). Each is a player as in a sign-in, with `online`, `busy` (has a set to play), `activity` (while online: `launcher`, `game` or `match`, see "Activity"), `last_online` (their last heartbeat in Unix seconds, `null` before the first) and `friend` (the player keeps them as one). |
+| `GET /api/v1/players` | `{"online": [...], "recent": [...], "friends": [...]}`: who has Recharged open (by name, at most 100), the last 10 players played a set with, and the player's friends (see "Friends"). Each is a player as in a sign-in, with `online`, `busy` (has a set to play), `activity` (while online: `launcher`, `game` or `match`, see "Activity"), `match` (in a match: its kind, see "Activity"), `last_online` (their last heartbeat in Unix seconds, `null` before the first) and `friend` (the player keeps them as one). |
 | `POST /api/v1/matches` | `{"opponent": "<Discord username>", "rule_set": <id>}`, or `"opponent_id": <player id>` instead of the name (a Mii player only by id): a challenge, 201. Instead of a rule set, `"rules": {…}` (see "Rules") and `"name"`, the preset they come from (1 to 48 characters; `Custom` without one): the match's `rule_set` then is that name; 400 for rules the game doesn't have. 404 for nobody of that name, 409 when either already has a match to play, or the opponent doesn't have Recharged open or is playing a match (see "Activity"). |
 | `GET /api/v1/matches/current` | `{"match": …, "search": …, "poll_interval": 2, "server_time": <unix seconds>}`: the match still to be played, or the last one that ended within the hour, or `null`; the player's search (see "Random opponents"); `poll_interval` is how soon to ask again (2 while the set waits for its players or the player searches, 10 while they play, 5 otherwise) |
 | `POST /api/v1/search`, `DELETE /api/v1/search` | Search for a random opponent, and stop (see "Random opponents") |

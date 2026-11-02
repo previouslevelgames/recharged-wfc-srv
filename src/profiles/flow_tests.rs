@@ -1032,6 +1032,31 @@ async fn a_match_in_the_game_shows_and_keeps_challenges_away(pool: PgPool) {
         )
         .await;
     assert_eq!(activity_of_luigi().await, json!("match"));
+    let match_of_luigi = || async {
+        let (_, lists) = world
+            .send("GET", "/api/v1/players", &mario, Value::Null)
+            .await;
+        lists["online"][0]["match"].clone()
+    };
+    // A game before 1.2.1 doesn't say which kind; a newer one does, and
+    // a kind this server doesn't know is none.
+    assert_eq!(match_of_luigi().await, Value::Null);
+    for (kind, shown) in [
+        ("cpu", json!("cpu")),
+        ("ranked", json!("ranked")),
+        ("golf", Value::Null),
+    ] {
+        world
+            .send_with(
+                "GET",
+                "/api/v1/matches/current",
+                &luigi,
+                &[("recharged-activity", "match"), ("recharged-match", kind)],
+                Value::Null,
+            )
+            .await;
+        assert_eq!(match_of_luigi().await, shown, "{kind}");
+    }
     let (status, refused) = challenge().await;
     assert_eq!(status, StatusCode::CONFLICT, "{refused}");
     assert_eq!(refused["error"], "that player is playing a match right now");
@@ -1046,6 +1071,7 @@ async fn a_match_in_the_game_shows_and_keeps_challenges_away(pool: PgPool) {
             Value::Null,
         )
         .await;
+    assert_eq!(match_of_luigi().await, Value::Null);
     let (status, created) = challenge().await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
 

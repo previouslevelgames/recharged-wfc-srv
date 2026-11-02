@@ -195,7 +195,7 @@ fn leaders(category: i32, rows: Vec<Row>, owners: &Owners) -> (Vec<Entry>, usize
             )
         })
         .collect();
-    let mut lines = players::by_player(lines, &owners.players, |_| 0);
+    let mut lines = players::by_player(lines, &owners.players, category, |_| 0);
     lines.sort_by(|a, b| (b.score, a.stamp, a.profile_id).cmp(&(a.score, b.stamp, b.profile_id)));
     let entries = lines
         .iter()

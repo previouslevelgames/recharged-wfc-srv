@@ -105,7 +105,13 @@ pub async fn get(state: &GamestatsState, pid: i32, body: &[u8]) -> Result<Vec<u8
             u8::from(friends.is_some_and(|friends| friends.contains(&profile_id)))
         }
     };
-    let board = by_player(board, &players, preference, query.sort);
+    let board = by_player(
+        board,
+        &players,
+        query.category as i32,
+        preference,
+        query.sort,
+    );
     Ok(answer(pid, &query, &board))
 }
 
@@ -266,6 +272,7 @@ impl Leaderboard {
 fn by_player(
     board: Vec<Standing>,
     players: &HashMap<i32, i64>,
+    category: i32,
     preference: impl Fn(i32) -> u8,
     sort: Sort,
 ) -> Vec<Standing> {
@@ -284,7 +291,7 @@ fn by_player(
             members: row.members,
         })
         .collect();
-    let mut lines = players::by_player(lines, players, preference);
+    let mut lines = players::by_player(lines, players, category, preference);
     let better = |a: i32, b: i32| match sort {
         Sort::Descending => b.cmp(&a),
         Sort::Ascending => a.cmp(&b),
@@ -521,7 +528,8 @@ mod tests {
                 profile_id: at as i32 + 1,
                 region: 2,
                 score,
-                userdata: vec![at as u8; 128],
+                // Without a date (day 0): one season for all.
+                userdata: [vec![0; 4], vec![at as u8; 124]].concat(),
                 minutes: 0,
                 members: vec![at as i32 + 1],
             })
@@ -655,6 +663,7 @@ mod tests {
             by_player(
                 board(&[50, 40, 30, 20]),
                 &players,
+                0,
                 |pid| u8::from(pid == preferred),
                 Sort::Descending,
             )
@@ -677,8 +686,70 @@ mod tests {
         let (_, _, rows) = read_list(&answer(3, &friends, &merged(2)));
         assert_eq!(rows, [(1, 2, 60), (3, 3, 30)]);
         // Nobody's: the board as it was.
-        let alone = by_player(board(&[50, 40]), &HashMap::new(), |_| 0, Sort::Descending);
+        let alone = by_player(
+            board(&[50, 40]),
+            &HashMap::new(),
+            0,
+            |_| 0,
+            Sort::Descending,
+        );
         assert_eq!(ranks(&alone), [(1, 1, 50), (2, 2, 40)]);
+    }
+
+    #[test]
+    fn only_rows_of_one_day_add_up() {
+        // Striker of the day: pid 1 (Europe) played yesterday, pid 2 (US)
+        // today, both one player's; pid 3 today.
+        let dated = |day: u8, wins: i32| {
+            let mut userdata = vec![0u8; 128];
+            userdata[0] = day;
+            userdata[1] = 11;
+            userdata[2..4].copy_from_slice(&2026u16.to_le_bytes());
+            userdata[0x04..0x08].copy_from_slice(&wins.to_le_bytes());
+            userdata
+        };
+        let row = |pid: i32, score: i32, userdata: Vec<u8>| Standing {
+            rank: 0,
+            profile_id: pid,
+            region: 2,
+            score,
+            userdata,
+            minutes: 0,
+            members: vec![pid],
+        };
+        let players = HashMap::from([(1, 7), (2, 7)]);
+        let friends = Query::parse(&get_body(1, MODE_FRIENDS, &friends_params(10, &[1]))).unwrap();
+        // Yesterday's row stays its own, as without merging: the game drops
+        // it by its date. Today's are not raised by it.
+        let board = by_player(
+            vec![
+                row(1, 50, dated(1, 5)),
+                row(2, 30, dated(2, 3)),
+                row(3, 20, dated(2, 2)),
+            ],
+            &players,
+            1,
+            |pid| u8::from(pid == 1),
+            Sort::Descending,
+        );
+        assert_eq!(ranks(&board), [(1, 1, 50), (2, 2, 30), (3, 3, 20)]);
+        let (_, total, rows) = read_list(&answer(3, &friends, &board));
+        assert_eq!((total, rows), (3, vec![(1, 1, 50), (3, 3, 20)]));
+        // Both today: one row, the friend's Mii standing for it.
+        let board = by_player(
+            vec![
+                row(1, 50, dated(2, 5)),
+                row(2, 30, dated(2, 3)),
+                row(3, 20, dated(2, 2)),
+            ],
+            &players,
+            1,
+            |pid| u8::from(pid == 1),
+            Sort::Descending,
+        );
+        let (_, total, rows) = read_list(&answer(3, &friends, &board));
+        assert_eq!((total, rows), (2, vec![(1, 1, 80), (2, 3, 20)]));
+        assert_eq!(Submission::parse(&board[0].userdata).wins, Some(8));
     }
 
     #[sqlx::test]

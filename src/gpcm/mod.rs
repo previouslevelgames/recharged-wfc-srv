@@ -104,10 +104,34 @@ struct Session {
     dwc_status: Option<u8>,
     /// When the DWC status last changed.
     status_since: Option<OffsetDateTime>,
+    /// Whom its matchmaking was with, kept while it plays.
+    matchmaking: Option<Matchmaking>,
+    /// A friend room it hosts (DWC status 6): its players, the host too.
+    room_players: Option<u8>,
     /// The login ticket (`lt`) the login got. The game's own use of it is
     /// SAKE, which this game does not have; the port shows it to the profile
     /// service to prove which login is its own (docs/profiles.md).
     login_ticket: String,
+}
+
+/// Whom a game's matchmaking is with, by its DWC status: anybody (3), or
+/// friends (4), in a room one of them hosts (6) and the others join (5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Matchmaking {
+    Anybody,
+    Friends,
+}
+
+/// The players of a friend room from its host's status string
+/// (DWCi_GPSetServerStatus: `/SCM/<most>/SCN/<players>/VER/3`).
+fn room_players(statstring: &str) -> Option<u8> {
+    let mut parts = statstring.split('/');
+    while let Some(key) = parts.next() {
+        if key == "SCN" {
+            return parts.next()?.parse().ok();
+        }
+    }
+    None
 }
 
 /// What `/admin` shows of a profile's login.
@@ -118,6 +142,10 @@ pub struct Presence {
     pub status: Option<u8>,
     /// When that status began: a `\status\` that repeats it keeps the time.
     pub status_since: Option<OffsetDateTime>,
+    /// Whom the matchmaking was with, while matchmaking or playing.
+    pub matchmaking: Option<Matchmaking>,
+    /// A friend room it hosts: its players, the host too.
+    pub room_players: Option<u8>,
     /// Friend codes asked for in this login, and how many of them are mutual.
     pub friend_requests: usize,
     pub mutual_friends: usize,
@@ -142,6 +170,8 @@ impl Session {
             status: None,
             dwc_status: None,
             status_since: None,
+            matchmaking: None,
+            room_players: None,
             login_ticket,
         }
     }
@@ -154,12 +184,23 @@ impl Session {
         self.friends.insert(friend)
     }
 
-    /// Records the DWC status of a `\status\`, and when it changed.
-    fn set_dwc_status(&mut self, status: Option<u8>) {
+    /// Records the DWC status of a `\status\` and its status string, and
+    /// when the status changed.
+    fn set_dwc_status(&mut self, status: Option<u8>, statstring: &str) {
         if self.status_since.is_none() || status != self.dwc_status {
             self.status_since = Some(OffsetDateTime::now_utc());
         }
         self.dwc_status = status;
+        // Playing (2) keeps the matchmaking that led to it.
+        self.matchmaking = match status {
+            Some(2) => self.matchmaking,
+            Some(3) => Some(Matchmaking::Anybody),
+            Some(4..=6) => Some(Matchmaking::Friends),
+            _ => None,
+        };
+        self.room_players = (status == Some(6))
+            .then(|| room_players(statstring))
+            .flatten();
     }
 }
 
@@ -184,6 +225,8 @@ impl Gpcm {
                     logged_in_at: session.logged_in_at,
                     status: session.dwc_status,
                     status_since: session.status_since,
+                    matchmaking: session.matchmaking,
+                    room_players: session.room_players,
                     friend_requests: session.friends.len(),
                     mutual_friends: session.mutual.len(),
                 };
@@ -621,7 +664,10 @@ impl Gpcm {
             return;
         };
         session.status = Some(status.clone());
-        session.set_dwc_status(message.get("status").and_then(|status| status.parse().ok()));
+        session.set_dwc_status(
+            message.get("status").and_then(|status| status.parse().ok()),
+            message.get("statstring").unwrap_or_default(),
+        );
         for friend in session.mutual.clone() {
             if let Some(friend) = sessions
                 .get(&friend)
@@ -860,7 +906,7 @@ mod tests {
         );
         session.add_friend(1_000_000_001);
         session.mutual.insert(1_000_000_001);
-        session.set_dwc_status(Some(2));
+        session.set_dwc_status(Some(2), "");
         let status_since = session.status_since;
         gpcm.sessions.lock().unwrap().insert(1_000_000_000, session);
 
@@ -875,6 +921,51 @@ mod tests {
             Some(IpAddr::from([10, 0, 0, 1]))
         );
         assert_eq!(gpcm.logged_in_from(1_000_000_001), None);
+    }
+
+    #[test]
+    fn a_match_keeps_whom_its_matchmaking_was_with() {
+        let mut session = Session::new(
+            1,
+            IpAddr::from([10, 0, 0, 1]),
+            Arc::new(Notify::new()),
+            mpsc::unbounded_channel().0,
+            String::new(),
+        );
+        let mut seen = vec![];
+        for (status, statstring) in [
+            (1, ""),
+            (3, ""),
+            (2, ""),
+            (1, ""),
+            (2, ""),
+            (5, ""),
+            (2, ""),
+            (6, "/SCM/2/SCN/1/VER/3"),
+            (6, "/SCM/2/SCN/2/VER/3"),
+            (1, ""),
+        ] {
+            session.set_dwc_status(Some(status), statstring);
+            seen.push((session.matchmaking, session.room_players));
+        }
+        use Matchmaking::{Anybody, Friends};
+        assert_eq!(
+            seen,
+            [
+                (None, None),
+                (Some(Anybody), None),
+                (Some(Anybody), None),
+                (None, None),
+                (None, None),
+                (Some(Friends), None),
+                (Some(Friends), None),
+                (Some(Friends), Some(1)),
+                (Some(Friends), Some(2)),
+                (None, None),
+            ]
+        );
+        assert_eq!(room_players("/SCM/4/SCN/x/VER/3"), None);
+        assert_eq!(room_players(""), None);
     }
 
     #[test]
@@ -905,12 +996,12 @@ mod tests {
             String::new(),
         );
         assert_eq!(session.status_since, None);
-        session.set_dwc_status(Some(2));
+        session.set_dwc_status(Some(2), "");
         let playing = OffsetDateTime::UNIX_EPOCH;
         session.status_since = Some(playing);
-        session.set_dwc_status(Some(2));
+        session.set_dwc_status(Some(2), "");
         assert_eq!(session.status_since, Some(playing));
-        session.set_dwc_status(Some(1));
+        session.set_dwc_status(Some(1), "");
         assert!(session.status_since > Some(playing));
         assert_eq!(session.dwc_status, Some(1));
     }

@@ -214,14 +214,13 @@ impl ProfilesState {
             .await
             .map_err(database_error)?
             .ok_or_else(unauthorized)?;
-        let activity = players::Activity::from_header(
-            headers
-                .get("recharged-activity")
-                .and_then(|value| value.to_str().ok()),
-        );
-        players::heartbeat(&self.pool, player_id, activity)
-            .await
-            .map_err(database_error)?;
+        players::heartbeat(
+            &self.pool,
+            player_id,
+            players::Activity::from_headers(headers),
+        )
+        .await
+        .map_err(database_error)?;
         players::player(&self.pool, player_id)
             .await
             .map_err(database_error)?
