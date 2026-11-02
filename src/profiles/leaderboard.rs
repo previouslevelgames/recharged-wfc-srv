@@ -127,7 +127,7 @@ async fn board(
     // A player's WFC profiles as one row, as the game's boards show them.
     let profiles: Vec<i32> = lines.iter().map(|line| line.profile_id).collect();
     let owners = players::players_of(pool, &profiles).await?;
-    let mut rows: Vec<_> = players::by_player(lines, &owners, |profile_id| {
+    let mut rows: Vec<_> = players::by_player(lines, &owners, category, |profile_id| {
         u8::from(mine.contains(&profile_id))
     })
     .into_iter()
