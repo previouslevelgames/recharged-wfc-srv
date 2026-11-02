@@ -374,6 +374,25 @@ Recharged player whose profile it is (`null` when no launcher proved it), and
 the game's region (1 JP, 2 US, 4 EU, 8 KR). Rows of an ended season, which
 stay in `scores` until their player's next ranked game, are left out.
 
+### One player, two profiles
+
+A person with two rows (two WFC accounts, a Mii of each version, or a Mii
+player and a Discord player) is put together on the admin dashboard, on a
+profile's page (owners only):
+
+- **Link to a player** binds that WFC profile to a player by their number
+  (`PUT /admin/api/wfc-profiles/<profile>/player`, `{"player_id": <id>}`, or
+  `null` to unlink); a launcher that proves the profile later binds it to its
+  own player again.
+- **Merge another player into this one**, in two asks as the leaderboard wipe
+  (`POST /admin/api/players/merge` with `{"from", "into"}` answers what it
+  moves, the phrase and a token; `.../merge/confirm` with them merges): the
+  WFC profiles, sets and reports, chats, friends and Mii friends and the
+  sessions (their launchers stay signed in) become `into`'s, and so do the
+  accounts `from` signs in with that `into` has none of; the sets between the
+  two go, and `from` is gone. Refused while either has a set to play, and for
+  two players who both sign in with Discord.
+
 ## Rules
 
 A match is played by rules: one of the server's rule sets, which its admins

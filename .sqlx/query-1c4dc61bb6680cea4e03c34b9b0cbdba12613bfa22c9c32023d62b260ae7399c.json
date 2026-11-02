@@ -1,0 +1,45 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT\n             (SELECT count(*) FROM player_wfc_profiles WHERE player_id = $1) AS \"profiles!\",\n             (SELECT count(*) FROM matches\n              WHERE (home = $1 OR away = $1) AND NOT (home = $2 OR away = $2)) AS \"matches!\",\n             (SELECT count(*) FROM matches\n              WHERE (home = $1 AND away = $2) OR (home = $2 AND away = $1)) AS \"between!\",\n             (SELECT count(*) FROM friends WHERE (player_id = $1 AND friend_id <> $2)\n                                              OR (friend_id = $1 AND player_id <> $2))\n               + (SELECT count(*) FROM friend_profiles WHERE player_id = $1) AS \"friends!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "profiles!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "matches!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "between!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "friends!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "1c4dc61bb6680cea4e03c34b9b0cbdba12613bfa22c9c32023d62b260ae7399c"
+}
