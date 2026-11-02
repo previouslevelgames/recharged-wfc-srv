@@ -207,8 +207,18 @@ struct Profile {
 
 #[derive(Serialize)]
 struct Bound {
+    player_id: i64,
     name: String,
     discord: Option<String>,
+    /// All the WFC profiles that play for them, this one too.
+    profiles: Vec<BoundProfile>,
+}
+
+#[derive(Serialize)]
+struct BoundProfile {
+    profile_id: i32,
+    mii_name: Option<String>,
+    release: String,
 }
 
 #[derive(Default, Serialize)]
@@ -304,7 +314,8 @@ pub async fn detail(
     let mut tx = snapshot(pool).await?;
     let Some(row) = sqlx::query!(
         r#"SELECT p.profile_id, p.user_id, p.gsbrcd, p.ingamesn, p.created_at, p.last_login_at,
-                  p.last_ip, players.display_name AS "player?", discord.username AS "discord?"
+                  p.last_ip, players.player_id AS "player_id?", players.display_name AS "player?",
+                  discord.username AS "discord?"
            FROM profiles p
            LEFT JOIN player_wfc_profiles bound ON bound.profile_id = p.profile_id
            LEFT JOIN players ON players.player_id = bound.player_id
@@ -320,6 +331,30 @@ pub async fn detail(
         return Ok(None);
     };
     let release: String = row.gsbrcd.chars().take(4).collect();
+    let mut bound = None;
+    if let (Some(player_id), Some(name)) = (row.player_id, row.player) {
+        let profiles = sqlx::query!(
+            "SELECT profiles.profile_id, profiles.ingamesn, profiles.gsbrcd
+             FROM player_wfc_profiles JOIN profiles USING (profile_id)
+             WHERE player_wfc_profiles.player_id = $1 ORDER BY profiles.profile_id",
+            player_id
+        )
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .map(|profile| BoundProfile {
+            profile_id: profile.profile_id,
+            mii_name: profile.ingamesn,
+            release: profile.gsbrcd.chars().take(4).collect(),
+        })
+        .collect();
+        bound = Some(Bound {
+            player_id,
+            name,
+            discord: row.discord,
+            profiles,
+        });
+    }
     let profile = Profile {
         profile_id: row.profile_id,
         user_id: row.user_id,
@@ -332,10 +367,7 @@ pub async fn detail(
         last_login_at: row.last_login_at,
         last_ip: row.last_ip,
         online,
-        player: row.player.map(|name| Bound {
-            name,
-            discord: row.discord,
-        }),
+        player: bound,
     };
     let standing = standing(&mut tx, profile_id).await?;
     let (stats, matches) = record(&mut tx, profile_id).await?;

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO friends (player_id, friend_id)\n         SELECT player_id, $2 FROM friends WHERE friend_id = $1 AND player_id <> $2\n         ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1d778b0d0f3b2d174a053910d4450a811ea671ff1ee5793708660f8598f8ed29"
+}

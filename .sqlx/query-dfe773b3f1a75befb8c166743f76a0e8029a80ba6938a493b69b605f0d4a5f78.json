@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE matches SET winner = $2 WHERE winner = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "dfe773b3f1a75befb8c166743f76a0e8029a80ba6938a493b69b605f0d4a5f78"
+}

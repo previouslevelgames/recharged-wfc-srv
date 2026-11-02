@@ -886,6 +886,13 @@ impl Gpcm {
         );
         self.sessions.lock().unwrap().insert(profile_id, session);
     }
+
+    /// The `\status\` of `profile_id`'s fake login: DWC's `status`.
+    pub(crate) fn fake_status(&self, profile_id: i32, status: u8) {
+        if let Some(session) = self.sessions.lock().unwrap().get_mut(&profile_id) {
+            session.set_dwc_status(Some(status), "");
+        }
+    }
 }
 
 #[cfg(test)]

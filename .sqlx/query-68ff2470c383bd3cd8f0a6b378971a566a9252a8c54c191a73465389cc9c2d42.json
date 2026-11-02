@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE player_sessions SET player_id = $2 WHERE player_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "68ff2470c383bd3cd8f0a6b378971a566a9252a8c54c191a73465389cc9c2d42"
+}
