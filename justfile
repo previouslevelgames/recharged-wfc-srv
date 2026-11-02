@@ -8,7 +8,7 @@ db:
     #!/usr/bin/env bash
     set -euo pipefail
     name=recharged-wfc-dev-db
-    if [ "$(docker inspect -f '{{{{.State.Running}}}}' "$name" 2>/dev/null)" = true ]; then exit 0; fi
+    if [ "$(docker inspect -f '{{{{.State.Running}}' "$name" 2>/dev/null)" = true ]; then exit 0; fi
     if docker inspect "$name" >/dev/null 2>&1; then
         docker start "$name" >/dev/null
     else
@@ -23,8 +23,8 @@ db:
             postgres:18-bookworm -c listen_addresses="$host" -c port="$port" >/dev/null
     fi
     until docker exec "$name" sh -c 'pg_isready -q -h "$1" -p "$2"' sh \
-        "$(docker inspect -f '{{{{index .Config.Cmd 1}}}}' "$name" | sed 's/listen_addresses=//')" \
-        "$(docker inspect -f '{{{{index .Config.Cmd 3}}}}' "$name" | sed 's/port=//')"; do
+        "$(docker inspect -f '{{{{index .Config.Cmd 1}}' "$name" | sed 's/listen_addresses=//')" \
+        "$(docker inspect -f '{{{{index .Config.Cmd 3}}' "$name" | sed 's/port=//')"; do
         sleep 0.5
     done
 
