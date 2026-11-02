@@ -29,6 +29,7 @@ mod miis;
 mod play;
 mod players;
 pub(crate) mod rules;
+mod search;
 mod sign_in;
 mod social;
 
@@ -121,6 +122,7 @@ pub(crate) fn router(
         .route("/api/v1/sign-in/test", post(api_test_sign_in))
         .route("/api/v1/sign-in/mii", post(mii_sign_in::sign_in_mii))
         .route("/api/v1/sign-in/wfc", post(mii_sign_in::sign_in_wfc))
+        .route("/api/v1/sign-in/wfc/known", post(mii_sign_in::known_wfc))
         .route("/api/v1/sign-in/{id}", get(poll_sign_in))
         .route("/api/v1/sign-out", post(sign_out))
         .route("/api/v1/me", get(me))
@@ -128,6 +130,10 @@ pub(crate) fn router(
         .route("/api/v1/rules", get(play::rule_sets))
         .route("/api/v1/wfc", post(play::bind))
         .route("/api/v1/matches", post(play::challenge))
+        .route(
+            "/api/v1/search",
+            post(play::search_start).delete(play::search_stop),
+        )
         .route("/api/v1/matches/current", get(play::current))
         .route("/api/v1/matches/{id}/accept", post(play::accept))
         .route("/api/v1/matches/{id}/decline", post(play::decline))

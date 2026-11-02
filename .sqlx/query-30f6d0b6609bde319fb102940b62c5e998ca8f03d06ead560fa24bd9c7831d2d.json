@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT match_id, state, home, away, rule_set, rules, rules_hash, winner, created_at,\n                home_ready_at, away_ready_at, go_at, playing_at, rematch_of\n         FROM matches WHERE match_id = $1 AND (home = $2 OR away = $2)",
+  "query": "SELECT match_id, state, home, away, rule_set, rules, rules_hash, winner, created_at,\n                home_ready_at, away_ready_at, go_at, playing_at, rematch_of, random\n         FROM matches WHERE match_id = $1 AND (home = $2 OR away = $2)",
   "describe": {
     "columns": [
       {
@@ -156,6 +156,17 @@
             "name": "rematch_of"
           }
         }
+      },
+      {
+        "ordinal": 14,
+        "name": "random",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "random"
+          }
+        }
       }
     ],
     "parameters": {
@@ -178,8 +189,9 @@
       true,
       true,
       true,
-      true
+      true,
+      false
     ]
   },
-  "hash": "340850e5810fb16ef7fdb1a5a0ddf2fabfc8167c42c5c562a62b11eb97a68679"
+  "hash": "30f6d0b6609bde319fb102940b62c5e998ca8f03d06ead560fa24bd9c7831d2d"
 }

@@ -80,15 +80,39 @@ const LEVELS = {
 // know.
 const TWEAK_NAMES = {
   fast_terrain: 'Fast terrain',
+  mirror_match: 'Mirror match',
   no_mega_strikes: 'No Mega Strikes',
   thunder_island_walls: 'Thunder Island walls',
 };
-const SKILL_NAMES = {
-  training: 'Training',
-  rookie: 'Rookie',
-  professional: 'Professional',
-  superstar: 'Superstar',
-  legend: 'Legend',
+// The game's cheats as its settings screen names them.
+const STADIUM_CHEAT_NAMES = {
+  none: 'None',
+  secure_stadiums: 'Secure Stadiums',
+  power_shortage: 'Power Shortage',
+  high_voltage: 'High Voltage',
+  field_tilt: 'Field Tilt',
+  always_white_ball: 'Always White Ball',
+};
+const PLAYER_CHEAT_NAMES = {
+  none: 'None',
+  devastating_hits: 'Devastating Hits',
+  safe_megastrike: 'Safe Megastrike',
+  always_sidekick_skillshot: 'Always Sidekick Skillshot',
+  classic_mode: 'Classic Mode',
+};
+const POWERUP_CHEAT_NAMES = {
+  none: 'None',
+  explosives: 'Explosives',
+  freezing: 'Freezing',
+  shells: 'Shells',
+  giant: 'Giant',
+  accelerator: 'Accelerator',
+  peelin_out: "Peelin' Out",
+  seek_and_destroy: 'Seek and Destroy',
+  bombs_away: 'Bombs Away',
+  super_captains: 'Super Captains',
+  infinite: 'Infinite',
+  no_power_ups: 'No Power-Ups',
 };
 const STADIUM_NAMES = {
   random: 'Random (the host picks)',
@@ -1711,7 +1735,16 @@ function renderLeaderboards(data, now) {
   const past = (content.past || []).find((board) => board.category === category);
   const standings = [
     { label: 'Rank', num: true, cell: (e) => `${e.rank}` },
-    { label: 'Player', cell: (e) => [e.name || 'Unknown', h('span', { class: 'sub' }, `Profile ${e.profile_id}`)] },
+    {
+      label: 'Player',
+      cell: (e) => {
+        // A Recharged player's WFC profiles are one row, its points added up.
+        const ids = e.profile_ids && e.profile_ids.length ? e.profile_ids : [e.profile_id];
+        const profiles = ids.length > 1 ? `Profiles ${ids.join(', ')}` : `Profile ${ids[0]}`;
+        const sub = e.player && e.player !== e.name ? `${e.player} · ${profiles}` : profiles;
+        return [e.name || 'Unknown', h('span', { class: 'sub' }, sub)];
+      },
+    },
     { label: 'Region', cell: (e) => REGIONS[e.region] || `${e.region}` },
     { label: 'Score', num: true, cell: (e) => integer.format(e.score) },
     { label: 'Wins', num: true, cell: (e) => (e.wins == null ? '—' : integer.format(e.wins)) },
@@ -2099,11 +2132,12 @@ function gameLength(seconds) {
 
 function rulesSummary(rules) {
   const end = rules.limit === 'time' ? `${gameLength(rules.time)} games` : `First to ${rules.goals} goals`;
-  return [
-    `${end}, best of ${rules.games}`,
-    `${SKILL_NAMES[rules.skill] || rules.skill}`,
-    STADIUM_NAMES[rules.stadium] || rules.stadium,
-  ].join(' · ');
+  const cheats = [
+    STADIUM_CHEAT_NAMES[rules.stadium_cheat],
+    PLAYER_CHEAT_NAMES[rules.player_cheat],
+    POWERUP_CHEAT_NAMES[rules.powerup_cheat],
+  ].filter((name, n) => [rules.stadium_cheat, rules.player_cheat, rules.powerup_cheat][n] !== 'none' && name);
+  return [`${end}, best of ${rules.games}`, STADIUM_NAMES[rules.stadium] || rules.stadium, ...cheats].join(' · ');
 }
 
 function renderCompetitive(data, now) {
@@ -2193,6 +2227,9 @@ const editor = {
     const rules = set
       ? set.rules
       : { tweaks: [], skill: 'rookie', limit: 'time', time: 180, goals: 5, games: 3, stadium: 'random' };
+    const cheat = (name) => rules[name] || 'none';
+    // The CPU's skill: no effect between two games, kept as it was.
+    this.skill = rules.skill || 'rookie';
     this.editing = set ? set.id : null;
     const choices = this.choices;
     const body = h(
@@ -2210,7 +2247,6 @@ const editor = {
       h(
         'div',
         { class: 'editor-row' },
-        this.field('Skill level', this.select('rule-skill', choices.skills, SKILL_NAMES, rules.skill)),
         this.field('A game ends', this.select('rule-limit', ['time', 'goals'], { time: 'On time', goals: 'On goals' }, rules.limit)),
         this.field('Seconds', h('input', { id: 'rule-time', type: 'number', min: '60', max: '900', step: '30', value: rules.time })),
         this.field('Goals', h('input', { id: 'rule-goals', type: 'number', min: '1', max: '10', value: rules.goals })),
@@ -2220,6 +2256,13 @@ const editor = {
         { class: 'editor-row' },
         this.field('Games in the series', this.select('rule-games', choices.series, null, rules.games)),
         this.field('Stadium', this.select('rule-stadium', ['random', ...choices.stadiums], STADIUM_NAMES, rules.stadium)),
+      ),
+      h(
+        'div',
+        { class: 'editor-row' },
+        this.field('Stadium cheat', this.select('rule-stadium-cheat', choices.stadium_cheats, STADIUM_CHEAT_NAMES, cheat('stadium_cheat'))),
+        this.field('Player cheat', this.select('rule-player-cheat', choices.player_cheats, PLAYER_CHEAT_NAMES, cheat('player_cheat'))),
+        this.field('Power-up cheat', this.select('rule-powerup-cheat', choices.powerup_cheats, POWERUP_CHEAT_NAMES, cheat('powerup_cheat'))),
       ),
       h(
         'div',
@@ -2248,12 +2291,15 @@ const editor = {
       name: value('rule-name'),
       rules: {
         tweaks: [...this.node.querySelectorAll('input[name=tweak]:checked')].map((box) => box.value),
-        skill: value('rule-skill'),
+        skill: this.skill,
         limit: value('rule-limit'),
         time: Number(value('rule-time')),
         goals: Number(value('rule-goals')),
         games: Number(value('rule-games')),
         stadium: value('rule-stadium'),
+        stadium_cheat: value('rule-stadium-cheat'),
+        player_cheat: value('rule-player-cheat'),
+        powerup_cheat: value('rule-powerup-cheat'),
       },
     };
     try {

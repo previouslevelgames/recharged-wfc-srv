@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT RANK() OVER (ORDER BY score DESC) AS \"rank!\",\n                              profile_id, region, score, userdata,\n                              floor(extract(epoch FROM now() - updated_at) / 60)::bigint AS \"minutes!\"\n                       FROM scores\n                       WHERE category = $1\n                         AND ($2 = 0 OR updated_at >= now() - make_interval(mins => $2))\n                       ORDER BY score DESC, updated_at, profile_id",
+  "query": "SELECT RANK() OVER (ORDER BY score ASC) AS \"rank!\",\n                              profile_id, region, score, userdata,\n                              floor(extract(epoch FROM now() - updated_at) / 60)::bigint AS \"minutes!\",\n                              ARRAY[profile_id] AS \"members!\"\n                       FROM scores\n                       WHERE category = $1\n                         AND ($2 = 0 OR updated_at >= now() - make_interval(mins => $2))\n                       ORDER BY score ASC, updated_at, profile_id",
   "describe": {
     "columns": [
       {
@@ -58,6 +58,12 @@
         "name": "minutes!",
         "type_info": "Int8",
         "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "members!",
+        "type_info": "Int4Array",
+        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -72,8 +78,9 @@
       false,
       false,
       false,
+      null,
       null
     ]
   },
-  "hash": "d1f131a8ff67aa31d4a799533d7f31f696f80516706f01c96f24d05d1626d738"
+  "hash": "11e450265539a1ed12800a0061de1ff270c287d5c14590b7836aa82439e20f8c"
 }

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE matches SET state = 'cancelled', updated_at = now()\n         WHERE match_id = $1 AND state = 'challenged' AND random",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "957e0a963a76b44391c0848686f3d2a7acb3ff7bd348bc324804ce259c2b1765"
+}

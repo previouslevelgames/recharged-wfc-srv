@@ -20,7 +20,8 @@ use super::{
     matches::{self, Game, Match, Refusal},
     miis,
     players::{self, Player},
-    rules,
+    rules::{self, RuleSet, Rules},
+    search,
 };
 use crate::pairing::Pairing;
 
@@ -99,7 +100,132 @@ pub(super) struct Challenge {
     /// ...or their player id, from the lists of `GET /api/v1/players`.
     #[serde(default)]
     opponent_id: Option<i64>,
-    rule_set: i64,
+    /// One of the server's rule sets...
+    #[serde(default)]
+    rule_set: Option<i64>,
+    /// ...or rules of the challenger's own, under `name` (the preset they
+    /// started from; `Custom` without one).
+    #[serde(default)]
+    rules: Option<Rules>,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+/// A challenge's or a search's rules: one of the server's rule sets, or rules
+/// of the player's own under `name` (`Custom` without one).
+async fn rules_of(
+    state: &ProfilesState,
+    own: Option<Rules>,
+    rule_set: Option<i64>,
+    name: Option<String>,
+) -> Result<RuleSet, Response> {
+    match (own, rule_set) {
+        (Some(own), _) => {
+            let name = name.as_deref().map(str::trim).unwrap_or("");
+            let name = if name.is_empty() { "Custom" } else { name };
+            if name.chars().count() > 48 {
+                return Err(json_error(
+                    StatusCode::BAD_REQUEST,
+                    "name: up to 48 characters",
+                ));
+            }
+            match own.check() {
+                Ok(rules) => Ok(RuleSet {
+                    id: 0,
+                    name: name.to_owned(),
+                    hash: rules.hash(),
+                    rules,
+                }),
+                Err(problem) => Err(json_error(StatusCode::BAD_REQUEST, &problem)),
+            }
+        }
+        (None, Some(id)) => match rules::get(&state.pool, id).await {
+            Ok(Some(rule_set)) => Ok(rule_set),
+            Ok(None) => Err(json_error(StatusCode::NOT_FOUND, "no such rule set")),
+            Err(error) => Err(database_error(error)),
+        },
+        (None, None) => Err(json_error(StatusCode::BAD_REQUEST, "which rules?")),
+    }
+}
+
+#[derive(Deserialize)]
+pub(super) struct SearchRequest {
+    /// The rules, as a challenge's.
+    #[serde(default)]
+    rule_set: Option<i64>,
+    #[serde(default)]
+    rules: Option<Rules>,
+    #[serde(default)]
+    name: Option<String>,
+    /// The searcher's game: the first four characters of its id (R4QE).
+    game: String,
+}
+
+/// The player searches for a random opponent by their rules (docs/profiles.md,
+/// "Random opponents"); again: starts over with these rules.
+pub(super) async fn search_start(
+    State(state): State<Arc<ProfilesState>>,
+    headers: HeaderMap,
+    Json(request): Json<SearchRequest>,
+) -> Response {
+    let player = match state.signed_in(&headers).await {
+        Ok(player) => player,
+        Err(response) => return response,
+    };
+    if let Err(response) = state.sweep().await {
+        return response;
+    }
+    if request.game.len() != 4
+        || !request
+            .game
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric())
+    {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "game: the first four characters of the game's id",
+        );
+    }
+    let rule_set = match rules_of(&state, request.rules, request.rule_set, request.name).await {
+        Ok(rule_set) => rule_set,
+        Err(response) => return response,
+    };
+    match matches::current(&state.pool, player.id).await {
+        Ok(Some(found)) if found.is_open() => {
+            return json_error(StatusCode::CONFLICT, "you have a set to play");
+        }
+        Ok(_) => {}
+        Err(error) => return database_error(error),
+    }
+    if let Err(error) = search::start(&state.pool, player.id, &rule_set, &request.game).await {
+        return database_error(error);
+    }
+    info!(target: "profiles", player = player.id, rule_set = rule_set.name, "search");
+    match search::get(&state.pool, player.id).await {
+        Ok(found) => Json(json!({ "search": found })).into_response(),
+        Err(error) => database_error(error),
+    }
+}
+
+/// The player stops searching; a random challenge still waiting for an answer
+/// is withdrawn.
+pub(super) async fn search_stop(
+    State(state): State<Arc<ProfilesState>>,
+    headers: HeaderMap,
+) -> Response {
+    let player = match state.signed_in(&headers).await {
+        Ok(player) => player,
+        Err(response) => return response,
+    };
+    match search::stop(&state.pool, player.id).await {
+        Ok(withdrawn) => {
+            if let Some(match_id) = withdrawn {
+                state.pairings.end(match_id);
+            }
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Err(error) => database_error(error),
+    }
 }
 
 pub(super) async fn challenge(
@@ -153,12 +279,11 @@ pub(super) async fn challenge(
         }
         Err(error) => return database_error(error),
     }
-    let rule_set = match rules::get(&state.pool, request.rule_set).await {
-        Ok(Some(rule_set)) => rule_set,
-        Ok(None) => return json_error(StatusCode::NOT_FOUND, "no such rule set"),
-        Err(error) => return database_error(error),
+    let rule_set = match rules_of(&state, request.rules, request.rule_set, request.name).await {
+        Ok(rule_set) => rule_set,
+        Err(response) => return response,
     };
-    match matches::challenge(&state.pool, player.id, opponent, &rule_set, None).await {
+    match matches::challenge(&state.pool, player.id, opponent, &rule_set, None, false).await {
         Ok(Ok(found)) => {
             info!(target: "profiles", match_id = found.id, home = player.id, away = opponent, rule_set = found.rule_set, "challenge");
             state.respond(StatusCode::CREATED, &found, &player).await
@@ -182,6 +307,11 @@ pub(super) async fn current(
         return response;
     }
     let server_time = OffsetDateTime::now_utc().unix_timestamp();
+    // The player's search for a random opponent, if they search.
+    let searching = match search::get(&state.pool, player.id).await {
+        Ok(found) => found,
+        Err(error) => return database_error(error),
+    };
     match matches::current(&state.pool, player.id).await {
         Ok(Some(found)) => {
             // The lobby follows a set waiting for its players closely.
@@ -193,15 +323,21 @@ pub(super) async fn current(
             match state.view(&found, &player).await {
                 Ok(view) => Json(json!({
                     "match": view,
-                    "poll_interval": poll_interval,
+                    "search": searching,
+                    "poll_interval": if searching.is_some() { 2 } else { poll_interval },
                     "server_time": server_time,
                 }))
                 .into_response(),
                 Err(error) => database_error(error),
             }
         }
-        Ok(None) => Json(json!({ "match": null, "poll_interval": 5, "server_time": server_time }))
-            .into_response(),
+        Ok(None) => Json(json!({
+            "match": null,
+            "search": searching,
+            "poll_interval": if searching.is_some() { 2 } else { 5 },
+            "server_time": server_time,
+        }))
+        .into_response(),
         Err(error) => database_error(error),
     }
 }
@@ -741,6 +877,8 @@ impl ProfilesState {
         for match_id in matches::sweep(&self.pool).await.map_err(database_error)? {
             self.pairings.end(match_id);
         }
+        // Searches ask their next player.
+        search::advance(&self.pool).await.map_err(database_error)?;
         Ok(())
     }
 
@@ -802,6 +940,7 @@ impl ProfilesState {
             "go_at": unix(found.go_at),
             "playing_at": unix(found.playing_at),
             "rematch_of": found.rematch_of,
+            "random": found.random,
         }))
     }
 }

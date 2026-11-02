@@ -6,16 +6,17 @@
 //!
 //! Scores live in the `scores` table (`migrations/`), one leaderboard for
 //! every region; a player's row of a season that has ended moves to
-//! `past_scores` when the game starts the next one. A get is two steps: [`Leaderboard::ranked`] has the database
-//! sort and rank a whole category; [`answer`] picks the rows the
+//! `past_scores` when the game starts the next one. A get is three steps: [`Leaderboard::ranked`] has the database
+//! sort and rank a whole category; [`by_player`] makes the rows of one
+//! Recharged player one row (`players`); [`answer`] picks the rows the
 //! request wants and encodes them, without I/O.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use sqlx::PgPool;
 use tracing::info;
 
-use super::{GamestatsError, GamestatsState, season, submission::Submission};
+use super::{GamestatsError, GamestatsState, players, season, submission::Submission};
 
 /// Highest category the game uses
 /// (`NETWORK_PERSISTENT_ALTERNATE_STRIKER_OF_DAY`).
@@ -90,6 +91,21 @@ pub async fn get(state: &GamestatsState, pid: i32, body: &[u8]) -> Result<Vec<u8
         .leaderboard
         .ranked(query.category, query.sort, query.since)
         .await?;
+    let profiles: Vec<i32> = board.iter().map(|row| row.profile_id).collect();
+    let players = players::players_of(&state.leaderboard.pool, &profiles).await?;
+    // The asking Mii stands for its player, and a friend's Mii for theirs.
+    let friends = match &query.mode {
+        Mode::Friends { friends, .. } => Some(friends),
+        _ => None,
+    };
+    let preference = |profile_id: i32| {
+        if profile_id == pid {
+            2
+        } else {
+            u8::from(friends.is_some_and(|friends| friends.contains(&profile_id)))
+        }
+    };
+    let board = by_player(board, &players, preference, query.sort);
     Ok(answer(pid, &query, &board))
 }
 
@@ -111,6 +127,9 @@ struct Standing {
     userdata: Vec<u8>,
     /// Since `updated_at`, by the database's clock.
     minutes: i64,
+    /// The WFC profiles the row stands for: its own, and once merged
+    /// ([`by_player`]) its player's others.
+    members: Vec<i32>,
 }
 
 impl Leaderboard {
@@ -207,7 +226,8 @@ impl Leaderboard {
                     Standing,
                     r#"SELECT RANK() OVER (ORDER BY score DESC) AS "rank!",
                               profile_id, region, score, userdata,
-                              floor(extract(epoch FROM now() - updated_at) / 60)::bigint AS "minutes!"
+                              floor(extract(epoch FROM now() - updated_at) / 60)::bigint AS "minutes!",
+                              ARRAY[profile_id] AS "members!"
                        FROM scores
                        WHERE category = $1
                          AND ($2 = 0 OR updated_at >= now() - make_interval(mins => $2))
@@ -223,7 +243,8 @@ impl Leaderboard {
                     Standing,
                     r#"SELECT RANK() OVER (ORDER BY score ASC) AS "rank!",
                               profile_id, region, score, userdata,
-                              floor(extract(epoch FROM now() - updated_at) / 60)::bigint AS "minutes!"
+                              floor(extract(epoch FROM now() - updated_at) / 60)::bigint AS "minutes!",
+                              ARRAY[profile_id] AS "members!"
                        FROM scores
                        WHERE category = $1
                          AND ($2 = 0 OR updated_at >= now() - make_interval(mins => $2))
@@ -239,17 +260,73 @@ impl Leaderboard {
     }
 }
 
+/// `board` (as `ranked` gives it) with each player's rows as one
+/// ([`players::by_player`]), `preference` choosing the row that stands for a
+/// player, sorted and ranked again as `ranked` sorts and ranks.
+fn by_player(
+    board: Vec<Standing>,
+    players: &HashMap<i32, i64>,
+    preference: impl Fn(i32) -> u8,
+    sort: Sort,
+) -> Vec<Standing> {
+    if players.is_empty() {
+        return board;
+    }
+    let lines = board
+        .into_iter()
+        .map(|row| players::Line {
+            profile_id: row.profile_id,
+            region: row.region,
+            score: row.score,
+            userdata: row.userdata,
+            // The earlier update is the smaller stamp.
+            stamp: -row.minutes,
+            members: row.members,
+        })
+        .collect();
+    let mut lines = players::by_player(lines, players, preference);
+    let better = |a: i32, b: i32| match sort {
+        Sort::Descending => b.cmp(&a),
+        Sort::Ascending => a.cmp(&b),
+    };
+    lines.sort_by(|a, b| {
+        better(a.score, b.score)
+            .then(a.stamp.cmp(&b.stamp))
+            .then(a.profile_id.cmp(&b.profile_id))
+    });
+    // RANK(): equal scores share the rank of the first of them.
+    let mut board: Vec<Standing> = Vec::with_capacity(lines.len());
+    for (at, line) in lines.into_iter().enumerate() {
+        let rank = match board.last() {
+            Some(last) if last.score == line.score => last.rank,
+            _ => at as i64 + 1,
+        };
+        board.push(Standing {
+            rank,
+            profile_id: line.profile_id,
+            region: line.region,
+            score: line.score,
+            userdata: line.userdata,
+            minutes: -line.stamp,
+            members: line.members,
+        });
+    }
+    board
+}
+
 /// Picks the rows of a ranked `board` that `query` asks for, as seen by
 /// `pid`, and encodes the reply.
 fn answer(pid: i32, query: &Query, board: &[Standing]) -> Vec<u8> {
     let total = board.len() as u32;
+    // The caller's row, which may stand for its player's other Miis too.
+    let mine = |row: &Standing| row.members.contains(&pid);
 
     let rows: Vec<&Standing> = match &query.mode {
         Mode::Order => {
             // The caller's rank, 0 when not on the board. The game never asks.
             let rank = board
                 .iter()
-                .find(|row| row.profile_id == pid)
+                .find(|row| mine(row))
                 .map_or(0, |row| row.rank as u32);
             return words(&[MODE_ORDER, rank, total]);
         }
@@ -257,17 +334,14 @@ fn answer(pid: i32, query: &Query, board: &[Standing]) -> Vec<u8> {
         Mode::Near { limit } => {
             let limit = (*limit).min(board.len());
             // Centred on the caller; the top of the board when not on it.
-            let start = board
-                .iter()
-                .position(|row| row.profile_id == pid)
-                .map_or(0, |at| {
-                    at.saturating_sub(limit / 2).min(board.len() - limit)
-                });
+            let start = board.iter().position(&mine).map_or(0, |at| {
+                at.saturating_sub(limit / 2).min(board.len() - limit)
+            });
             board[start..start + limit].iter().collect()
         }
         Mode::Friends { limit, friends } => board
             .iter()
-            .filter(|row| row.profile_id == pid || friends.contains(&row.profile_id))
+            .filter(|row| mine(row) || row.members.iter().any(|member| friends.contains(member)))
             .take(*limit)
             .collect(),
     };
@@ -449,6 +523,7 @@ mod tests {
                 score,
                 userdata: vec![at as u8; 128],
                 minutes: 0,
+                members: vec![at as i32 + 1],
             })
             .collect()
     }
@@ -570,6 +645,110 @@ mod tests {
         let (mode, total, rows) = read_list(&answer(3, &query, &board(&[50, 40, 30, 20])));
         assert_eq!((mode, total), (MODE_FRIENDS, 4));
         assert_eq!(rows, [(2, 2, 40), (3, 3, 30), (4, 4, 20)]);
+    }
+
+    #[test]
+    fn a_players_rows_are_one_ranked_again() {
+        // Pids 2 and 4 are one player's: 40 + 20 = 60 leads.
+        let players = HashMap::from([(2, 1), (4, 1)]);
+        let merged = |preferred: i32| {
+            by_player(
+                board(&[50, 40, 30, 20]),
+                &players,
+                |pid| u8::from(pid == preferred),
+                Sort::Descending,
+            )
+        };
+        let asked_by_4 = merged(4);
+        assert_eq!(ranks(&asked_by_4), [(1, 4, 60), (2, 1, 50), (3, 3, 30)]);
+        assert_eq!(asked_by_4[0].members, [2, 4]);
+        // Pid 4's row is its player's: TOPLIST and NEAR show it as pid 4,
+        // asked by pid 2 as pid 2.
+        let toplist = Query::parse(&get_body(0, MODE_TOPLIST, &[DESCENDING, 10, 0])).unwrap();
+        let (_, total, rows) = read_list(&answer(4, &toplist, &asked_by_4));
+        assert_eq!((total, rows), (3, vec![(1, 4, 60), (2, 1, 50), (3, 3, 30)]));
+        let (_, _, rows) = read_list(&answer(2, &toplist, &merged(2)));
+        assert_eq!(rows[0], (1, 2, 60));
+        let near = Query::parse(&get_body(0, MODE_NEAR, &[DESCENDING, 2, 0])).unwrap();
+        let (_, _, rows) = read_list(&answer(2, &near, &merged(2)));
+        assert_eq!(rows, [(1, 2, 60), (2, 1, 50)]);
+        // A friend's other Mii brings their row.
+        let friends = Query::parse(&get_body(0, MODE_FRIENDS, &friends_params(10, &[2]))).unwrap();
+        let (_, _, rows) = read_list(&answer(3, &friends, &merged(2)));
+        assert_eq!(rows, [(1, 2, 60), (3, 3, 30)]);
+        // Nobody's: the board as it was.
+        let alone = by_player(board(&[50, 40]), &HashMap::new(), |_| 0, Sort::Descending);
+        assert_eq!(ranks(&alone), [(1, 1, 50), (2, 2, 40)]);
+    }
+
+    #[sqlx::test]
+    async fn a_players_profiles_are_one_row_for_the_game(pool: PgPool) {
+        // Birnen's European and US games, each with its WFC profile, and
+        // Mario's.
+        let mut profiles = Vec::new();
+        for (user, game, name) in [
+            (1, "R4QPabcdefg", "Birnen"),
+            (2, "R4QEabcdefg", "Birnen US"),
+            (3, "R4QEhijklmn", "Mario"),
+        ] {
+            crate::accounts::log_in(&pool, user).await.unwrap();
+            let profile = crate::accounts::profile_login(&pool, user, game, Some(name), "10.0.0.1")
+                .await
+                .unwrap();
+            profiles.push(profile.profile_id);
+        }
+        // A launcher proved both for one Recharged player.
+        let birnen: i64 = sqlx::query_scalar!(
+            "INSERT INTO players (display_name) VALUES ('Birnen') RETURNING player_id"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        for profile in &profiles[..2] {
+            sqlx::query!(
+                "INSERT INTO player_wfc_profiles (profile_id, player_id) VALUES ($1, $2)",
+                profile,
+                birnen
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let userdata = |wins: i32, losses: i32| {
+            let mut userdata = vec![0u8; 128];
+            userdata[0x04..0x08].copy_from_slice(&wins.to_le_bytes());
+            userdata[0x08..0x0C].copy_from_slice(&losses.to_le_bytes());
+            userdata
+        };
+        for (pid, score, wins, losses) in [
+            (profiles[0], 171, 10, 4),
+            (profiles[1], 85, 5, 0),
+            (profiles[2], 200, 12, 1),
+        ] {
+            sqlx::query!(
+                "INSERT INTO scores (profile_id, category, region, score, userdata) VALUES ($1, 0, 2, $2, $3)",
+                pid,
+                score,
+                &userdata(wins, losses),
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let state = GamestatsState::with_pool(pool);
+        let toplist = get_body(0, MODE_TOPLIST, &[DESCENDING, 10, 0]);
+        // Birnen's US game sees its own Mii with everything Birnen won.
+        let reply = get(&state, profiles[1], &toplist).await.unwrap();
+        let (_, total, rows) = read_list(&reply);
+        assert_eq!(
+            (total, rows),
+            (2, vec![(1, profiles[1], 256), (2, profiles[2], 200)])
+        );
+        let record = Submission::parse(&reply[12 + 24..12 + 24 + 128]);
+        assert_eq!((record.wins, record.losses), (Some(15), Some(4)));
+        // Mario sees Birnen by the best Mii.
+        let (_, _, rows) = read_list(&get(&state, profiles[2], &toplist).await.unwrap());
+        assert_eq!(rows[0], (1, profiles[0], 256));
     }
 
     #[tokio::test]
