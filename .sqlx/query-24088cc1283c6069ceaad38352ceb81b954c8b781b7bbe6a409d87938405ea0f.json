@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT profiles.profile_id, profiles.ingamesn, player_wfc_profiles.player_id AS \"player_id?\"\n           FROM profiles LEFT JOIN player_wfc_profiles USING (profile_id)\n           WHERE profiles.profile_id IN ($1, $2)\n           FOR UPDATE OF profiles",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "profile_id",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "profiles",
+            "name": "profile_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "ingamesn",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "profiles",
+            "name": "ingamesn"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "player_id?",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "player_wfc_profiles",
+            "name": "player_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "24088cc1283c6069ceaad38352ceb81b954c8b781b7bbe6a409d87938405ea0f"
+}

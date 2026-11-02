@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::{PgConnection, PgPool};
 use time::OffsetDateTime;
 
@@ -31,8 +31,67 @@ const MODES: [&str; 2] = ["ranked", "friends"];
 #[derive(Serialize)]
 pub struct Players {
     totals: Totals,
-    /// The [`SHOWN`] profiles that logged in last, online ones first.
+    /// The [`SHOWN`] profiles that logged in last (of those the search
+    /// finds, with one), online ones first.
     profiles: Vec<Player>,
+}
+
+/// The search box of the Players and Leaderboards pages (`?q=`): any part of
+/// a Mii's or a Recharged player's name or of an address, or digits in a
+/// profile, a friend code (dashes and spaces left out) or a console.
+#[derive(Deserialize, Default)]
+pub struct Search {
+    #[serde(default)]
+    q: String,
+}
+
+impl Search {
+    /// A search for `q`, as the box sends it.
+    #[cfg(test)]
+    pub fn new(q: &str) -> Self {
+        Self { q: q.to_owned() }
+    }
+
+    /// The text looked for, in lower case; none for an empty box.
+    pub fn text(&self) -> Option<String> {
+        let text = self.q.trim();
+        (!text.is_empty()).then(|| text.chars().take(64).collect::<String>().to_lowercase())
+    }
+
+    /// The digits typed, when the box holds only digits (dashes and spaces
+    /// left out): part of a profile, a friend code or a console.
+    pub fn digits(&self) -> Option<String> {
+        let digits: String = self.q.chars().filter(|c| !matches!(c, '-' | ' ')).collect();
+        (!digits.is_empty()
+            && digits.len() <= 12
+            && digits.bytes().all(|byte| byte.is_ascii_digit()))
+        .then_some(digits)
+    }
+
+    /// The profiles whose number or friend code holds the digits typed.
+    /// Friend codes are not stored: they are worked out from each profile
+    /// (`accounts::friend_code`).
+    pub async fn profiles(&self, conn: &mut PgConnection) -> Result<Vec<i32>, sqlx::Error> {
+        let Some(digits) = self.digits() else {
+            return Ok(Vec::new());
+        };
+        let rows = sqlx::query!("SELECT profile_id, gsbrcd FROM profiles")
+            .fetch_all(conn)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .filter(|row| {
+                row.profile_id.to_string().contains(&digits)
+                    || accounts::friend_code(
+                        row.profile_id,
+                        row.gsbrcd.get(..4).unwrap_or_default(),
+                    )
+                    .replace('-', "")
+                    .contains(&digits)
+            })
+            .map(|row| row.profile_id)
+            .collect())
+    }
 }
 
 #[derive(Serialize)]
@@ -100,12 +159,12 @@ impl From<&Presence> for Online {
     }
 }
 
-pub async fn read(pool: &PgPool, gpcm: &Gpcm) -> Result<Players, sqlx::Error> {
+pub async fn read(pool: &PgPool, gpcm: &Gpcm, search: &Search) -> Result<Players, sqlx::Error> {
     let presence = gpcm.presence();
     let mut tx = snapshot(pool).await?;
     let players = Players {
         totals: totals(&mut tx, &presence).await?,
-        profiles: profiles(&mut tx, &presence).await?,
+        profiles: profiles(&mut tx, &presence, search).await?,
     };
     tx.commit().await?;
     Ok(players)
@@ -135,15 +194,29 @@ pub async fn totals(
 async fn profiles(
     conn: &mut PgConnection,
     presence: &HashMap<i32, Presence>,
+    search: &Search,
 ) -> Result<Vec<Player>, sqlx::Error> {
+    // Every profile without a search; with one, those whose Mii, Recharged
+    // player, profile, friend code, console or address it names (any part).
+    let numbered = search.profiles(&mut *conn).await?;
     let rows = sqlx::query!(
         r#"SELECT p.profile_id, p.user_id, p.gsbrcd, p.ingamesn, p.created_at,
                   p.last_login_at, p.last_ip,
                   (SELECT count(*) FROM scores s WHERE s.profile_id = p.profile_id) AS "scores!"
            FROM profiles p
+           WHERE $2::TEXT IS NULL
+              OR strpos(lower(coalesce(p.ingamesn, '')), $2) > 0
+              OR strpos(lower(coalesce(p.last_ip, '')), $2) > 0
+              OR p.profile_id = ANY($3) OR strpos(p.user_id::TEXT, $4) > 0
+              OR EXISTS (SELECT 1 FROM player_wfc_profiles JOIN players USING (player_id)
+                         WHERE player_wfc_profiles.profile_id = p.profile_id
+                           AND strpos(lower(players.display_name), $2) > 0)
            ORDER BY p.last_login_at DESC, p.profile_id
            LIMIT $1"#,
         SHOWN,
+        search.text(),
+        &numbered,
+        search.digits(),
     )
     .fetch_all(conn)
     .await?;
@@ -556,7 +629,7 @@ mod tests {
             .unwrap();
         let gpcm = Gpcm::new(pool.clone(), Arc::new(Tickets::default()), Arc::default());
 
-        let players = read(&pool, &gpcm).await.unwrap();
+        let players = read(&pool, &gpcm, &Search::default()).await.unwrap();
         assert_eq!((players.totals.accounts, players.totals.profiles), (1, 1));
         assert_eq!(players.totals.online, 0);
         let [buddy, mario] = &players.profiles[..] else {
@@ -568,6 +641,39 @@ mod tests {
         assert_eq!(mario.friend_code, "0868-9934-5920");
         assert_eq!(mario.mii_name.as_deref(), Some("Mario"));
         assert!(mario.online.is_none());
+
+        // A search finds a profile by any part of its Mii, profile, friend code
+        // (with or without dashes), console or address, and nothing else.
+        let found = |q: &str| {
+            let (pool, gpcm) = (pool.clone(), &gpcm);
+            let search = Search::new(q);
+            async move {
+                read(&pool, gpcm, &search)
+                    .await
+                    .unwrap()
+                    .profiles
+                    .iter()
+                    .map(|player| player.profile_id)
+                    .collect::<Vec<_>>()
+            }
+        };
+        let id = profile.profile_id;
+        for q in [
+            "mar",
+            "rio",
+            " MARIO ",
+            &id.to_string(),
+            "0868-9934-5920",
+            "086899345920",
+            "0868",
+            "9934-59",
+            "42",
+            "10.0.0",
+        ] {
+            assert_eq!(found(q).await, [id], "{q}");
+        }
+        assert!(found("luigi").await.is_empty());
+        assert!(found("1234-5678").await.is_empty());
     }
 
     #[sqlx::test]

@@ -155,7 +155,11 @@ both sides saw it, and the reports as they came. A profile on **Players** opens
 its own page too (e.g. `/admin/players/1000000000`): its friend code and
 console, its record in the reported matches by mode (series and games won,
 lost and drawn, goals, captains), its standing on the leaderboards and its
-matches. **Monitoring** starts with the last 48 hours as a timeline that moves
+matches. The search box of **Players** finds profiles by any part of their
+Mii, Recharged player, profile number, friend code, console or address
+("laso" finds RAULASO, "0868" a friend code), beyond the 200 the list shows;
+the one of **Leaderboards** finds a Mii, player, profile or friend code on
+every board, with its rank. **Monitoring** starts with the last 48 hours as a timeline that moves
 with the clock: the matches in progress, and below them what went wrong in each
 half hour, with a table of the same numbers. Then it shows how online matches
 go wrong over the last 14 days: games out of sync and lost connections by day, build and stadium, games

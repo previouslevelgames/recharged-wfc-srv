@@ -196,6 +196,14 @@ Challenge) or `training` (a Strikers 101 lesson). `players.match_kind`
 keeps it with the activity; the lists show it as `match` (`null` outside a
 match, for kinds this server doesn't know and from games that don't say).
 
+Launchers and games from Recharged 1.2.0 (builds since 2026-11-02) say which
+game they play in a `Recharged-Game` header: the first four characters of its
+id (`R4QE`, `R4QP`, `R4QJ`, `R4QK`). `players.game` keeps the last one said (a
+request without the header keeps it). A set's games meet in RANKED, which never
+pairs games of two versions, so a challenge between players whose Recharged
+plays different versions is refused (409, saying which), and a search asks
+only players of its game.
+
 Errors are JSON, `{"error": "<what went wrong>"}`. Every response is
 `no-store`; the pages allow no scripts and no framing.
 
@@ -251,7 +259,8 @@ challenge that waits for an answer (`cancelled`).
 
 The server sends the searcher's rules as a challenge (`"random": true`) to a
 player who has Recharged open, is open to challenges or searching too, has
-played the same game online (a WFC profile of the same id), isn't in a match
+plays the same game (the game their Recharged says it plays, or for one that
+doesn't say a WFC profile of the same id), isn't in a match
 (nor in the game's own online matchmaking or match: a WFC profile of theirs
 with DWC's status 2 to 6) and has no set to play, at random among them; the
 oldest search asks first,
@@ -380,10 +389,16 @@ A person with two rows (two WFC accounts, a Mii of each version, or a Mii
 player and a Discord player) is put together on the admin dashboard, on a
 profile's page (owners only):
 
-- **Link to a player** binds that WFC profile to a player by their number
-  (`PUT /admin/api/wfc-profiles/<profile>/player`, `{"player_id": <id>}`, or
-  `null` to unlink); a launcher that proves the profile later binds it to its
-  own player again.
+- **Link…** puts that WFC profile together with another WFC profile of the
+  same person, by its profile number (`PUT
+  /admin/api/wfc-profiles/<profile>/player`, `{"profile_id": <other>}`): both
+  play for the player either plays for already, or for a new one named after
+  the Mii when neither does (a person who never signed in from a launcher);
+  refused when they play for two players (merge those). It answers the player
+  (`player_id`, `name`, `created`). Or it binds the profile to a player by
+  their number (`{"player_id": <id>}`, or `null` to unlink). A launcher that
+  proves a profile later binds it to its own player again (merge the made one
+  into it then).
 - **Merge another player into this one**, in two asks as the leaderboard wipe
   (`POST /admin/api/players/merge` with `{"from", "into"}` answers what it
   moves, the phrase and a token; `.../merge/confirm` with them merges): the
@@ -421,8 +436,9 @@ the server pairs them only once both confirmed it. A match keeps the rules it
 was made with when its rule set changes.
 
 The server starts with two: **Retail ranked** (the game's own ranked rules:
-Rookie, 3 minutes, best of 3, random stadium) and **Competitive** (the same
-with no Mega Strikes, fast terrain and Thunder Island walls).
+Rookie, 3 minutes, best of 3, random stadium) and **Competitive** (Rookie,
+first to 10 goals, best of 3, random stadium, with no Mega Strikes, fast
+terrain and Thunder Island walls; 3 minutes before 1.2.7).
 
 ## Matches
 

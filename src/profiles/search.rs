@@ -135,7 +135,8 @@ pub async fn advance(pool: &PgPool, busy: &[i32]) -> Result<Vec<i64>, sqlx::Erro
         let Ok(rules) = Rules::from_json(&search.rules) else {
             continue;
         };
-        // Someone free, open to challenges or searching, who plays the same game.
+        // Someone free, open to challenges or searching, who plays the same
+        // game: now, as their Recharged says, or else by a profile of it.
         let opponent = sqlx::query_scalar!(
             "SELECT players.player_id FROM players
              WHERE players.player_id <> $1 AND NOT (players.player_id = ANY($2))
@@ -143,9 +144,11 @@ pub async fn advance(pool: &PgPool, busy: &[i32]) -> Result<Vec<i64>, sqlx::Erro
                AND coalesce(players.activity, '') <> 'match'
                AND (players.available
                     OR EXISTS (SELECT 1 FROM searches WHERE searches.player_id = players.player_id))
-               AND EXISTS (SELECT 1 FROM player_wfc_profiles JOIN profiles USING (profile_id)
-                           WHERE player_wfc_profiles.player_id = players.player_id
-                             AND left(profiles.gsbrcd, 4) = $4)
+               AND (players.game = $4
+                    OR players.game IS NULL
+                       AND EXISTS (SELECT 1 FROM player_wfc_profiles JOIN profiles USING (profile_id)
+                                   WHERE player_wfc_profiles.player_id = players.player_id
+                                     AND left(profiles.gsbrcd, 4) = $4))
                AND NOT EXISTS (SELECT 1 FROM matches
                                WHERE matches.state IN ('challenged', 'accepted')
                                  AND players.player_id IN (matches.home, matches.away))
