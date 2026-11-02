@@ -365,7 +365,7 @@ impl Activity {
 }
 
 /// What kind of match a player's game is in (docs/profiles.md, "Activity"),
-/// from its `Recharged-Match` header; games before 1.2.1 don't say.
+/// from its `Recharged-Match` header; older games don't say.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MatchKind {
     /// Online, matched with anybody.

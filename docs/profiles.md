@@ -187,8 +187,8 @@ builds before 1.2.0's games. `players.activity` keeps the value of the last
 heartbeat (`NULL` for the launcher); a changed activity is written at once.
 The lists show it, and nobody can challenge a player in a match.
 
-In a match, games from 1.2.1 also say its kind in a `Recharged-Match`
-header: `ranked` and `friends` (online, or friends on a LAN), `tournament`
+In a match, games from Recharged 1.2.0 (test builds since 2026-11-02) also
+say its kind in a `Recharged-Match` header: `ranked` and `friends` (online, or friends on a LAN), `tournament`
 (an online tournament), `cpu` (Domination against the computer, or the
 computer against itself), `local` (Domination with players on both teams at
 one computer), `cup` (Road to the Striker Cup), `challenge` (a Striker
