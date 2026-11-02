@@ -423,6 +423,54 @@ async fn a_challenge_plays_by_rules_of_its_own(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn a_search_leaves_out_players_in_the_games_online_mode(pool: PgPool) {
+    let world = World::new(pool);
+    // Mario searches; Peach is open to challenges, but her game searches
+    // RANKED (DWC's matchmaking), then plays its match.
+    let mario = world.sign_in("Mario").await;
+    let peach = world.sign_in("Peach").await;
+    let mine = world.wfc_login(1, "R4QEaaaaaaa").await;
+    let hers = world.wfc_login(2, "R4QEbbbbbbb").await;
+    assert_eq!(world.prove(&mario, mine).await.0, StatusCode::OK);
+    assert_eq!(world.prove(&peach, hers).await.0, StatusCode::OK);
+    let (status, _) = world
+        .send(
+            "PUT",
+            "/api/v1/me/available",
+            &peach,
+            json!({"available": true}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    world.gpcm.fake_status(hers, 3);
+    let rules = json!({"tweaks": [], "limit": "time", "time": 120, "goals": 5, "games": 1,
+                       "stadium": "random"});
+    let (status, body) = world
+        .send(
+            "POST",
+            "/api/v1/search",
+            &mario,
+            json!({"rules": rules, "name": "Mine", "game": "R4QE"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["search"]["asked"], 0);
+    world.gpcm.fake_status(hers, 2);
+    let (_, now) = world
+        .send("GET", "/api/v1/matches/current", &mario, Value::Null)
+        .await;
+    assert_eq!(now["search"]["asked"], 0);
+
+    // Back in the online menu: she is asked.
+    world.gpcm.fake_status(hers, 1);
+    let (_, now) = world
+        .send("GET", "/api/v1/matches/current", &mario, Value::Null)
+        .await;
+    assert_eq!(now["search"]["asked"], 1);
+    assert_eq!(now["match"]["opponent"]["name"], "Peach");
+}
+
+#[sqlx::test]
 async fn a_search_asks_players_open_to_challenges(pool: PgPool) {
     let world = World::new(pool);
     // Mario searches; Peach and Luigi are open to challenges and play the

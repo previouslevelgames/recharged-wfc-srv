@@ -197,7 +197,15 @@ pub(super) async fn search_start(
         Ok(_) => {}
         Err(error) => return database_error(error),
     }
-    if let Err(error) = search::start(&state.pool, player.id, &rule_set, &request.game).await {
+    if let Err(error) = search::start(
+        &state.pool,
+        player.id,
+        &rule_set,
+        &request.game,
+        &state.busy_profiles(),
+    )
+    .await
+    {
         return database_error(error);
     }
     info!(target: "profiles", player = player.id, rule_set = rule_set.name, "search");
@@ -878,8 +886,21 @@ impl ProfilesState {
             self.pairings.end(match_id);
         }
         // Searches ask their next player.
-        search::advance(&self.pool).await.map_err(database_error)?;
+        search::advance(&self.pool, &self.busy_profiles())
+            .await
+            .map_err(database_error)?;
         Ok(())
+    }
+
+    /// The WFC profiles in the game's own online matchmaking or match now
+    /// (DWC's status 2 to 6): their players are busy for searches.
+    fn busy_profiles(&self) -> Vec<i32> {
+        self.gpcm
+            .presence()
+            .into_iter()
+            .filter(|(_, presence)| matches!(presence.status, Some(2..=6)))
+            .map(|(profile_id, _)| profile_id)
+            .collect()
     }
 
     async fn respond(&self, status: StatusCode, found: &Match, player: &Player) -> Response {

@@ -252,7 +252,9 @@ challenge that waits for an answer (`cancelled`).
 The server sends the searcher's rules as a challenge (`"random": true`) to a
 player who has Recharged open, is open to challenges or searching too, has
 played the same game online (a WFC profile of the same id), isn't in a match
-and has no set to play, at random among them; the oldest search asks first,
+(nor in the game's own online matchmaking or match: a WFC profile of theirs
+with DWC's status 2 to 6) and has no set to play, at random among them; the
+oldest search asks first,
 so of two searchers the one who searched first decides. The player asked
 answers it as any challenge. A decline, or no answer in 30 seconds
 (`expired`), and the search asks another player it hasn't asked yet; an
