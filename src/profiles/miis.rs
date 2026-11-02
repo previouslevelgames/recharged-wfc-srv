@@ -9,7 +9,7 @@ use serde::Serialize;
 use sqlx::PgPool;
 
 use super::friends::MAX_FRIENDS;
-use crate::gpcm::Presence;
+use crate::gpcm::{Matchmaking, Presence};
 
 /// The game's online players shown at most.
 const MAX_ONLINE: usize = 100;
@@ -28,6 +28,10 @@ pub struct MiiProfile {
     /// While logged in, what its game does: `menu`, `matchmaking` or
     /// `match`, from DWC's status.
     pub status: Option<&'static str>,
+    /// While matchmaking or in a match: `ranked` (matched with anybody) or
+    /// `friends`.
+    #[serde(rename = "match")]
+    pub match_kind: Option<&'static str>,
     /// Its last login, in Unix seconds.
     pub last_online: i64,
     /// The player keeps it as a friend.
@@ -37,8 +41,17 @@ pub struct MiiProfile {
 fn status(presence: &Presence) -> &'static str {
     match presence.status {
         Some(2) => "match",
+        // A friend room's host plays once a friend has joined.
+        Some(6) if presence.room_players.is_some_and(|players| players >= 2) => "match",
         Some(3..=6) => "matchmaking",
         _ => "menu",
+    }
+}
+
+fn match_kind(presence: &Presence) -> Option<&'static str> {
+    match presence.matchmaking? {
+        Matchmaking::Anybody => Some("ranked"),
+        Matchmaking::Friends => Some("friends"),
     }
 }
 
@@ -68,6 +81,7 @@ async fn profiles(
                 game,
                 online: logged_in.is_some(),
                 status: logged_in.map(status),
+                match_kind: logged_in.and_then(match_kind),
                 last_online: logged_in
                     .map_or(row.last_login_at, |presence| presence.logged_in_at)
                     .unix_timestamp(),
@@ -192,6 +206,8 @@ mod tests {
             logged_in_at: OffsetDateTime::now_utc(),
             status,
             status_since: None,
+            matchmaking: None,
+            room_players: None,
             friend_requests: 0,
             mutual_friends: 0,
         }
@@ -284,5 +300,41 @@ mod tests {
         assert!(remove(&pool, nelly, kiki).await.unwrap());
         assert!(!remove(&pool, nelly, kiki).await.unwrap());
         assert_eq!(friends(&pool, nelly, &presence).await.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_mii_shows_whom_its_match_is_with() {
+        let shown = |status, matchmaking, room_players| {
+            let presence = Presence {
+                matchmaking,
+                room_players,
+                ..logged_in(Some(status))
+            };
+            (super::status(&presence), match_kind(&presence))
+        };
+        assert_eq!(shown(1, None, None), ("menu", None));
+        assert_eq!(
+            shown(3, Some(Matchmaking::Anybody), None),
+            ("matchmaking", Some("ranked"))
+        );
+        assert_eq!(
+            shown(2, Some(Matchmaking::Anybody), None),
+            ("match", Some("ranked"))
+        );
+        assert_eq!(
+            shown(2, Some(Matchmaking::Friends), None),
+            ("match", Some("friends"))
+        );
+        // A game that logged in playing (the server restarted) doesn't say.
+        assert_eq!(shown(2, None, None), ("match", None));
+        // A friend room's host waits alone, then plays with whoever joined.
+        assert_eq!(
+            shown(6, Some(Matchmaking::Friends), Some(1)),
+            ("matchmaking", Some("friends"))
+        );
+        assert_eq!(
+            shown(6, Some(Matchmaking::Friends), Some(2)),
+            ("match", Some("friends"))
+        );
     }
 }

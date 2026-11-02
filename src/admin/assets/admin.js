@@ -34,6 +34,16 @@ const STATUSES = {
   5: ['Joining a group', 'warning'],
   6: ['Hosting a group', 'warning'],
 };
+// A login's status as STATUSES names it, a match by whom it is with: the
+// game matches with anybody only for ranked matches, friends meet in a room
+// one of them hosts.
+function statusOf(online) {
+  const [name, tone] = STATUSES[online.status] || ['Logged in', 'good'];
+  if (online.status === 2 && online.matchmaking === 'anybody') return ['Playing ranked', tone];
+  if (online.status === 2 && online.matchmaking === 'friends') return ['Playing with friends', tone];
+  if (online.status === 6 && online.room_players >= 2) return [`Hosting ${online.room_players} players`, 'accent'];
+  return [name, tone];
+}
 // DWC's dwc_mtype in a session's heartbeat (dwc_match.h), with its badge
 // tone. A session without one is not matchmaking.
 const MATCH_TYPES = {
@@ -713,7 +723,7 @@ function renderOverview(data, now) {
 function presence(player, now) {
   if (player.cpu_buddy) return [badge('accent', 'Server'), h('span', { class: 'sub' }, 'Accepts every request')];
   if (!player.online) return badge(null, 'Offline');
-  const [name, tone] = STATUSES[player.online.status] || ['Logged in', 'good'];
+  const [name, tone] = statusOf(player.online);
   // A status counts from when the game sent it, the login from its start.
   const start = player.online.status_since || player.online.since;
   return [badge(tone, name), h('span', { class: 'sub' }, ['since ', ago(start, now)])];
@@ -792,7 +802,7 @@ function renderPlayer(data, now) {
       { class: 'tiles', 'aria-label': 'Key figures' },
       tile(
         'Status',
-        profile.cpu_buddy ? 'Server' : profile.online ? (STATUSES[profile.online.status] || ['Logged in'])[0] : 'Offline',
+        profile.cpu_buddy ? 'Server' : profile.online ? statusOf(profile.online)[0] : 'Offline',
         !profile.online
           ? 'Not logged in to GPCM'
           : profile.online.status_since

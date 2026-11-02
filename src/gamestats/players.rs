@@ -4,14 +4,20 @@
 //! (the US and the European game have a profile each), so their rows count as
 //! one. The game's own boards (`leaderboard`), the launcher's Leaderboard page
 //! and the admin site's merge them alike: points, wins and losses added up,
-//! shown with the Mii of the player's best row. Profiles of no player stay
-//! rows of their own.
+//! shown with the Mii of the player's best row. Only rows of one season (or
+//! day) add up: a row of an ended one stays in `scores` until its profile's
+//! next put, and stays a row of its own. Profiles of no player stay rows of
+//! their own.
 
 use std::collections::HashMap;
 
 use sqlx::PgExecutor;
+use time::Date;
 
-use super::submission::{self, Submission};
+use super::{
+    season,
+    submission::{self, Submission},
+};
 
 /// The highest score a put takes (`put`): a sum stays within it.
 const MAX_SCORE: i32 = 999_999;
@@ -59,21 +65,29 @@ pub async fn players_of<'e>(
     .collect())
 }
 
-/// `lines` with each player's rows as one, in no particular order: the
-/// score, wins and losses of all of them, the latest stamp, and the profile,
-/// region and Mii (the rest of the userdata) of the player's best row. The
-/// row of the highest `preference` stands for its player first (the game
-/// asking: its own Mii stays its own).
+/// `lines` of a board of `category` with each player's rows of one season
+/// (or day, by the date in their userdata) as one, in no particular order:
+/// the score, wins and losses of all of them, the latest stamp, and the
+/// profile, region and Mii (the rest of the userdata) of the player's best
+/// row. The row of the highest `preference` stands for its player first (the
+/// game asking: its own Mii stays its own). Rows without a date count as one
+/// season.
 pub fn by_player<T: Copy + Ord>(
     lines: Vec<Line<T>>,
     players: &HashMap<i32, i64>,
+    category: i32,
     preference: impl Fn(i32) -> u8,
 ) -> Vec<Line<T>> {
     let mut merged: Vec<Line<T>> = Vec::with_capacity(lines.len());
-    let mut groups: HashMap<i64, Vec<Line<T>>> = HashMap::new();
+    let mut groups: HashMap<(i64, Option<Date>), Vec<Line<T>>> = HashMap::new();
     for line in lines {
         match players.get(&line.profile_id) {
-            Some(&player) => groups.entry(player).or_default().push(line),
+            Some(&player) => {
+                let first_day = Submission::parse(&line.userdata)
+                    .date
+                    .map(|date| season::first_day(category, date));
+                groups.entry((player, first_day)).or_default().push(line)
+            }
             None => merged.push(line),
         }
     }
@@ -169,7 +183,7 @@ mod tests {
             line(107, 2, 85, (5, 0), "Birnen US", 40),
             line(50, 2, 60, (3, 3), "Mario", 5),
         ];
-        let mut merged = by_player(lines, &players, |_| 0);
+        let mut merged = by_player(lines, &players, 0, |_| 0);
         merged.sort_by_key(|line| -line.score);
         let shown: Vec<_> = merged
             .iter()
@@ -205,7 +219,7 @@ mod tests {
             line(108, 4, 171, (10, 4), "Birnen", 10),
             line(107, 2, 85, (5, 0), "Birnen US", 40),
         ];
-        let merged = by_player(lines, &players, |pid| u8::from(pid == 107));
+        let merged = by_player(lines, &players, 0, |pid| u8::from(pid == 107));
         assert_eq!(merged.len(), 1);
         assert_eq!(
             (merged[0].profile_id, merged[0].region, merged[0].score),
@@ -218,13 +232,37 @@ mod tests {
     }
 
     #[test]
+    fn rows_of_another_season_stay_apart() {
+        let players = HashMap::from([(108, 1), (107, 1)]);
+        let dated = |year: u16, month: u8, day: u8| {
+            let mut userdata = userdata(1, 0, "Birnen");
+            userdata[0] = day;
+            userdata[1] = month;
+            userdata[2..4].copy_from_slice(&year.to_le_bytes());
+            userdata
+        };
+        // The season board: one row from last year's season, one from now.
+        let lines = vec![
+            Line::new(108, 4, 171, dated(2025, 12, 1), 10),
+            Line::new(107, 2, 85, dated(2026, 10, 31), 40),
+        ];
+        let mut merged = by_player(lines, &players, 0, |_| 0);
+        merged.sort_by_key(|line| line.profile_id);
+        let scores: Vec<_> = merged
+            .iter()
+            .map(|line| (line.profile_id, line.score, line.members.clone()))
+            .collect();
+        assert_eq!(scores, [(107, 85, vec![107]), (108, 171, vec![108])]);
+    }
+
+    #[test]
     fn sums_stay_in_the_games_range() {
         let players = HashMap::from([(1, 9), (2, 9)]);
         let lines = vec![
             line(1, 2, 900_000, (9000, 0), "A", 1),
             line(2, 2, 900_000, (9000, 1), "B", 2),
         ];
-        let merged = by_player(lines, &players, |_| 0);
+        let merged = by_player(lines, &players, 0, |_| 0);
         let record = Submission::parse(&merged[0].userdata);
         assert_eq!(
             (merged[0].score, record.wins, record.losses),

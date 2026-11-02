@@ -197,12 +197,9 @@ pub(super) async fn sign_in_wfc(
     if let Err(error) = players::bind_wfc(&state.pool, player_id, login.profile_id).await {
         return database_error(error);
     }
-    let activity = Activity::from_header(
-        headers
-            .get("recharged-activity")
-            .and_then(|value| value.to_str().ok()),
-    );
-    if let Err(error) = players::heartbeat(&state.pool, player_id, activity).await {
+    if let Err(error) =
+        players::heartbeat(&state.pool, player_id, Activity::from_headers(&headers)).await
+    {
         return database_error(error);
     }
     info!(target: "profiles", player_id, profile_id = login.profile_id, "signed in by WFC login");

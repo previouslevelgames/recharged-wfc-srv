@@ -298,11 +298,15 @@ player's, so their rows are merged before a get is answered
 (`src/gamestats/players.rs`): the score, wins and losses (userdata 0x04 and
 0x08) added up (at most 999999 and 9999, as a put and the game allow), and
 the row of the player's best profile otherwise (its pid, region, Mii and the
-rest of its userdata), last updated when the latest of them was. The caller's
-own profile stands for its player, so the game finds itself (NEAR, ORDER) and
-shows its own Mii; in FRIENDS, a listed profile stands for its player before
-the others. Rows of profiles no launcher proved stay as they are. The
-launcher's Leaderboard and the admin site's Leaders merge alike.
+rest of its userdata), last updated when the latest of them was. Only rows
+of one season (or, on the daily boards, one day) add up, by the date in
+their userdata: a row of an ended season stays in `scores` until its
+profile's next put, and stays a row of its own, which the game drops by that
+date (FRIENDS). The caller's own profile stands for its player, so the game
+finds itself (NEAR, ORDER) and shows its own Mii; in FRIENDS, a listed
+profile stands for its player before the others. Rows of profiles no
+launcher proved stay as they are. The launcher's Leaderboard and the admin
+site's Leaders merge alike.
 
 ### Response
 
