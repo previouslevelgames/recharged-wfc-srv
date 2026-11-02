@@ -160,13 +160,14 @@ async fn top(
     for row in rows {
         boards.entry(row.category).or_default().push(row);
     }
-    let (text, profile) = (search.text(), search.profile());
-    let searching = text.is_some() || profile.is_some();
+    let text = search.text();
+    let numbered = search.profiles(&mut *conn).await?;
+    let searching = text.is_some();
     let mut top = Vec::new();
     let mut found = Vec::new();
     for (category, rows) in boards {
         let (leaders, _, matches) = ranked(category, rows, &owners, |entry| {
-            profile.is_some_and(|profile| entry.profile_ids.contains(&profile))
+            entry.profile_ids.iter().any(|id| numbered.contains(id))
                 || text.as_deref().is_some_and(|text| {
                     [&entry.name, &entry.player]
                         .into_iter()
@@ -485,6 +486,7 @@ mod tests {
             }
         };
         assert_eq!(found("raul").await, [(2, 7)]);
+        assert_eq!(found("LASO").await, [(2, 7)]);
         assert_eq!(found("birnen").await, [(1, europe)]);
         assert_eq!(found(&us.to_string()).await, [(1, europe)]);
         assert!(found("kiki").await.is_empty());

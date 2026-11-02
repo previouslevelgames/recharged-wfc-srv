@@ -36,9 +36,9 @@ pub struct Players {
     profiles: Vec<Player>,
 }
 
-/// The search box of the Players and Leaderboards pages (`?q=`): text in a
-/// Mii's or a Recharged player's name, or a number: a profile, a friend code
-/// (with or without its dashes), a console, an address.
+/// The search box of the Players and Leaderboards pages (`?q=`): any part of
+/// a Mii's or a Recharged player's name or of an address, or digits in a
+/// profile, a friend code (dashes and spaces left out) or a console.
 #[derive(Deserialize, Default)]
 pub struct Search {
     #[serde(default)]
@@ -58,25 +58,39 @@ impl Search {
         (!text.is_empty()).then(|| text.chars().take(64).collect::<String>().to_lowercase())
     }
 
-    /// The number typed, when it is one (dashes and spaces left out).
-    pub fn number(&self) -> Option<i64> {
+    /// The digits typed, when the box holds only digits (dashes and spaces
+    /// left out): part of a profile, a friend code or a console.
+    pub fn digits(&self) -> Option<String> {
         let digits: String = self.q.chars().filter(|c| !matches!(c, '-' | ' ')).collect();
-        if digits.is_empty()
-            || digits.len() > 12
-            || !digits.bytes().all(|byte| byte.is_ascii_digit())
-        {
-            return None;
-        }
-        digits.parse().ok()
+        (!digits.is_empty()
+            && digits.len() <= 12
+            && digits.bytes().all(|byte| byte.is_ascii_digit()))
+        .then_some(digits)
     }
 
-    /// The WFC profile the number names: a profile id, or a friend code's
-    /// (its last 32 bits are the profile, `accounts::friend_code`).
-    pub fn profile(&self) -> Option<i32> {
-        let number = self.number()?;
-        i32::try_from(number)
-            .ok()
-            .or_else(|| i32::try_from(number & 0xFFFF_FFFF).ok())
+    /// The profiles whose number or friend code holds the digits typed.
+    /// Friend codes are not stored: they are worked out from each profile
+    /// (`accounts::friend_code`).
+    pub async fn profiles(&self, conn: &mut PgConnection) -> Result<Vec<i32>, sqlx::Error> {
+        let Some(digits) = self.digits() else {
+            return Ok(Vec::new());
+        };
+        let rows = sqlx::query!("SELECT profile_id, gsbrcd FROM profiles")
+            .fetch_all(conn)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .filter(|row| {
+                row.profile_id.to_string().contains(&digits)
+                    || accounts::friend_code(
+                        row.profile_id,
+                        row.gsbrcd.get(..4).unwrap_or_default(),
+                    )
+                    .replace('-', "")
+                    .contains(&digits)
+            })
+            .map(|row| row.profile_id)
+            .collect())
     }
 }
 
@@ -183,7 +197,8 @@ async fn profiles(
     search: &Search,
 ) -> Result<Vec<Player>, sqlx::Error> {
     // Every profile without a search; with one, those whose Mii, Recharged
-    // player, profile, friend code, console or address it names.
+    // player, profile, friend code, console or address it names (any part).
+    let numbered = search.profiles(&mut *conn).await?;
     let rows = sqlx::query!(
         r#"SELECT p.profile_id, p.user_id, p.gsbrcd, p.ingamesn, p.created_at,
                   p.last_login_at, p.last_ip,
@@ -192,7 +207,7 @@ async fn profiles(
            WHERE $2::TEXT IS NULL
               OR strpos(lower(coalesce(p.ingamesn, '')), $2) > 0
               OR strpos(lower(coalesce(p.last_ip, '')), $2) > 0
-              OR p.profile_id = $3 OR p.user_id = $4
+              OR p.profile_id = ANY($3) OR strpos(p.user_id::TEXT, $4) > 0
               OR EXISTS (SELECT 1 FROM player_wfc_profiles JOIN players USING (player_id)
                          WHERE player_wfc_profiles.profile_id = p.profile_id
                            AND strpos(lower(players.display_name), $2) > 0)
@@ -200,8 +215,8 @@ async fn profiles(
            LIMIT $1"#,
         SHOWN,
         search.text(),
-        search.profile(),
-        search.number(),
+        &numbered,
+        search.digits(),
     )
     .fetch_all(conn)
     .await?;
@@ -627,8 +642,8 @@ mod tests {
         assert_eq!(mario.mii_name.as_deref(), Some("Mario"));
         assert!(mario.online.is_none());
 
-        // A search finds a profile by its Mii, profile, friend code (with or
-        // without dashes), console or address, and nothing else.
+        // A search finds a profile by any part of its Mii, profile, friend code
+        // (with or without dashes), console or address, and nothing else.
         let found = |q: &str| {
             let (pool, gpcm) = (pool.clone(), &gpcm);
             let search = Search::new(q);
@@ -645,10 +660,13 @@ mod tests {
         let id = profile.profile_id;
         for q in [
             "mar",
+            "rio",
             " MARIO ",
             &id.to_string(),
             "0868-9934-5920",
             "086899345920",
+            "0868",
+            "9934-59",
             "42",
             "10.0.0",
         ] {
