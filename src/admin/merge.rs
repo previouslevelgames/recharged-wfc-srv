@@ -94,6 +94,92 @@ pub async fn link(
     Ok(Ok(()))
 }
 
+/// The player two WFC profiles play for after [`pair`].
+#[derive(Debug, PartialEq, Serialize)]
+pub struct Paired {
+    pub player_id: i64,
+    pub name: String,
+    /// Neither played for a player: this one is new, named after a Mii.
+    pub created: bool,
+}
+
+/// The WFC profiles `profile_id` and `other` play for one player from now on:
+/// the one either plays for already, or a new one named after `profile_id`'s
+/// Mii (`other`'s, without one) when neither does, as for a person who never
+/// signed in from a launcher. Err: why not (no such profile, the same one, or
+/// two players already: those are merged instead).
+pub async fn pair(
+    pool: &PgPool,
+    profile_id: i32,
+    other: i32,
+) -> Result<Result<Paired, &'static str>, sqlx::Error> {
+    if profile_id == other {
+        return Ok(Err("a profile can't be linked with itself"));
+    }
+    let mut tx = pool.begin().await?;
+    let rows = sqlx::query!(
+        r#"SELECT profiles.profile_id, profiles.ingamesn, player_wfc_profiles.player_id AS "player_id?"
+           FROM profiles LEFT JOIN player_wfc_profiles USING (profile_id)
+           WHERE profiles.profile_id IN ($1, $2)
+           FOR UPDATE OF profiles"#,
+        profile_id,
+        other,
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    let (Some(mine), Some(theirs)) = (
+        rows.iter().find(|row| row.profile_id == profile_id),
+        rows.iter().find(|row| row.profile_id == other),
+    ) else {
+        return Ok(Err("no such WFC profile"));
+    };
+    let (player_id, created) = match (mine.player_id, theirs.player_id) {
+        (Some(a), Some(b)) if a != b => {
+            return Ok(Err(
+                "both play for a player already: merge the two players instead",
+            ));
+        }
+        (Some(player_id), _) | (None, Some(player_id)) => (player_id, false),
+        (None, None) => {
+            let name = [&mine.ingamesn, &theirs.ingamesn]
+                .into_iter()
+                .flatten()
+                .map(|name| name.trim().chars().take(64).collect::<String>())
+                .find(|name| !name.is_empty())
+                .unwrap_or_else(|| "Player".to_owned());
+            let player_id = sqlx::query_scalar!(
+                "INSERT INTO players (display_name) VALUES ($1) RETURNING player_id",
+                name,
+            )
+            .fetch_one(&mut *tx)
+            .await?;
+            (player_id, true)
+        }
+    };
+    for profile in [profile_id, other] {
+        sqlx::query!(
+            "INSERT INTO player_wfc_profiles (profile_id, player_id) VALUES ($1, $2)
+             ON CONFLICT (profile_id) DO UPDATE SET player_id = $2, bound_at = now()",
+            profile,
+            player_id,
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
+    let name = sqlx::query_scalar!(
+        "SELECT display_name FROM players WHERE player_id = $1",
+        player_id
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(Ok(Paired {
+        player_id,
+        name,
+        created,
+    }))
+}
+
 /// What merging `from` into `into` would move, or why it can't be: the same
 /// player, one that isn't there, two Discord accounts (two people, as far as
 /// the server can tell), or a set still to be played.
@@ -458,5 +544,62 @@ mod tests {
         );
         assert_eq!(link(&pool, mine, None).await.unwrap(), Ok(()));
         assert_eq!(bound(pool.clone()).await, None);
+    }
+
+    #[sqlx::test]
+    async fn two_profiles_are_linked_by_hand(pool: PgPool) {
+        // Raulaso's two consoles (Mii "Mii"), neither ever signed in from a
+        // launcher; a third profile; and Kiki (1), with a fourth.
+        let europe = profile(&pool, 1, "R4QPaaaaaaa").await;
+        let america = profile(&pool, 2, "R4QEaaaaaaa").await;
+        let third = profile(&pool, 3, "R4QEbbbbbbb").await;
+        let kikis = profile(&pool, 4, "R4QEccccccc").await;
+        run(&pool, "INSERT INTO players (display_name) VALUES ('Kiki')").await;
+        assert_eq!(link(&pool, kikis, Some(1)).await.unwrap(), Ok(()));
+        let player_of = |profile: i32| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT player_id FROM player_wfc_profiles WHERE profile_id = $1",
+                )
+                .bind(profile)
+                .fetch_optional(&pool)
+                .await
+                .unwrap()
+            }
+        };
+
+        // Neither plays for a player: a new one, named after the Mii.
+        let paired = pair(&pool, europe, america).await.unwrap().unwrap();
+        assert_eq!(paired.name, "Mii");
+        assert!(paired.created);
+        assert_ne!(paired.player_id, 1);
+        assert_eq!(player_of(europe).await, Some(paired.player_id));
+        assert_eq!(player_of(america).await, Some(paired.player_id));
+        // Again: nothing new.
+        let again = pair(&pool, america, europe).await.unwrap().unwrap();
+        assert_eq!((again.player_id, again.created), (paired.player_id, false));
+        // One of them plays for a player already: the other joins them.
+        let joined = pair(&pool, third, kikis).await.unwrap().unwrap();
+        assert_eq!(
+            (joined.player_id, joined.name.as_str(), joined.created),
+            (1, "Kiki", false)
+        );
+        assert_eq!(player_of(third).await, Some(1));
+
+        // Two players: merged, not linked; and nonsense.
+        assert_eq!(
+            pair(&pool, europe, kikis).await.unwrap(),
+            Err("both play for a player already: merge the two players instead")
+        );
+        assert_eq!(
+            pair(&pool, europe, europe).await.unwrap(),
+            Err("a profile can't be linked with itself")
+        );
+        assert_eq!(
+            pair(&pool, europe, 7).await.unwrap(),
+            Err("no such WFC profile")
+        );
+        assert_eq!(player_of(europe).await, Some(paired.player_id));
     }
 }

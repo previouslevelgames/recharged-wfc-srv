@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT p.profile_id, p.user_id, p.gsbrcd, p.ingamesn, p.created_at,\n                  p.last_login_at, p.last_ip,\n                  (SELECT count(*) FROM scores s WHERE s.profile_id = p.profile_id) AS \"scores!\"\n           FROM profiles p\n           ORDER BY p.last_login_at DESC, p.profile_id\n           LIMIT $1",
+  "query": "SELECT p.profile_id, p.user_id, p.gsbrcd, p.ingamesn, p.created_at,\n                  p.last_login_at, p.last_ip,\n                  (SELECT count(*) FROM scores s WHERE s.profile_id = p.profile_id) AS \"scores!\"\n           FROM profiles p\n           WHERE $2::TEXT IS NULL\n              OR strpos(lower(coalesce(p.ingamesn, '')), $2) > 0\n              OR strpos(lower(coalesce(p.last_ip, '')), $2) > 0\n              OR p.profile_id = ANY($3) OR strpos(p.user_id::TEXT, $4) > 0\n              OR EXISTS (SELECT 1 FROM player_wfc_profiles JOIN players USING (player_id)\n                         WHERE player_wfc_profiles.profile_id = p.profile_id\n                           AND strpos(lower(players.display_name), $2) > 0)\n           ORDER BY p.last_login_at DESC, p.profile_id\n           LIMIT $1",
   "describe": {
     "columns": [
       {
@@ -89,7 +89,10 @@
     ],
     "parameters": {
       "Left": [
-        "Int8"
+        "Int8",
+        "Text",
+        "Int4Array",
+        "Text"
       ]
     },
     "nullable": [
@@ -103,5 +106,5 @@
       null
     ]
   },
-  "hash": "31bc0ff65f4f4ee068a6e23db3c51418da8f4bad0cb62b36932ad4fd475bf2e5"
+  "hash": "28baf52b2aa09ac8ab95dca3c7c1636156da3c04d20f6058ffe814bead72e54a"
 }

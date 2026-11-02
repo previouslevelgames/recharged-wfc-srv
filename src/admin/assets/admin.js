@@ -23,26 +23,33 @@ const CATEGORIES = [
 const DAILY_BOARDS = new Set([1, 4]);
 // DWCRnkRegion.
 const REGIONS = { 1: 'JP', 2: 'US', 4: 'EU', 8: 'KR' };
-// DWC's status in GPCM's \status\ (docs/login.md, "Mutual friends"), with
-// its badge tone.
+// DWC's status in GPCM's \status\ (docs/login.md, "Mutual friends"): what
+// the game is doing online, with its badge tone and what it means.
 const STATUSES = {
-  0: ['Offline', null],
-  1: ['Online', 'good'],
-  2: ['Playing', 'accent'],
-  3: ['Matchmaking', 'warning'],
-  4: ['Matchmaking with friends', 'warning'],
-  5: ['Joining a group', 'warning'],
-  6: ['Hosting a group', 'warning'],
+  0: ['Offline', null, 'Not logged in to WFC'],
+  1: ['In the online menus', 'good', 'Logged in to WFC, neither searching nor playing'],
+  2: ['In a match', 'accent', 'Playing an online match'],
+  3: ['Searching RANKED', 'warning', "In the game's RANKED search, for anybody"],
+  4: ['Looking for friends', 'warning', 'Searching for a match among friends'],
+  5: ["Joining a friend's room", 'warning', 'Joining the friend match another player hosts'],
+  6: ['Hosting a friend room', 'warning', 'Its game hosts a friend match: friends join its room'],
 };
-// A login's status as STATUSES names it, a match by whom it is with: the
-// game matches with anybody only for ranked matches, friends meet in a room
-// one of them hosts.
+// A login's status as STATUSES names it, a match by whom it is with (the
+// game matches with anybody only for RANKED; friends meet in a room one of
+// them hosts), and a hosted room with who is in it.
 function statusOf(online) {
-  const [name, tone] = STATUSES[online.status] || ['Logged in', 'good'];
-  if (online.status === 2 && online.matchmaking === 'anybody') return ['Playing ranked', tone];
-  if (online.status === 2 && online.matchmaking === 'friends') return ['Playing with friends', tone];
-  if (online.status === 6 && online.room_players >= 2) return [`Hosting ${online.room_players} players`, 'accent'];
-  return [name, tone];
+  const [name, tone, about] = STATUSES[online.status] || ['Logged in', 'good', 'Logged in to WFC'];
+  if (online.status === 2 && online.matchmaking === 'anybody') return ['In a RANKED match', tone, 'Playing a RANKED match against anybody'];
+  if (online.status === 2 && online.matchmaking === 'friends') return ['In a friend match', tone, 'Playing a match with friends'];
+  if (online.status === 6 && online.room_players >= 2) {
+    const friends = online.room_players - 1;
+    return [name, 'accent', `${online.room_players} players in the room: the host and ${friends} ${friends === 1 ? 'friend' : 'friends'}`];
+  }
+  return [name, tone, about];
+}
+// The players in a room a login hosts, as a short note; '' for none.
+function roomNote(online) {
+  return online.status === 6 && online.room_players >= 2 ? `${online.room_players} players in the room · ` : '';
 }
 // DWC's dwc_mtype in a session's heartbeat (dwc_match.h), with its badge
 // tone. A session without one is not matchmaking.
@@ -723,10 +730,13 @@ function renderOverview(data, now) {
 function presence(player, now) {
   if (player.cpu_buddy) return [badge('accent', 'Server'), h('span', { class: 'sub' }, 'Accepts every request')];
   if (!player.online) return badge(null, 'Offline');
-  const [name, tone] = statusOf(player.online);
+  const [name, tone, about] = statusOf(player.online);
   // A status counts from when the game sent it, the login from its start.
   const start = player.online.status_since || player.online.since;
-  return [badge(tone, name), h('span', { class: 'sub' }, ['since ', ago(start, now)])];
+  return [
+    h('span', { class: 'badge', 'data-tone': tone, title: about }, name),
+    h('span', { class: 'sub' }, [roomNote(player.online), 'since ', ago(start, now)]),
+  ];
 }
 
 function renderPlayers(data, now) {
@@ -746,9 +756,11 @@ function renderPlayers(data, now) {
     ),
     card(
       'Players',
-      shown < totals.profiles
-        ? `The ${integer.format(shown)} profiles that signed in last, online first, of ${integer.format(totals.profiles)}`
-        : 'Every profile, online first; the CPU buddy is the server\'s own',
+      pageSearch.text
+        ? `${integer.format(shown)} ${shown === 1 ? 'profile matches' : 'profiles match'} “${pageSearch.text}”, online first${shown >= 200 ? ' (the 200 that signed in last)' : ''}`
+        : shown < totals.profiles
+          ? `The ${integer.format(shown)} profiles that signed in last, online first, of ${integer.format(totals.profiles)}`
+          : 'Every profile, online first; the CPU buddy is the server\'s own',
       table(
         [
           { label: 'Player', cell: (p) => [h('a', { href: playerPath(p.profile_id) }, p.mii_name || 'Unnamed'), h('span', { class: 'sub' }, `Profile ${p.profile_id}`)] },
@@ -766,7 +778,7 @@ function renderPlayers(data, now) {
           { label: 'Joined', cell: (p) => ago(p.created_at, now) },
         ],
         profiles,
-        'No players yet. A console appears here after its first sign-in.',
+        pageSearch.text ? `No profile matches “${pageSearch.text}”.` : 'No players yet. A console appears here after its first sign-in.',
       ),
     ),
   ];
@@ -806,13 +818,13 @@ function renderPlayer(data, now) {
         !profile.online
           ? 'Not logged in to GPCM'
           : profile.online.status_since
-            ? ['Since ', ago(profile.online.status_since, now), ' · logged in to GPCM ', ago(profile.online.since, now)]
-            : ['Logged in to GPCM ', ago(profile.online.since, now)],
+            ? [statusOf(profile.online)[2], ' · since ', ago(profile.online.status_since, now), ' · logged in to GPCM ', ago(profile.online.since, now)]
+            : [statusOf(profile.online)[2], ' · logged in to GPCM ', ago(profile.online.since, now)],
       ),
       tile('Release', profile.release, profile.gsbrcd),
       tile('Account', h('code', null, `${profile.user_id}`), 'The console, registered with NAS'),
       tile('Last sign-in', profile.cpu_buddy ? '—' : ago(profile.last_login_at, now), profile.last_ip || 'No address'),
-      tile('Recharged player', player ? player.name : '—', player ? (player.discord ? `Discord ${player.discord}` : 'Test player') : 'Not signed in from the launcher'),
+      tile('Recharged player', player ? player.name : '—', player ? (player.discord ? `Discord ${player.discord} · player #${player.player_id}` : `Player #${player.player_id}`) : 'Not signed in from the launcher'),
     ),
     profile.cpu_buddy ? null : playerCard(profile),
     card(
@@ -1722,7 +1734,7 @@ function renderMonitoring(data, now) {
 function renderLeaderboards(data, now) {
   const content = data.content;
   if (!content) return [unreachable(data.error)];
-  const { totals, categories, top } = content;
+  const { totals, categories, top, found } = content;
 
   const choices = h(
     'div',
@@ -1775,6 +1787,20 @@ function renderLeaderboards(data, now) {
       tile('Last score', totals.last_put ? ago(totals.last_put, now) : '—', totals.last_put ? dateTime.format(new Date(totals.last_put)) : 'No scores yet'),
       tile('Boards in use', [`${categories.length}`, h('small', null, `/ ${CATEGORIES.length}`)], 'Categories with scores'),
     ),
+    found &&
+      card(
+        'Found',
+        `The rows of every board that match “${pageSearch.text}”, with their rank`,
+        table(
+          [
+            { label: 'Board', cell: (e) => CATEGORIES[e.category] || `${e.category}` },
+            ...standings,
+            { label: 'Updated', cell: (e) => ago(e.updated_at, now) },
+          ],
+          found,
+          `No row on any board matches “${pageSearch.text}”.`,
+        ),
+      ),
     card(
       'Leaders',
       'The first 10 of a board, ranked as the game ranks them',
@@ -1982,6 +2008,45 @@ function renderDatabase(data, now) {
 
 /** The Logs page's controls. They stay out of the polled page, so typing
  * survives each refresh. */
+// The search box of the Players and Leaderboards lists: it stays above the
+// page while the page refreshes, and the server searches with every refresh
+// (?q=), so it finds profiles beyond the rows a page shows.
+const pageSearch = {
+  placeholders: {
+    players: 'Search: Mii, player, profile, friend code, console or address',
+    leaderboards: 'Search: Mii, player or profile',
+  },
+  text: '',
+  typing: null,
+
+  // The page's box, when it has one (the lists, not a profile's page).
+  shown() {
+    return !route.id && Object.hasOwn(this.placeholders, section.api);
+  },
+
+  query() {
+    return this.shown() && this.text ? `?${new URLSearchParams({ q: this.text })}` : '';
+  },
+
+  build() {
+    if (!this.shown()) return;
+    const label = this.placeholders[section.api];
+    const input = h('input', {
+      type: 'search',
+      placeholder: label,
+      'aria-label': label,
+      oninput: () => {
+        clearTimeout(this.typing);
+        this.typing = setTimeout(() => {
+          this.text = input.value.trim();
+          poll();
+        }, 300);
+      },
+    });
+    document.getElementById('body').before(h('section', { class: 'card log-tools', 'aria-label': 'Search' }, input));
+  },
+};
+
 const logs = {
   node: null,
   day: null, // The file shown, or null for the newest.
@@ -2539,7 +2604,7 @@ const wipe = {
 function playerCard(profile) {
   const player = profile.player;
   const tools = [
-    h('button', { class: 'button', type: 'button', onclick: () => playerTools.openLink(profile) }, player ? 'Link to another player…' : 'Link to a player…'),
+    h('button', { class: 'button', type: 'button', onclick: () => playerTools.openLink(profile) }, 'Link…'),
   ];
   if (player) {
     tools.push(h('button', { class: 'button', type: 'button', onclick: () => playerTools.unlink(profile) }, 'Unlink'));
@@ -2589,24 +2654,60 @@ const playerTools = {
     return h('input', { type: 'number', min: '1', step: '1', inputmode: 'numeric', autocomplete: 'off', required: true });
   },
 
+  /** Link a profile with another WFC profile of the same person (by its
+   * profile number, as on its page; a player is made for both when neither
+   * has one), or to a player by their number. */
   openLink(profile) {
     const input = this.playerInput();
+    const kinds = [
+      { key: 'profile', label: 'Another WFC profile', field: 'WFC profile number', about: 'The other profile’s number is under its Mii name on its page. When neither plays for a Recharged player, a new one, named after this Mii, gets both.' },
+      { key: 'player', label: 'A player', field: 'Player number', about: 'The player’s number is in the Recharged player card of any of their profiles (player #…).' },
+    ];
+    let kind = kinds[0];
+    const field = h('span', null, kind.field);
+    const about = h('p', null, kind.about);
+    const buttons = kinds.map((choice) =>
+      h('button', {
+        type: 'button',
+        'aria-pressed': String(choice === kind),
+        onclick: () => {
+          kind = choice;
+          buttons.forEach((button, index) => button.setAttribute('aria-pressed', String(kinds[index] === kind)));
+          field.textContent = kind.field;
+          about.textContent = kind.about;
+          input.focus();
+        },
+      }, choice.label),
+    );
     const submit = h('button', { class: 'button', type: 'submit' }, 'Link');
     submit.addEventListener('click', async (event) => {
       event.preventDefault();
-      const playerId = Number(input.value);
-      if (!Number.isInteger(playerId) || playerId < 1) return;
+      const number = Number(input.value);
+      if (!Number.isInteger(number) || number < 1) return;
+      const path = `/admin/api/wfc-profiles/${profile.profile_id}/player`;
       try {
-        await send('PUT', `/admin/api/wfc-profiles/${profile.profile_id}/player`, { player_id: playerId });
-        this.done(`Profile ${profile.profile_id} now plays for player #${playerId}.`, 'good');
+        if (kind.key === 'profile') {
+          const paired = await send('PUT', path, { profile_id: number });
+          this.done(
+            paired.created
+              ? `Profiles ${profile.profile_id} and ${number} now play for a new player, ${paired.name} (#${paired.player_id}).`
+              : `Profiles ${profile.profile_id} and ${number} now play for ${paired.name} (#${paired.player_id}).`,
+            'good',
+          );
+        } else {
+          await send('PUT', path, { player_id: number });
+          this.done(`Profile ${profile.profile_id} now plays for player #${number}.`, 'good');
+        }
       } catch (error) {
         this.done(error.message, 'critical');
       }
     });
     this.show(
-      `Link ${profile.mii_name || 'this profile'} to a player`,
-      h('p', null, 'Its leaderboard rows then count for that player. The player’s number is on the profile page of any of their profiles.'),
-      h('label', { class: 'editor-field' }, h('span', null, 'Player number'), input),
+      `Link ${profile.mii_name || 'this profile'}`,
+      h('p', null, 'Its leaderboard rows then count for one player, together with the other’s.'),
+      h('div', { class: 'segmented', role: 'group', 'aria-label': 'Link with' }, buttons),
+      about,
+      h('label', { class: 'editor-field' }, field, input),
       h('div', { class: 'editor-actions' }, h('button', { class: 'button', type: 'button', onclick: () => this.dialog.close() }, 'Cancel'), submit),
     );
     input.focus();
@@ -2796,7 +2897,7 @@ async function poll() {
   clearTimeout(timer);
   const asked = ++polls;
   try {
-    const query = section.api === 'logs' ? logs.query() : '';
+    const query = section.api === 'logs' ? logs.query() : pageSearch.query();
     const api = route.id ? `${section.api}/${route.id}` : section.api || 'overview';
     const response = await fetch(`/admin/api/${api}${query}`, {
       cache: 'no-store',
@@ -2839,6 +2940,8 @@ document.getElementById('content').replaceChildren(
   ),
   h('div', { class: 'page-body', id: 'body' }, banner({ level: 'pending', title: 'Loading…', detail: 'Asking the server.' })),
 );
+
+pageSearch.build();
 
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
