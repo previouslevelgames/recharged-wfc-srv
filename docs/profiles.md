@@ -349,8 +349,10 @@ leaderboards, as its LEADERBOARD menu shows them: `{"season": {...},
 "daily": {...}}`, the season's board (category 0) and the striker of the
 day's (category 1) of `docs/gamestats2.md`. Each has `first_day` and
 `last_day` of the current season (or the day), `players` on it, the first 20
-as `top`, and `you`, the player's best row among the WFC profiles they proved
-(see "Friend codes"), or `null`. A row is `{"rank", "mii", "player", "wins",
+as `top`, and `you`, the player's row, or `null`. As on the game's boards, a
+player's WFC profiles (see "Friend codes": one for each game they play) are
+one row, their points, wins and losses added up, with the Mii of the best one
+(`docs/gamestats2.md`, "One row per player"). A row is `{"rank", "mii", "player", "wins",
 "losses", "points", "region", "you"}`: the rank as the game counts it (equal
 points share it), the Mii's name and record from the game's submission, the
 Recharged player whose profile it is (`null` when no launcher proved it), and

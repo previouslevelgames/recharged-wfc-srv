@@ -1735,7 +1735,16 @@ function renderLeaderboards(data, now) {
   const past = (content.past || []).find((board) => board.category === category);
   const standings = [
     { label: 'Rank', num: true, cell: (e) => `${e.rank}` },
-    { label: 'Player', cell: (e) => [e.name || 'Unknown', h('span', { class: 'sub' }, `Profile ${e.profile_id}`)] },
+    {
+      label: 'Player',
+      cell: (e) => {
+        // A Recharged player's WFC profiles are one row, its points added up.
+        const ids = e.profile_ids && e.profile_ids.length ? e.profile_ids : [e.profile_id];
+        const profiles = ids.length > 1 ? `Profiles ${ids.join(', ')}` : `Profile ${ids[0]}`;
+        const sub = e.player && e.player !== e.name ? `${e.player} · ${profiles}` : profiles;
+        return [e.name || 'Unknown', h('span', { class: 'sub' }, sub)];
+      },
+    },
     { label: 'Region', cell: (e) => REGIONS[e.region] || `${e.region}` },
     { label: 'Score', num: true, cell: (e) => integer.format(e.score) },
     { label: 'Wins', num: true, cell: (e) => (e.wins == null ? '—' : integer.format(e.wins)) },

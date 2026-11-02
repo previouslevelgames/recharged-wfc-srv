@@ -1,15 +1,20 @@
 //! The Leaderboards page: the gamestats2 `scores`, by category and region,
 //! who leads each category, and how its last season (or day) ended
-//! (docs/gamestats2.md, "Seasons").
+//! (docs/gamestats2.md, "Seasons"). As on the game's boards, a Recharged
+//! player's WFC profiles are one row (`gamestats::players`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use serde::Serialize;
 use sqlx::{PgConnection, PgPool};
 use time::{Date, OffsetDateTime};
 
 use super::page::snapshot;
-use crate::gamestats::{season, submission::Submission};
+use crate::gamestats::{
+    players::{self, Line},
+    season,
+    submission::Submission,
+};
 
 /// Rows shown per category.
 const TOP: i64 = 10;
@@ -74,7 +79,12 @@ struct Entry {
     category: i32,
     /// As the game ranks: equal scores share a rank.
     rank: i64,
+    /// The row's profile: the player's best one when it is several.
     profile_id: i32,
+    /// All the WFC profiles the row adds up (one, unless a player's).
+    profile_ids: Vec<i32>,
+    /// The Recharged player whose profiles they are, if a launcher proved them.
+    player: Option<String>,
     region: i32,
     score: i32,
     name: Option<String>,
@@ -128,42 +138,96 @@ async fn categories(conn: &mut PgConnection) -> Result<Vec<Category>, sqlx::Erro
 }
 
 async fn top(conn: &mut PgConnection) -> Result<Vec<Entry>, sqlx::Error> {
-    // Ranked and ordered like the game's descending boards
-    // (`gamestats::leaderboard`).
-    let rows = sqlx::query!(
-        r#"SELECT category AS "category!", rank AS "rank!", profile_id AS "profile_id!",
-                  region AS "region!", score AS "score!", userdata AS "userdata!",
-                  updated_at AS "updated_at!"
-           FROM (SELECT *,
-                        RANK() OVER (PARTITION BY category ORDER BY score DESC) AS rank,
-                        row_number() OVER (PARTITION BY category
-                                           ORDER BY score DESC, updated_at, profile_id) AS position
-                 FROM scores) ranked
-           WHERE position <= $1
-           ORDER BY category, position"#,
-        TOP,
+    let rows = sqlx::query_as!(
+        Row,
+        "SELECT category, profile_id, region, score, userdata, updated_at FROM scores"
     )
-    .fetch_all(conn)
+    .fetch_all(&mut *conn)
     .await?;
-    Ok(rows
+    let owners = Owners::read(conn, &rows).await?;
+    let mut boards: BTreeMap<i32, Vec<Row>> = BTreeMap::new();
+    for row in rows {
+        boards.entry(row.category).or_default().push(row);
+    }
+    Ok(boards
+        .into_iter()
+        .flat_map(|(category, rows)| leaders(category, rows, &owners).0)
+        .collect())
+}
+
+/// Who the WFC profiles of some rows belong to, and those players' names.
+struct Owners {
+    players: HashMap<i32, i64>,
+    names: HashMap<i64, String>,
+}
+
+impl Owners {
+    async fn read(conn: &mut PgConnection, rows: &[Row]) -> Result<Self, sqlx::Error> {
+        let profiles: Vec<i32> = rows.iter().map(|row| row.profile_id).collect();
+        let players = players::players_of(&mut *conn, &profiles).await?;
+        let ids: Vec<i64> = players.values().copied().collect();
+        let names = sqlx::query!(
+            "SELECT player_id, display_name FROM players WHERE player_id = ANY($1)",
+            &ids
+        )
+        .fetch_all(&mut *conn)
+        .await?
+        .into_iter()
+        .map(|row| (row.player_id, row.display_name))
+        .collect();
+        Ok(Self { players, names })
+    }
+}
+
+/// The first [`TOP`] of a category's `rows` with each player's rows as one,
+/// ranked and ordered like the game's descending boards
+/// (`gamestats::leaderboard`), and how many rows the board has then.
+fn leaders(category: i32, rows: Vec<Row>, owners: &Owners) -> (Vec<Entry>, usize) {
+    let lines = rows
         .into_iter()
         .map(|row| {
+            Line::new(
+                row.profile_id,
+                row.region,
+                row.score,
+                row.userdata,
+                row.updated_at,
+            )
+        })
+        .collect();
+    let mut lines = players::by_player(lines, &owners.players, |_| 0);
+    lines.sort_by(|a, b| (b.score, a.stamp, a.profile_id).cmp(&(a.score, b.stamp, b.profile_id)));
+    let entries = lines
+        .iter()
+        .take(TOP as usize)
+        .map(|line| {
             let Submission {
                 name, wins, losses, ..
-            } = Submission::parse(&row.userdata);
+            } = Submission::parse(&line.userdata);
             Entry {
-                category: row.category,
-                rank: row.rank,
-                profile_id: row.profile_id,
-                region: row.region,
-                score: row.score,
+                category,
+                // Equal scores share a rank.
+                rank: 1 + lines
+                    .iter()
+                    .filter(|other| other.score > line.score)
+                    .count() as i64,
+                profile_id: line.profile_id,
+                profile_ids: line.members.clone(),
+                player: owners
+                    .players
+                    .get(&line.profile_id)
+                    .and_then(|player| owners.names.get(player))
+                    .cloned(),
+                region: line.region,
+                score: line.score,
                 name,
                 wins,
                 losses,
-                updated_at: row.updated_at,
+                updated_at: line.stamp,
             }
         })
-        .collect())
+        .collect();
+    (entries, lines.len())
 }
 
 /// Each category's latest season (or day) before `today` that has scores:
@@ -216,48 +280,27 @@ async fn past(conn: &mut PgConnection, today: Date) -> Result<Vec<Past>, sqlx::E
     .fetch_all(&mut *conn)
     .await?;
 
-    let mut boards: BTreeMap<i32, Vec<Row>> = BTreeMap::new();
     let unreplaced = unreplaced
         .into_iter()
         .filter(|(first_day, row)| last.get(&row.category) == Some(first_day))
         .map(|(_, row)| row);
-    for row in kept.into_iter().chain(unreplaced) {
+    let rows: Vec<Row> = kept.into_iter().chain(unreplaced).collect();
+    let owners = Owners::read(conn, &rows).await?;
+    let mut boards: BTreeMap<i32, Vec<Row>> = BTreeMap::new();
+    for row in rows {
         boards.entry(row.category).or_default().push(row);
     }
     Ok(boards
         .into_iter()
-        .map(|(category, mut rows)| {
+        .map(|(category, rows)| {
             // As `top` and the game rank: equal scores share a rank.
-            rows.sort_by(|a, b| {
-                (b.score, a.updated_at, a.profile_id).cmp(&(a.score, b.updated_at, b.profile_id))
-            });
+            let (top, players) = leaders(category, rows, &owners);
             let first_day = last[&category];
-            let top = rows
-                .iter()
-                .take(TOP as usize)
-                .map(|row| {
-                    let Submission {
-                        name, wins, losses, ..
-                    } = Submission::parse(&row.userdata);
-                    Entry {
-                        category,
-                        rank: 1 + rows.iter().filter(|other| other.score > row.score).count()
-                            as i64,
-                        profile_id: row.profile_id,
-                        region: row.region,
-                        score: row.score,
-                        name,
-                        wins,
-                        losses,
-                        updated_at: row.updated_at,
-                    }
-                })
-                .collect();
             Past {
                 category,
                 first_day: first_day.to_string(),
                 last_day: season::last_day(category, first_day).to_string(),
-                players: rows.len(),
+                players,
                 top,
             }
         })
@@ -277,6 +320,106 @@ mod tests {
             userdata[at..at + 2].copy_from_slice(&unit.to_le_bytes());
         }
         userdata
+    }
+
+    /// Two WFC profiles of the games of `user` (European, US) that a
+    /// launcher proved for one Recharged player named `name`.
+    async fn one_player(pool: &PgPool, user: i64, name: &str) -> [i32; 2] {
+        let mut profiles = [0; 2];
+        crate::accounts::log_in(pool, user).await.unwrap();
+        for (at, game) in ["R4QPabcdefg", "R4QEabcdefg"].into_iter().enumerate() {
+            profiles[at] = crate::accounts::profile_login(pool, user, game, Some(name), "10.0.0.1")
+                .await
+                .unwrap()
+                .profile_id;
+        }
+        let player: i64 = sqlx::query_scalar!(
+            "INSERT INTO players (display_name) VALUES ($1) RETURNING player_id",
+            name
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        for profile in profiles {
+            sqlx::query!(
+                "INSERT INTO player_wfc_profiles (profile_id, player_id) VALUES ($1, $2)",
+                profile,
+                player
+            )
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+        profiles
+    }
+
+    #[sqlx::test]
+    async fn a_players_profiles_lead_as_one(pool: PgPool) {
+        let [europe, us] = one_player(&pool, 42, "Birnen").await;
+        for (pid, region, score, wins, losses, name) in [
+            (europe, 4, 171, 10, 4, "Birnen"),
+            (us, 2, 85, 5, 0, "Birnen US"),
+            (7, 4, 200, 12, 1, "Raulaso"),
+        ] {
+            sqlx::query!(
+                "INSERT INTO scores (profile_id, category, region, score, userdata)
+                 VALUES ($1, 0, $2, $3, $4)",
+                pid,
+                region,
+                score,
+                &userdata(wins, losses, name),
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let boards = read(&pool).await.unwrap();
+        let leaders: Vec<_> = boards
+            .top
+            .iter()
+            .map(|entry| {
+                (
+                    entry.rank,
+                    entry.profile_id,
+                    entry.profile_ids.clone(),
+                    entry.player.as_deref(),
+                    entry.name.as_deref(),
+                    entry.region,
+                    entry.score,
+                    entry.wins,
+                    entry.losses,
+                )
+            })
+            .collect();
+        let mut both = vec![europe, us];
+        both.sort_unstable();
+        assert_eq!(
+            leaders,
+            [
+                (
+                    1,
+                    europe,
+                    both,
+                    Some("Birnen"),
+                    Some("Birnen"),
+                    4,
+                    256,
+                    Some(15),
+                    Some(4)
+                ),
+                (
+                    2,
+                    7,
+                    vec![7],
+                    None,
+                    Some("Raulaso"),
+                    4,
+                    200,
+                    Some(12),
+                    Some(1)
+                ),
+            ]
+        );
     }
 
     #[sqlx::test]
