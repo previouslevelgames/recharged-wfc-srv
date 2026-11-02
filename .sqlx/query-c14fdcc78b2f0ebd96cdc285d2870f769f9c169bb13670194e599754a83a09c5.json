@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE matches SET state = 'expired', updated_at = now()\n         WHERE state = 'challenged' AND created_at < now() - interval '10 minutes'\n            OR state = 'challenged' AND random\n               AND created_at < now() - make_interval(secs => $1)\n            OR state = 'accepted' AND updated_at < now() - interval '2 hours'\n            OR state = 'accepted' AND playing_at IS NULL AND go_at IS NULL\n               AND home_ready_at IS NULL AND away_ready_at IS NULL\n               AND updated_at < now() - interval '10 minutes'\n         RETURNING match_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "match_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "match_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Float8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "c14fdcc78b2f0ebd96cdc285d2870f769f9c169bb13670194e599754a83a09c5"
+}

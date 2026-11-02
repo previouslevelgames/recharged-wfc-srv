@@ -162,7 +162,8 @@ struct Row {
 /// Ends the sets that waited too long or lost a player, and sends back the
 /// ones whose games never met. Returns the ended ones:
 /// - challenges after 10 minutes (random ones after [`RANDOM_ANSWER_SECS`]),
-///   accepted sets after 2 hours without a change (`expired`);
+///   stopped sets nobody is ready for after 10 minutes, accepted sets after
+///   2 hours without a change (`expired`);
 /// - sets with a player who closed Recharged (no request for
 ///   [`HEARTBEAT_TIMEOUT_SECS`]) and has not reported (`dissolved`);
 /// - playing sets without a report with a game that stopped saying it is
@@ -178,6 +179,9 @@ pub async fn sweep(pool: &PgPool) -> Result<Vec<i64>, sqlx::Error> {
             OR state = 'challenged' AND random
                AND created_at < now() - make_interval(secs => $1)
             OR state = 'accepted' AND updated_at < now() - interval '2 hours'
+            OR state = 'accepted' AND playing_at IS NULL AND go_at IS NULL
+               AND home_ready_at IS NULL AND away_ready_at IS NULL
+               AND updated_at < now() - interval '10 minutes'
          RETURNING match_id",
         f64::from(RANDOM_ANSWER_SECS),
     )
@@ -286,7 +290,8 @@ pub async fn get(
 
 /// `home` challenges `away` to a match by `rule_set`, perhaps again
 /// (`rematch_of`), or for `home`'s search (`random`). Each may have one match
-/// still to be played at a time.
+/// still to be played at a time; a stopped set of `home`'s that nobody plays
+/// (see [`busy`]) is called off by it.
 pub async fn challenge(
     pool: &PgPool,
     home: i64,
@@ -300,6 +305,7 @@ pub async fn challenge(
     if busy(&mut transaction, home, away).await? {
         return Ok(Err(Refusal::Busy));
     }
+    release_stopped(&mut transaction, home, None).await?;
     // A challenge is the challenger's Ready to play!: the accept starts the
     // set.
     let row = sqlx::query!(
@@ -352,7 +358,11 @@ async fn lock_players(
     Ok(())
 }
 
-/// Whether `first` or `second` has a match still to be played.
+/// Whether `first` or `second` has a match still to be played: a challenge
+/// waiting for its answer, or a set whose games are on their way (go) or
+/// playing. A stopped set (accepted, but a player took their Ready to play!
+/// back, left its search or the games never met) doesn't keep its players
+/// from another one: starting one calls it off ([`release_stopped`]).
 async fn busy(
     transaction: &mut Transaction<'_, Postgres>,
     first: i64,
@@ -360,13 +370,40 @@ async fn busy(
 ) -> Result<bool, sqlx::Error> {
     let busy = sqlx::query_scalar!(
         "SELECT count(*) AS \"busy!\" FROM matches
-         WHERE state IN ('challenged', 'accepted') AND (home IN ($1, $2) OR away IN ($1, $2))",
+         WHERE (state = 'challenged'
+                OR state = 'accepted' AND (go_at IS NOT NULL OR playing_at IS NOT NULL))
+           AND (home IN ($1, $2) OR away IN ($1, $2))",
         first,
         second,
     )
     .fetch_one(&mut **transaction)
     .await?;
     Ok(busy > 0)
+}
+
+/// `player_id` starts another set: their stopped sets (accepted, neither
+/// going nor playing), but `keep`, are called off (`cancelled`), so each
+/// player has one set at a time and the other player of such a set is free
+/// too.
+async fn release_stopped(
+    transaction: &mut Transaction<'_, Postgres>,
+    player_id: i64,
+    keep: Option<i64>,
+) -> Result<(), sqlx::Error> {
+    let released = sqlx::query_scalar!(
+        "UPDATE matches SET state = 'cancelled', updated_at = now()
+         WHERE state = 'accepted' AND go_at IS NULL AND playing_at IS NULL
+           AND (home = $1 OR away = $1) AND match_id IS DISTINCT FROM $2
+         RETURNING match_id",
+        player_id,
+        keep,
+    )
+    .fetch_all(&mut **transaction)
+    .await?;
+    for match_id in released {
+        tracing::info!(target: "profiles", match_id, player_id, "stopped set called off by another");
+    }
+    Ok(())
 }
 
 /// The challenged player accepts (their Ready to play!: with the
@@ -384,6 +421,14 @@ pub async fn answer(
         return Ok(Err(Refusal::NotYours));
     }
     let state = if accept { "accepted" } else { "declined" };
+    if accept {
+        // The two players' stopped sets give way to this one.
+        let mut transaction = pool.begin().await?;
+        lock_players(&mut transaction, found.home, found.away).await?;
+        release_stopped(&mut transaction, found.home, Some(match_id)).await?;
+        release_stopped(&mut transaction, found.away, Some(match_id)).await?;
+        transaction.commit().await?;
+    }
     let answered = move_state(pool, found, &["challenged"], state).await?;
     if !accept || answered.is_err() {
         return Ok(answered);
@@ -487,7 +532,8 @@ pub async fn game_ready(
 
 /// `player_id` plays the ended set `match_id` again, by the same rules: the
 /// opponent's rematch of it, if they offered one already, is accepted;
-/// otherwise this is a new challenge.
+/// otherwise this is a new challenge. A set that ended without a result
+/// (called off, expired, broken off) can be played again too.
 pub async fn rematch(
     pool: &PgPool,
     match_id: i64,
@@ -496,7 +542,10 @@ pub async fn rematch(
     let Some(found) = get(pool, match_id, player_id).await? else {
         return Ok(Err(Refusal::NotFound));
     };
-    if !matches!(found.state.as_str(), "finished" | "disputed") {
+    if !matches!(
+        found.state.as_str(),
+        "finished" | "disputed" | "cancelled" | "expired" | "dissolved"
+    ) {
         return Ok(Err(Refusal::State(found.stage().into())));
     }
     let opponent = found.opponent(player_id);

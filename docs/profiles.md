@@ -453,7 +453,7 @@ terrain and Thunder Island walls; 3 minutes before 1.2.7).
 | `POST /api/v1/matches/<id>/ready-to-play` | `{"ready": true}` or `false`: the launcher's Ready to play!, see "Sets" |
 | `POST /api/v1/matches/<id>/ready` | `{"profile_id", "rules_hash"}`: the game's, see below |
 | `POST /api/v1/matches/<id>/report` | `{"games": [...]}`, see below |
-| `POST /api/v1/matches/<id>/rematch` | After a finished or disputed set: the same opponent and rules again, see "Sets" |
+| `POST /api/v1/matches/<id>/rematch` | After a set that ended (finished, disputed, or without a result): the same opponent and rules again, see "Sets" |
 
 A match as the player sees it:
 
@@ -470,10 +470,12 @@ A match as the player sees it:
 
 `random` marks a challenge a search sent (see "Random opponents"). `state` is
 `challenged`, `accepted`, `declined`, `cancelled`, `expired` (a challenge
-unanswered for 10 minutes, a random one for 30 seconds, or an accepted match
-unchanged for 2 hours), `dissolved` (a player closed Recharged, or the set was broken off,
-see "Sets"), `finished` or `disputed`. Each player has one match to play at
-a time.
+unanswered for 10 minutes, a random one for 30 seconds, a stopped set nobody
+is ready for after 10 minutes, or an accepted match unchanged for 2 hours),
+`dissolved` (a player closed Recharged, or the set was broken off, see
+"Sets"), `finished` or `disputed`. Each player has one match to play at a
+time: a challenge waiting for its answer, or a set that goes or plays. A
+stopped set (`open`, see "Sets") keeps nobody from another one.
 
 ### Sets
 
@@ -496,6 +498,12 @@ still work:
   ready, then counts as not ready until it says so again.
 - A set whose games haven't met 5 minutes after the go waits for Ready to
   play! again.
+- A set that stopped before its games met (`open`: a player took Ready to
+  play! back, left the search or the games never met) keeps neither player
+  from another set: a challenge, an accept or a search of either calls it
+  off (`cancelled`), and nobody ready for it for 10 minutes ends it
+  (`expired`). The launchers and games of 1.2.0 call it off at once when
+  their player leaves the search, closes the game or answers **Not now**.
 - A player without a heartbeat for 60 seconds has closed Recharged: their
   sets without a report of theirs end (`dissolved`). So a challenger set
   lasts while both have Recharged open, and only a player with Recharged
@@ -510,6 +518,8 @@ still work:
   for launchers without the button.
 - `rematch`: the first player to ask challenges the other with the ended
   set's rules (`rematch_of` names it); the other's **Rematch** accepts it.
+  A set that ended without a result (called off, expired, broken off) can
+  be played again the same way.
 
 ### Meeting in RANKED
 

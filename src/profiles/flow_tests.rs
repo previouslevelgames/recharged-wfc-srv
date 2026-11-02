@@ -471,6 +471,81 @@ async fn a_search_leaves_out_players_in_the_games_online_mode(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn a_stopped_set_keeps_nobody_from_the_next(pool: PgPool) {
+    let world = World::new(pool);
+    let mario = world.sign_in("Mario").await;
+    let bowser = world.sign_in("Bowser").await;
+    let peach = world.sign_in("Peach").await;
+    let post = |path: String, token: &str, body: Value| {
+        let world = &world;
+        let token = token.to_owned();
+        async move { world.send("POST", &path, &token, body).await }
+    };
+    let challenge = |from: &str, to: &str| {
+        let body = json!({"opponent": to, "rule_set": 2});
+        post("/api/v1/matches".to_owned(), from, body)
+    };
+
+    // Mario and Bowser's set goes; while it goes, nobody can challenge them.
+    let (status, set) = challenge(&mario, "bowser").await;
+    assert_eq!(status, StatusCode::CREATED, "{set}");
+    let id = set["id"].as_i64().unwrap();
+    let (_, go) = post(format!("/api/v1/matches/{id}/accept"), &bowser, Value::Null).await;
+    assert_eq!(go["stage"], "go");
+    assert_eq!(challenge(&peach, "mario").await.0, StatusCode::CONFLICT);
+
+    // Bowser leaves its search (his Ready to play! goes back): the set stops,
+    // and keeps neither of them from another one.
+    let (_, open) = post(
+        format!("/api/v1/matches/{id}/ready-to-play"),
+        &bowser,
+        json!({"ready": false}),
+    )
+    .await;
+    assert_eq!(open["stage"], "open");
+    let (status, next) = challenge(&peach, "mario").await;
+    assert_eq!(status, StatusCode::CREATED, "{next}");
+    // Mario takes Peach's challenge: the stopped set is called off, for
+    // Bowser too, who is free for Peach after her set.
+    let next_id = next["id"].as_i64().unwrap();
+    let (status, accepted) = post(
+        format!("/api/v1/matches/{next_id}/accept"),
+        &mario,
+        Value::Null,
+    )
+    .await;
+    assert_eq!((status, &accepted["stage"]), (StatusCode::OK, &json!("go")));
+    let (_, bowsers) = world
+        .send("GET", "/api/v1/matches/current", &bowser, Value::Null)
+        .await;
+    assert_eq!(
+        (&bowsers["match"]["id"], &bowsers["match"]["state"]),
+        (&json!(id), &json!("cancelled"))
+    );
+    let (status, _) = post(
+        format!("/api/v1/matches/{next_id}/cancel"),
+        &peach,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // The called-off set can be played again: Bowser's rematch challenges
+    // Mario by its rules.
+    let (status, again) = post(
+        format!("/api/v1/matches/{id}/rematch"),
+        &bowser,
+        Value::Null,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{again}");
+    assert_eq!(
+        (&again["rematch_of"], &again["stage"]),
+        (&json!(id), &json!("invited"))
+    );
+}
+
+#[sqlx::test]
 async fn a_set_pairs_only_players_on_one_version(pool: PgPool) {
     let world = World::new(pool);
     // Birnen has a US and an EU profile and plays the EU game now; Mario

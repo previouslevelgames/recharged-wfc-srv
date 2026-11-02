@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT count(*) AS \"busy!\" FROM matches\n         WHERE state IN ('challenged', 'accepted') AND (home IN ($1, $2) OR away IN ($1, $2))",
+  "query": "SELECT count(*) AS \"busy!\" FROM matches\n         WHERE (state = 'challenged'\n                OR state = 'accepted' AND (go_at IS NOT NULL OR playing_at IS NOT NULL))\n           AND (home IN ($1, $2) OR away IN ($1, $2))",
   "describe": {
     "columns": [
       {
@@ -20,5 +20,5 @@
       null
     ]
   },
-  "hash": "ee150c43a8aa622e778032b496093dd05debb0b0758ab11ac2aaa83d3ae4d82e"
+  "hash": "07c612734b7f3598e67ccaabf2b067c3d15df0494dd91285ead57e07414a4d04"
 }
