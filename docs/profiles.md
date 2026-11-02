@@ -380,10 +380,16 @@ A person with two rows (two WFC accounts, a Mii of each version, or a Mii
 player and a Discord player) is put together on the admin dashboard, on a
 profile's page (owners only):
 
-- **Link to a player** binds that WFC profile to a player by their number
-  (`PUT /admin/api/wfc-profiles/<profile>/player`, `{"player_id": <id>}`, or
-  `null` to unlink); a launcher that proves the profile later binds it to its
-  own player again.
+- **Link…** puts that WFC profile together with another WFC profile of the
+  same person, by its profile number (`PUT
+  /admin/api/wfc-profiles/<profile>/player`, `{"profile_id": <other>}`): both
+  play for the player either plays for already, or for a new one named after
+  the Mii when neither does (a person who never signed in from a launcher);
+  refused when they play for two players (merge those). It answers the player
+  (`player_id`, `name`, `created`). Or it binds the profile to a player by
+  their number (`{"player_id": <id>}`, or `null` to unlink). A launcher that
+  proves a profile later binds it to its own player again (merge the made one
+  into it then).
 - **Merge another player into this one**, in two asks as the leaderboard wipe
   (`POST /admin/api/players/merge` with `{"from", "into"}` answers what it
   moves, the phrase and a token; `.../merge/confirm` with them merges): the

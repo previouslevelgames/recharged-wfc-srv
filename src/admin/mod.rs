@@ -669,10 +669,14 @@ async fn wipe_leaderboards(
     }
 }
 
-/// A WFC profile's player, set by hand: a player id, or `null` for none.
+/// A WFC profile's player, set by hand: a player id, or `null` for none; or
+/// another WFC profile (`profile_id`) to play for one player with.
 #[derive(Deserialize)]
 struct LinkForm {
+    #[serde(default)]
     player_id: Option<i64>,
+    #[serde(default)]
+    profile_id: Option<i32>,
 }
 
 async fn link_profile(
@@ -686,6 +690,20 @@ async fn link_profile(
         Ok(owner) => owner,
         Err(status) => return status.into_response(),
     };
+    if let Some(other) = form.profile_id {
+        return match merge::pair(&state.pool, profile_id, other).await {
+            Ok(Ok(paired)) => {
+                info!(target: "admin", email = %owner.email, profile_id, other, player_id = paired.player_id,
+                      created = paired.created, "WFC profiles linked by hand");
+                Json(paired).into_response()
+            }
+            Ok(Err(refusal)) => error(StatusCode::CONFLICT, refusal),
+            Err(failure) => {
+                warn!(target: "admin", error = %failure, "database error");
+                error(StatusCode::INTERNAL_SERVER_ERROR, "the database failed")
+            }
+        };
+    }
     match merge::link(&state.pool, profile_id, form.player_id).await {
         Ok(Ok(())) => {
             info!(target: "admin", email = %owner.email, profile_id, player_id = ?form.player_id,

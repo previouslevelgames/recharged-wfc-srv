@@ -812,7 +812,7 @@ function renderPlayer(data, now) {
       tile('Release', profile.release, profile.gsbrcd),
       tile('Account', h('code', null, `${profile.user_id}`), 'The console, registered with NAS'),
       tile('Last sign-in', profile.cpu_buddy ? '—' : ago(profile.last_login_at, now), profile.last_ip || 'No address'),
-      tile('Recharged player', player ? player.name : '—', player ? (player.discord ? `Discord ${player.discord}` : 'Test player') : 'Not signed in from the launcher'),
+      tile('Recharged player', player ? player.name : '—', player ? (player.discord ? `Discord ${player.discord} · player #${player.player_id}` : `Player #${player.player_id}`) : 'Not signed in from the launcher'),
     ),
     profile.cpu_buddy ? null : playerCard(profile),
     card(
@@ -2539,7 +2539,7 @@ const wipe = {
 function playerCard(profile) {
   const player = profile.player;
   const tools = [
-    h('button', { class: 'button', type: 'button', onclick: () => playerTools.openLink(profile) }, player ? 'Link to another player…' : 'Link to a player…'),
+    h('button', { class: 'button', type: 'button', onclick: () => playerTools.openLink(profile) }, 'Link…'),
   ];
   if (player) {
     tools.push(h('button', { class: 'button', type: 'button', onclick: () => playerTools.unlink(profile) }, 'Unlink'));
@@ -2589,24 +2589,60 @@ const playerTools = {
     return h('input', { type: 'number', min: '1', step: '1', inputmode: 'numeric', autocomplete: 'off', required: true });
   },
 
+  /** Link a profile with another WFC profile of the same person (by its
+   * profile number, as on its page; a player is made for both when neither
+   * has one), or to a player by their number. */
   openLink(profile) {
     const input = this.playerInput();
+    const kinds = [
+      { key: 'profile', label: 'Another WFC profile', field: 'WFC profile number', about: 'The other profile’s number is under its Mii name on its page. When neither plays for a Recharged player, a new one, named after this Mii, gets both.' },
+      { key: 'player', label: 'A player', field: 'Player number', about: 'The player’s number is in the Recharged player card of any of their profiles (player #…).' },
+    ];
+    let kind = kinds[0];
+    const field = h('span', null, kind.field);
+    const about = h('p', null, kind.about);
+    const buttons = kinds.map((choice) =>
+      h('button', {
+        type: 'button',
+        'aria-pressed': String(choice === kind),
+        onclick: () => {
+          kind = choice;
+          buttons.forEach((button, index) => button.setAttribute('aria-pressed', String(kinds[index] === kind)));
+          field.textContent = kind.field;
+          about.textContent = kind.about;
+          input.focus();
+        },
+      }, choice.label),
+    );
     const submit = h('button', { class: 'button', type: 'submit' }, 'Link');
     submit.addEventListener('click', async (event) => {
       event.preventDefault();
-      const playerId = Number(input.value);
-      if (!Number.isInteger(playerId) || playerId < 1) return;
+      const number = Number(input.value);
+      if (!Number.isInteger(number) || number < 1) return;
+      const path = `/admin/api/wfc-profiles/${profile.profile_id}/player`;
       try {
-        await send('PUT', `/admin/api/wfc-profiles/${profile.profile_id}/player`, { player_id: playerId });
-        this.done(`Profile ${profile.profile_id} now plays for player #${playerId}.`, 'good');
+        if (kind.key === 'profile') {
+          const paired = await send('PUT', path, { profile_id: number });
+          this.done(
+            paired.created
+              ? `Profiles ${profile.profile_id} and ${number} now play for a new player, ${paired.name} (#${paired.player_id}).`
+              : `Profiles ${profile.profile_id} and ${number} now play for ${paired.name} (#${paired.player_id}).`,
+            'good',
+          );
+        } else {
+          await send('PUT', path, { player_id: number });
+          this.done(`Profile ${profile.profile_id} now plays for player #${number}.`, 'good');
+        }
       } catch (error) {
         this.done(error.message, 'critical');
       }
     });
     this.show(
-      `Link ${profile.mii_name || 'this profile'} to a player`,
-      h('p', null, 'Its leaderboard rows then count for that player. The player’s number is on the profile page of any of their profiles.'),
-      h('label', { class: 'editor-field' }, h('span', null, 'Player number'), input),
+      `Link ${profile.mii_name || 'this profile'}`,
+      h('p', null, 'Its leaderboard rows then count for one player, together with the other’s.'),
+      h('div', { class: 'segmented', role: 'group', 'aria-label': 'Link with' }, buttons),
+      about,
+      h('label', { class: 'editor-field' }, field, input),
       h('div', { class: 'editor-actions' }, h('button', { class: 'button', type: 'button', onclick: () => this.dialog.close() }, 'Cancel'), submit),
     );
     input.focus();
