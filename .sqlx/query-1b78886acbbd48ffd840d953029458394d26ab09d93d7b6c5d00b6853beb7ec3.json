@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT count(*)::INTEGER AS \"count!\" FROM players\n           WHERE heartbeat_at > now() - make_interval(secs => $1)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int4",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Float8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "1b78886acbbd48ffd840d953029458394d26ab09d93d7b6c5d00b6853beb7ec3"
+}
