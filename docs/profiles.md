@@ -505,15 +505,16 @@ still work:
   (`expired`). The launchers and games of 1.2.0 call it off at once when
   their player leaves the search, closes the game or answers **Not now**.
 - A player without a heartbeat for 60 seconds has closed Recharged: their
-  sets without a report of theirs end (`dissolved`). So a challenger set
+  sets without a report of theirs end (`dissolved`), unless the other
+  player's report settles them (see "Results"). So a challenger set
   lasts while both have Recharged open, and only a player with Recharged
   open can be challenged.
 - A playing set with a game that stopped saying it is ready (below) 60
   seconds ago, and that neither player reported, was broken off: it ends
   without a result (`dissolved`), even while both have Recharged open. A
-  set with one report waits for the other's, 5 minutes at most: then it
-  ends without a result too (`dissolved`), as when the games disagreed on
-  the series or a report got lost.
+  set with one report waits for the other's, 5 minutes at most, or until
+  the other player closed Recharged: then the one report settles it (see
+  "Results"), or it ends without a result when nothing in it counts.
 - A game saying it is ready (below) counts as its player's Ready to play!,
   for launchers without the button.
 - `rematch`: the first player to ask challenges the other with the ended
@@ -550,7 +551,19 @@ After the series, each game reports what it saw, game by game:
 
 A report holds 1 to `games` games (the whole series, decided or not, e.g.
 when it ended early); captains and stadiums are lowercase names.
+
+A game that broke off (a player left or lost the connection; 1.2.0 games from
+2026-11-03 on) is the report's last, with its score then, `"interrupted":
+true` and `"played"`, how much of its clock went (0 to 1). It counts at that
+score once a third of it was played and a goal was scored: a third of its
+clock, or for a goal limit, a third of the goals by the leader (first to 10:
+4). A 0-0 that broke off never counts. A server before 1.2.8 refuses such a
+report; the games then report the series without it.
+
 The second report settles the match: `finished` with the series' winner (more
-games won; `winner` is `you`, `opponent` or `draw`) when both saw the same
-games, `disputed` otherwise. A player reports once. The view then shows the
-player's own report as `games`.
+of the counting games won; `winner` is `you`, `opponent` or `draw`) when both
+saw the same games (a broken-off game's `played` may differ a little), no
+result (`dissolved`) when nothing counts, and `disputed` when they saw
+different games. A player reports once. The view then shows the player's own
+report as `games`. When the other player closed Recharged, or 5 minutes pass
+without their report, the one report settles the set the same way.

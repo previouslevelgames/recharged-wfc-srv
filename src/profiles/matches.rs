@@ -26,8 +26,13 @@ const GO_TIMEOUT_SECS: i32 = 300;
 /// reported: the set was broken off and ends (`dissolved`).
 const GAME_GONE_SECS: i32 = 60;
 /// One player reported this long ago and the other never did (their games
-/// disagreed on the series, or a report got lost): the set ends (`dissolved`).
+/// disagreed on the series, or a report got lost): the set is settled from
+/// the one report, or ends (`dissolved`) when nothing in it counts.
 const ONE_REPORT_SECS: i32 = 300;
+/// A game that broke off (a player left or lost the connection) counts, at
+/// its score then, once this much of it was played and a goal was scored:
+/// of its clock, or for a goal limit, of its goals by the leader.
+const PLAYED_TO_COUNT: f64 = 1.0 / 3.0;
 
 /// A match as it is stored.
 #[derive(Clone, Debug, PartialEq)]
@@ -108,6 +113,13 @@ pub struct Game {
     pub my_captain: String,
     pub opponent_captain: String,
     pub stadium: String,
+    /// The game broke off at this score (a player left or lost the
+    /// connection): the series' last game. Older games don't say.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub interrupted: bool,
+    /// How much of a broken-off game was played, 0 to 1 (of its clock).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub played: Option<f32>,
 }
 
 impl Game {
@@ -119,8 +131,71 @@ impl Game {
             my_captain: self.opponent_captain.clone(),
             opponent_captain: self.my_captain.clone(),
             stadium: self.stadium.clone(),
+            interrupted: self.interrupted,
+            played: self.played,
         }
     }
+
+    /// Whether two reports saw the same game: the same score, captains and
+    /// stadium, and both a broken-off game or not (how much of it was played
+    /// differs a little between the machines' clocks).
+    fn same(&self, other: &Self) -> bool {
+        (
+            &self.my_score,
+            &self.opponent_score,
+            &self.my_captain,
+            &self.opponent_captain,
+            &self.stadium,
+            self.interrupted,
+        ) == (
+            &other.my_score,
+            &other.opponent_score,
+            &other.my_captain,
+            &other.opponent_captain,
+            &other.stadium,
+            other.interrupted,
+        )
+    }
+
+    /// Whether the game counts for the set's result: a played game, or a
+    /// broken-off one once [`PLAYED_TO_COUNT`] of it was played and a goal
+    /// was scored (a 0-0 that broke off never counts).
+    pub fn counts(&self, rules: &Rules) -> bool {
+        if !self.interrupted {
+            return true;
+        }
+        if self.my_score + self.opponent_score == 0 {
+            return false;
+        }
+        let played = if rules.limit == "goals" {
+            f64::from(self.my_score.max(self.opponent_score)) / f64::from(rules.goals.max(1))
+        } else {
+            f64::from(self.played.unwrap_or(0.0))
+        };
+        played >= PLAYED_TO_COUNT - 1e-6
+    }
+}
+
+/// The result of the counting games of a report (`player_id`'s view): its
+/// winner, or none for as many won as lost; `None` when no game counts.
+fn result_of(rules: &Rules, games: &[Game], player_id: i64, opponent: i64) -> Option<Option<i64>> {
+    let counted: Vec<&Game> = games.iter().filter(|game| game.counts(rules)).collect();
+    if counted.is_empty() {
+        return None;
+    }
+    let won = counted
+        .iter()
+        .filter(|game| game.my_score > game.opponent_score)
+        .count();
+    let lost = counted
+        .iter()
+        .filter(|game| game.my_score < game.opponent_score)
+        .count();
+    Some(match won.cmp(&lost) {
+        std::cmp::Ordering::Greater => Some(player_id),
+        std::cmp::Ordering::Less => Some(opponent),
+        std::cmp::Ordering::Equal => None,
+    })
 }
 
 /// Why a request about a match is refused.
@@ -168,13 +243,17 @@ struct Row {
 ///   [`HEARTBEAT_TIMEOUT_SECS`]) and has not reported (`dissolved`);
 /// - playing sets without a report with a game that stopped saying it is
 ///   ready [`GAME_GONE_SECS`] ago (`dissolved`);
-/// - sets with one report [`ONE_REPORT_SECS`] old and none from the other
-///   player (`dissolved`);
+/// - sets with one report and the other player gone (Recharged closed, or
+///   [`ONE_REPORT_SECS`] without their report): settled from
+///   the one report when a game in it counts ([`Game::counts`]), else
+///   `dissolved`;
 /// - a go older than [`GO_TIMEOUT_SECS`] without the games meeting: both
 ///   players are not ready again.
 pub async fn sweep(pool: &PgPool) -> Result<Vec<i64>, sqlx::Error> {
-    let mut ended = sqlx::query_scalar!(
-        "UPDATE matches SET state = 'expired', updated_at = now()
+    let mut ended = settle_one_report(pool).await?;
+    ended.extend(
+        sqlx::query_scalar!(
+            "UPDATE matches SET state = 'expired', updated_at = now()
          WHERE state = 'challenged' AND created_at < now() - interval '10 minutes'
             OR state = 'challenged' AND random
                AND created_at < now() - make_interval(secs => $1)
@@ -183,10 +262,11 @@ pub async fn sweep(pool: &PgPool) -> Result<Vec<i64>, sqlx::Error> {
                AND home_ready_at IS NULL AND away_ready_at IS NULL
                AND updated_at < now() - interval '10 minutes'
          RETURNING match_id",
-        f64::from(RANDOM_ANSWER_SECS),
-    )
-    .fetch_all(pool)
-    .await?;
+            f64::from(RANDOM_ANSWER_SECS),
+        )
+        .fetch_all(pool)
+        .await?,
+    );
     ended.extend(
         sqlx::query_scalar!(
             "UPDATE matches SET state = 'dissolved', updated_at = now()
@@ -340,6 +420,56 @@ pub async fn challenge(
         rematch_of,
         random,
     }))
+}
+
+/// Sets one player reported while the other's report won't come any more:
+/// they closed Recharged, or [`ONE_REPORT_SECS`] passed. A set with a game that counts
+/// ([`Game::counts`]) is settled from the one report, as it stood when the
+/// other player's game went; the others end below. Returns the settled ones.
+async fn settle_one_report(pool: &PgPool) -> Result<Vec<i64>, sqlx::Error> {
+    let rows = sqlx::query!(
+        r#"SELECT m.match_id, r.player_id AS reporter, r.games
+           FROM matches m JOIN match_reports r USING (match_id)
+           JOIN players other
+             ON other.player_id = CASE WHEN r.player_id = m.home THEN m.away ELSE m.home END
+           WHERE m.state = 'accepted'
+             AND (SELECT count(*) FROM match_reports x WHERE x.match_id = m.match_id) = 1
+             AND (r.reported_at < now() - make_interval(secs => $1)
+                  OR coalesce(other.heartbeat_at, m.created_at) < now() - make_interval(secs => $2))"#,
+        f64::from(ONE_REPORT_SECS),
+        f64::from(HEARTBEAT_TIMEOUT_SECS),
+    )
+    .fetch_all(pool)
+    .await?;
+    let mut settled = Vec::new();
+    for row in rows {
+        let Some(found) = get(pool, row.match_id, row.reporter).await? else {
+            continue;
+        };
+        let games: Vec<Game> = serde_json::from_str(&row.games).unwrap_or_default();
+        let Some(winner) = result_of(
+            &found.rules,
+            &games,
+            row.reporter,
+            found.opponent(row.reporter),
+        ) else {
+            continue;
+        };
+        let updated = sqlx::query!(
+            "UPDATE matches SET state = 'finished', winner = $2, updated_at = now()
+             WHERE match_id = $1 AND state = 'accepted'",
+            row.match_id,
+            winner,
+        )
+        .execute(pool)
+        .await?
+        .rows_affected();
+        if updated == 1 {
+            tracing::info!(target: "profiles", match_id = row.match_id, reporter = row.reporter, ?winner, "set settled from one report");
+            settled.push(row.match_id);
+        }
+    }
+    Ok(settled)
 }
 
 /// Two challenges at once must not both pass the busy check.
@@ -665,22 +795,14 @@ async fn settle(
         && games
             .iter()
             .zip(other)
-            .all(|(mine, theirs)| *mine == theirs.mirrored());
+            .all(|(mine, theirs)| mine.same(&theirs.mirrored()));
+    // The counting games decide; a set that broke off before anything counts
+    // ends without a result.
     let (state, winner) = if agree {
-        let won = games
-            .iter()
-            .filter(|game| game.my_score > game.opponent_score)
-            .count();
-        let lost = games
-            .iter()
-            .filter(|game| game.my_score < game.opponent_score)
-            .count();
-        let winner = match won.cmp(&lost) {
-            std::cmp::Ordering::Greater => Some(player_id),
-            std::cmp::Ordering::Less => Some(found.opponent(player_id)),
-            std::cmp::Ordering::Equal => None,
-        };
-        ("finished", winner)
+        match result_of(&found.rules, games, player_id, found.opponent(player_id)) {
+            Some(winner) => ("finished", winner),
+            None => ("dissolved", None),
+        }
     } else {
         ("disputed", None)
     };
@@ -705,9 +827,18 @@ fn check_report(rules: &Rules, games: &[Game]) -> Result<(), String> {
     if games.is_empty() || games.len() > usize::from(rules.games).min(MAX_GAMES) {
         return Err(format!("a report has 1 to {} games", rules.games));
     }
-    for game in games {
+    for (index, game) in games.iter().enumerate() {
         if game.my_score > 99 || game.opponent_score > 99 {
             return Err("scores are 0 to 99".into());
+        }
+        if game.interrupted && index + 1 != games.len() {
+            return Err("only the last game can have broken off".into());
+        }
+        if game
+            .played
+            .is_some_and(|played| !(0.0..=1.0).contains(&played))
+        {
+            return Err("played is 0 to 1".into());
         }
         for name in [&game.my_captain, &game.opponent_captain, &game.stadium] {
             let valid = (1..=32).contains(&name.len())
@@ -815,7 +946,167 @@ mod tests {
             my_captain: "mario".into(),
             opponent_captain: "bowser".into(),
             stadium: "the_palace".into(),
+            interrupted: false,
+            played: None,
         }
+    }
+
+    fn broke_off(mine: u32, theirs: u32, played: f32) -> Game {
+        Game {
+            interrupted: true,
+            played: Some(played),
+            ..game(mine, theirs)
+        }
+    }
+
+    async fn rule_set(pool: &PgPool, name: &str) -> RuleSet {
+        rules::list(pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|set| set.name == name)
+            .unwrap()
+    }
+
+    /// An accepted set of `home` against `away` by `rules`.
+    async fn accepted(pool: &PgPool, home: i64, away: i64, rules: &RuleSet) -> Match {
+        let made = challenge(pool, home, away, rules, None, false)
+            .await
+            .unwrap()
+            .unwrap();
+        answer(pool, made.id, away, true).await.unwrap().unwrap()
+    }
+
+    #[sqlx::test]
+    async fn a_game_that_broke_off_counts_once_a_third_was_played(pool: PgPool) {
+        let (mario, bowser) = (player(&pool, "Mario").await, player(&pool, "Bowser").await);
+        let by_time = rule_set(&pool, "Retail ranked").await;
+        let by_goals = competitive(&pool).await;
+        assert_eq!(
+            (by_time.rules.limit.as_str(), by_goals.rules.goals),
+            ("time", 10)
+        );
+
+        // By time, a third of its clock; by goals, a third of them by the
+        // leader. A 0-0 that broke off never counts; played games always do.
+        assert!(!broke_off(1, 0, 0.3).counts(&by_time.rules));
+        assert!(broke_off(1, 0, 0.34).counts(&by_time.rules));
+        assert!(!broke_off(0, 0, 0.9).counts(&by_time.rules));
+        assert!(broke_off(4, 1, 0.0).counts(&by_goals.rules));
+        assert!(!broke_off(3, 2, 0.9).counts(&by_goals.rules));
+        assert!(game(0, 0).counts(&by_time.rules));
+
+        // Both games report it: it counts at its score, though their clocks
+        // saw a little more or less of it.
+        let set = accepted(&pool, mario, bowser, &by_time).await;
+        let mario_saw = [game(3, 1), broke_off(2, 0, 0.4)];
+        let mut bowser_saw: Vec<Game> = mario_saw.iter().map(Game::mirrored).collect();
+        bowser_saw[1].played = Some(0.41);
+        report(&pool, set.id, mario, &mario_saw)
+            .await
+            .unwrap()
+            .unwrap();
+        let settled = report(&pool, set.id, bowser, &bowser_saw)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (settled.state.as_str(), settled.winner),
+            ("finished", Some(mario))
+        );
+
+        // Too early: only the played game counts.
+        let set = accepted(&pool, bowser, mario, &by_time).await;
+        let bowser_saw = [game(0, 2), broke_off(3, 0, 0.2)];
+        let mario_saw: Vec<Game> = bowser_saw.iter().map(Game::mirrored).collect();
+        report(&pool, set.id, bowser, &bowser_saw)
+            .await
+            .unwrap()
+            .unwrap();
+        let settled = report(&pool, set.id, mario, &mario_saw)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (settled.state.as_str(), settled.winner),
+            ("finished", Some(mario))
+        );
+
+        // Nothing counts: no result.
+        let set = accepted(&pool, mario, bowser, &by_time).await;
+        report(&pool, set.id, mario, &[broke_off(0, 0, 0.8)])
+            .await
+            .unwrap()
+            .unwrap();
+        let settled = report(&pool, set.id, bowser, &[broke_off(0, 0, 0.8).mirrored()])
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (settled.state.as_str(), settled.winner),
+            ("dissolved", None)
+        );
+        // Only the last game can have broken off.
+        let set = accepted(&pool, mario, bowser, &by_time).await;
+        assert!(matches!(
+            report(&pool, set.id, mario, &[broke_off(1, 0, 0.5), game(1, 0)])
+                .await
+                .unwrap(),
+            Err(Refusal::BadReport(_))
+        ));
+        cancel(&pool, set.id, mario).await.unwrap().unwrap();
+    }
+
+    #[sqlx::test]
+    async fn a_set_whose_other_player_went_is_settled_from_one_report(pool: PgPool) {
+        let (mario, bowser) = (player(&pool, "Mario").await, player(&pool, "Bowser").await);
+        let by_time = rule_set(&pool, "Retail ranked").await;
+        let gone = |player_id: i64| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query!(
+                    "UPDATE players SET heartbeat_at = now() - interval '2 minutes' WHERE player_id = $1",
+                    player_id
+                )
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+        };
+
+        // Bowser's Recharged closed in game 2, after Mario's goal half-way
+        // through: Mario's report settles the set.
+        let set = accepted(&pool, mario, bowser, &by_time).await;
+        report(&pool, set.id, mario, &[game(3, 1), broke_off(1, 0, 0.5)])
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            sweep(&pool).await.unwrap().is_empty(),
+            "Bowser is still there"
+        );
+        gone(bowser).await;
+        assert_eq!(sweep(&pool).await.unwrap(), [set.id]);
+        let settled = get(&pool, set.id, mario).await.unwrap().unwrap();
+        assert_eq!(
+            (settled.state.as_str(), settled.winner),
+            ("finished", Some(mario))
+        );
+
+        // Gone before anything counted: no result.
+        sqlx::query!("UPDATE players SET heartbeat_at = now()")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let set = accepted(&pool, mario, bowser, &by_time).await;
+        report(&pool, set.id, mario, &[broke_off(1, 0, 0.1)])
+            .await
+            .unwrap()
+            .unwrap();
+        gone(bowser).await;
+        assert_eq!(sweep(&pool).await.unwrap(), [set.id]);
+        let ended = get(&pool, set.id, mario).await.unwrap().unwrap();
+        assert_eq!((ended.state.as_str(), ended.winner), ("dissolved", None));
     }
 
     #[sqlx::test]
@@ -1088,7 +1379,7 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn closing_recharged_dissolves_the_set(pool: PgPool) {
+    async fn closing_recharged_settles_or_dissolves_the_set(pool: PgPool) {
         let (mario, bowser) = (player(&pool, "Mario").await, player(&pool, "Bowser").await);
         let rules = competitive(&pool).await;
         let found = challenge(&pool, mario, bowser, &rules, None, false)
@@ -1108,13 +1399,13 @@ mod tests {
             .unwrap();
         seen(&pool, 61, &[mario]).await;
         assert!(sweep(&pool).await.unwrap().is_empty());
-        // Bowser's Recharged went away without a report.
+        // Bowser's Recharged went away without a report: Mario's settles it.
         seen(&pool, 61, &[bowser]).await;
         assert_eq!(sweep(&pool).await.unwrap(), [found.id]);
         let ended = get(&pool, found.id, mario).await.unwrap().unwrap();
         assert_eq!(
-            (ended.state.as_str(), ended.stage()),
-            ("dissolved", "dissolved")
+            (ended.state.as_str(), ended.winner),
+            ("finished", Some(mario))
         );
     }
 
@@ -1203,7 +1494,7 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn a_set_whose_second_report_never_comes_ends(pool: PgPool) {
+    async fn a_set_whose_second_report_never_comes_is_settled_from_the_first(pool: PgPool) {
         let (found, mario, bowser) = playing_set(&pool).await;
         report(&pool, found.id, mario, &[game(1, 0)])
             .await
@@ -1223,13 +1514,13 @@ mod tests {
         // Bowser's report may still come: the set waits.
         reported_ago(290).await;
         assert!(sweep(&pool).await.unwrap().is_empty());
-        // It never came: no result, and neither is in a set any more.
+        // It never came: Mario's settles it, and neither is in a set any more.
         reported_ago(301).await;
         assert_eq!(sweep(&pool).await.unwrap(), [found.id]);
         let ended = get(&pool, found.id, mario).await.unwrap().unwrap();
         assert_eq!(
-            (ended.state.as_str(), ended.stage(), ended.winner),
-            ("dissolved", "dissolved", None)
+            (ended.state.as_str(), ended.winner),
+            ("finished", Some(mario))
         );
         assert!(!busy_now(&pool, mario, bowser).await);
     }
