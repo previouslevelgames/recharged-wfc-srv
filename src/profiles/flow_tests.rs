@@ -471,6 +471,103 @@ async fn a_search_leaves_out_players_in_the_games_online_mode(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn a_set_pairs_only_players_on_one_version(pool: PgPool) {
+    let world = World::new(pool);
+    // Birnen has a US and an EU profile and plays the EU game now; Mario
+    // plays the US game. RANKED never pairs those games.
+    let mario = world.sign_in("Mario").await;
+    let birnen = world.sign_in("Birnen").await;
+    let mine = world.wfc_login(1, "R4QEaaaaaaa").await;
+    let his_us = world.wfc_login(2, "R4QEbbbbbbb").await;
+    let his_eu = world.wfc_login(3, "R4QPbbbbbbb").await;
+    assert_eq!(world.prove(&mario, mine).await.0, StatusCode::OK);
+    assert_eq!(world.prove(&birnen, his_us).await.0, StatusCode::OK);
+    assert_eq!(world.prove(&birnen, his_eu).await.0, StatusCode::OK);
+    let as_game = |game| [("recharged-game", game)];
+    let (status, _) = world
+        .send_with(
+            "PUT",
+            "/api/v1/me/available",
+            &birnen,
+            &as_game("R4QP"),
+            json!({"available": true}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // A challenge: refused, saying why.
+    let (status, body) = world
+        .send_with(
+            "POST",
+            "/api/v1/matches",
+            &mario,
+            &as_game("R4QE"),
+            json!({"opponent": "birnen", "rule_set": 2}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let error = body["error"].as_str().unwrap();
+    assert!(
+        error.contains("the European version") && error.contains("the American version"),
+        "{error}"
+    );
+
+    // A search: he isn't asked, though he has a US profile.
+    let rules = json!({"tweaks": [], "limit": "time", "time": 120, "goals": 5, "games": 1,
+                       "stadium": "random"});
+    let (status, body) = world
+        .send_with(
+            "POST",
+            "/api/v1/search",
+            &mario,
+            &as_game("R4QE"),
+            json!({"rules": rules, "name": "Mine", "game": "R4QE"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["search"]["asked"], 0);
+    let (status, _) = world
+        .send("DELETE", "/api/v1/search", &mario, Value::Null)
+        .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // A request that doesn't say keeps the game known; then he plays the US
+    // game, and the challenge goes.
+    world
+        .send("GET", "/api/v1/matches/current", &birnen, Value::Null)
+        .await;
+    let (status, _) = world
+        .send_with(
+            "POST",
+            "/api/v1/matches",
+            &mario,
+            &as_game("R4QE"),
+            json!({"opponent": "birnen", "rule_set": 2}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    world
+        .send_with(
+            "GET",
+            "/api/v1/matches/current",
+            &birnen,
+            &as_game("R4QE"),
+            Value::Null,
+        )
+        .await;
+    let (status, body) = world
+        .send_with(
+            "POST",
+            "/api/v1/matches",
+            &mario,
+            &as_game("R4QE"),
+            json!({"opponent": "birnen", "rule_set": 2}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+}
+
+#[sqlx::test]
 async fn a_search_asks_players_open_to_challenges(pool: PgPool) {
     let world = World::new(pool);
     // Mario searches; Peach and Luigi are open to challenges and play the

@@ -420,26 +420,64 @@ impl MatchKind {
 }
 
 /// `player_id`'s launcher or game made a request: they have Recharged open,
-/// doing `activity`, in a match of `kind` (written at most every few
-/// seconds, and at once when either changes).
+/// doing `activity`, in a match of `kind`, playing `game` when it says
+/// (written at most every few seconds, and at once when any changes; a
+/// request that doesn't say keeps the game known).
 pub async fn heartbeat(
     pool: &PgPool,
     player_id: i64,
     (activity, kind): (Activity, Option<MatchKind>),
+    game: Option<&str>,
 ) -> Result<(), sqlx::Error> {
     let kind = (activity == Activity::Match).then_some(kind).flatten();
     sqlx::query!(
-        "UPDATE players SET heartbeat_at = now(), activity = $2, match_kind = $3
+        "UPDATE players SET heartbeat_at = now(), activity = $2, match_kind = $3,
+                            game = coalesce($4, game)
          WHERE player_id = $1
            AND (heartbeat_at IS NULL OR heartbeat_at < now() - interval '5 seconds'
-                OR activity IS DISTINCT FROM $2 OR match_kind IS DISTINCT FROM $3)",
+                OR activity IS DISTINCT FROM $2 OR match_kind IS DISTINCT FROM $3
+                OR ($4::TEXT IS NOT NULL AND game IS DISTINCT FROM $4))",
         player_id,
         activity.column(),
         kind.map(MatchKind::name),
+        game,
     )
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// The game a request's launcher or game plays (its `Recharged-Game`
+/// header: the first four characters of the game's id, such as R4QE), if it
+/// says; older ones don't.
+pub fn game_from_headers(headers: &axum::http::HeaderMap) -> Option<String> {
+    let value = headers.get("recharged-game")?.to_str().ok()?.trim();
+    (value.len() == 4
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit()))
+    .then(|| value.to_owned())
+}
+
+/// The game `player_id`'s Recharged plays now, as far as it said.
+pub async fn game(pool: &PgPool, player_id: i64) -> Result<Option<String>, sqlx::Error> {
+    Ok(
+        sqlx::query_scalar!("SELECT game FROM players WHERE player_id = $1", player_id)
+            .fetch_optional(pool)
+            .await?
+            .flatten(),
+    )
+}
+
+/// A game id's version, as players call it: "the European version".
+pub fn version_name(game: &str) -> String {
+    match game {
+        "R4QE" => "the American version".to_owned(),
+        "R4QP" => "the European version".to_owned(),
+        "R4QJ" => "the Japanese version".to_owned(),
+        "R4QK" => "the Korean version".to_owned(),
+        other => other.to_owned(),
+    }
 }
 
 /// Whether `player_id` has Recharged open.
