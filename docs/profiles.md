@@ -421,8 +421,9 @@ the server pairs them only once both confirmed it. A match keeps the rules it
 was made with when its rule set changes.
 
 The server starts with two: **Retail ranked** (the game's own ranked rules:
-Rookie, 3 minutes, best of 3, random stadium) and **Competitive** (the same
-with no Mega Strikes, fast terrain and Thunder Island walls).
+Rookie, 3 minutes, best of 3, random stadium) and **Competitive** (Rookie,
+first to 10 goals, best of 3, random stadium, with no Mega Strikes, fast
+terrain and Thunder Island walls; 3 minutes before 1.2.7).
 
 ## Matches
 
