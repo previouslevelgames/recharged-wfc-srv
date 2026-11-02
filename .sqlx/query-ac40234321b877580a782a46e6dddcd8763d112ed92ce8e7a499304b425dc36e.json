@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE player_identities SET player_id = $2\n         WHERE player_id = $1\n           AND provider NOT IN (SELECT provider FROM player_identities WHERE player_id = $2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ac40234321b877580a782a46e6dddcd8763d112ed92ce8e7a499304b425dc36e"
+}

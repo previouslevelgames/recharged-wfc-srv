@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM chat_messages WHERE (sender = $1 AND recipient = $2) OR (sender = $2 AND recipient = $1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "57d984db6cb999b5a295f1d6117c338218516809f5134794ec4daf77ec8b29bd"
+}

@@ -252,7 +252,9 @@ challenge that waits for an answer (`cancelled`).
 The server sends the searcher's rules as a challenge (`"random": true`) to a
 player who has Recharged open, is open to challenges or searching too, has
 played the same game online (a WFC profile of the same id), isn't in a match
-and has no set to play, at random among them; the oldest search asks first,
+(nor in the game's own online matchmaking or match: a WFC profile of theirs
+with DWC's status 2 to 6) and has no set to play, at random among them; the
+oldest search asks first,
 so of two searchers the one who searched first decides. The player asked
 answers it as any challenge. A decline, or no answer in 30 seconds
 (`expired`), and the search asks another player it hasn't asked yet; an
@@ -371,6 +373,25 @@ points share it), the Mii's name and record from the game's submission, the
 Recharged player whose profile it is (`null` when no launcher proved it), and
 the game's region (1 JP, 2 US, 4 EU, 8 KR). Rows of an ended season, which
 stay in `scores` until their player's next ranked game, are left out.
+
+### One player, two profiles
+
+A person with two rows (two WFC accounts, a Mii of each version, or a Mii
+player and a Discord player) is put together on the admin dashboard, on a
+profile's page (owners only):
+
+- **Link to a player** binds that WFC profile to a player by their number
+  (`PUT /admin/api/wfc-profiles/<profile>/player`, `{"player_id": <id>}`, or
+  `null` to unlink); a launcher that proves the profile later binds it to its
+  own player again.
+- **Merge another player into this one**, in two asks as the leaderboard wipe
+  (`POST /admin/api/players/merge` with `{"from", "into"}` answers what it
+  moves, the phrase and a token; `.../merge/confirm` with them merges): the
+  WFC profiles, sets and reports, chats, friends and Mii friends and the
+  sessions (their launchers stay signed in) become `into`'s, and so do the
+  accounts `from` signs in with that `into` has none of; the sets between the
+  two go, and `from` is gone. Refused while either has a set to play, and for
+  two players who both sign in with Discord.
 
 ## Rules
 

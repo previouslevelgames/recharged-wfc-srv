@@ -814,6 +814,7 @@ function renderPlayer(data, now) {
       tile('Last sign-in', profile.cpu_buddy ? '—' : ago(profile.last_login_at, now), profile.last_ip || 'No address'),
       tile('Recharged player', player ? player.name : '—', player ? (player.discord ? `Discord ${player.discord}` : 'Test player') : 'Not signed in from the launcher'),
     ),
+    profile.cpu_buddy ? null : playerCard(profile),
     card(
       'Record',
       'The series its Recharged build reported, by mode; a game counts when both sides saw it the same, or only one reported it',
@@ -2530,6 +2531,168 @@ const wipe = {
   },
 };
 
+// --- A profile's player ----------------------------------------------------
+
+/** The Recharged player a profile plays for, with every profile of theirs,
+ * and the owner's tools for players with more than one: link this profile
+ * to another player, unlink it, merge another player into this one. */
+function playerCard(profile) {
+  const player = profile.player;
+  const tools = [
+    h('button', { class: 'button', type: 'button', onclick: () => playerTools.openLink(profile) }, player ? 'Link to another player…' : 'Link to a player…'),
+  ];
+  if (player) {
+    tools.push(h('button', { class: 'button', type: 'button', onclick: () => playerTools.unlink(profile) }, 'Unlink'));
+    tools.push(h('button', { class: 'button', type: 'button', onclick: () => playerTools.openMerge(player) }, 'Merge another player into this one…'));
+  }
+  const result = playerTools.result && h('p', { class: 'tile-sub', 'data-tone': playerTools.result[1] }, playerTools.result[0]);
+  const body = player
+    ? [
+        h('p', null, h('strong', null, player.name), ` · player #${player.player_id}`, player.discord ? ` · Discord ${player.discord}` : ''),
+        table(
+          [
+            { label: 'WFC profile', cell: (p) => [h('a', { href: playerPath(p.profile_id) }, p.mii_name || 'Unnamed'), h('span', { class: 'sub' }, `Profile ${p.profile_id}`)] },
+            { label: 'Release', cell: (p) => p.release },
+          ],
+          player.profiles,
+          'No profiles.',
+        ),
+        result,
+      ]
+    : [h('p', { class: 'sub' }, 'No Recharged player has proved this profile theirs.'), result];
+  return card('Recharged player', 'The leaderboards add up the profiles of one player; one player per person', body, tools);
+}
+
+/** Linking a profile to a player, unlinking it, and merging two players (in
+ * two asks, as the leaderboard wipe). The dialogs stay out of the polled
+ * page, so typing survives each refresh. */
+const playerTools = {
+  dialog: null,
+  result: null, // [text, tone] of the last action.
+
+  show(title, ...content) {
+    if (!this.dialog) {
+      this.dialog = h('dialog', { class: 'confirm', 'aria-labelledby': 'player-tools-title' });
+      document.body.append(this.dialog);
+    }
+    this.dialog.replaceChildren(h('form', { method: 'dialog' }, h('h2', { id: 'player-tools-title' }, title), ...content));
+    if (!this.dialog.open) this.dialog.showModal();
+  },
+
+  done(text, tone) {
+    this.result = [text, tone];
+    if (this.dialog && this.dialog.open) this.dialog.close();
+    poll();
+  },
+
+  playerInput() {
+    return h('input', { type: 'number', min: '1', step: '1', inputmode: 'numeric', autocomplete: 'off', required: true });
+  },
+
+  openLink(profile) {
+    const input = this.playerInput();
+    const submit = h('button', { class: 'button', type: 'submit' }, 'Link');
+    submit.addEventListener('click', async (event) => {
+      event.preventDefault();
+      const playerId = Number(input.value);
+      if (!Number.isInteger(playerId) || playerId < 1) return;
+      try {
+        await send('PUT', `/admin/api/wfc-profiles/${profile.profile_id}/player`, { player_id: playerId });
+        this.done(`Profile ${profile.profile_id} now plays for player #${playerId}.`, 'good');
+      } catch (error) {
+        this.done(error.message, 'critical');
+      }
+    });
+    this.show(
+      `Link ${profile.mii_name || 'this profile'} to a player`,
+      h('p', null, 'Its leaderboard rows then count for that player. The player’s number is on the profile page of any of their profiles.'),
+      h('label', { class: 'editor-field' }, h('span', null, 'Player number'), input),
+      h('div', { class: 'editor-actions' }, h('button', { class: 'button', type: 'button', onclick: () => this.dialog.close() }, 'Cancel'), submit),
+    );
+    input.focus();
+  },
+
+  async unlink(profile) {
+    const submit = h('button', { class: 'button destroy', type: 'submit' }, 'Unlink');
+    submit.addEventListener('click', async (event) => {
+      event.preventDefault();
+      try {
+        await send('PUT', `/admin/api/wfc-profiles/${profile.profile_id}/player`, { player_id: null });
+        this.done(`Profile ${profile.profile_id} plays for nobody now.`, 'good');
+      } catch (error) {
+        this.done(error.message, 'critical');
+      }
+    });
+    this.show(
+      `Unlink ${profile.mii_name || 'this profile'}?`,
+      h('p', null, `It stops counting for ${profile.player.name}. A launcher that proves it again links it again.`),
+      h('div', { class: 'editor-actions' }, h('button', { class: 'button', type: 'button', onclick: () => this.dialog.close() }, 'Cancel'), submit),
+    );
+  },
+
+  openMerge(into) {
+    const input = this.playerInput();
+    const next = h('button', { class: 'button', type: 'submit' }, 'Next');
+    next.addEventListener('click', async (event) => {
+      event.preventDefault();
+      const from = Number(input.value);
+      if (!Number.isInteger(from) || from < 1) return;
+      try {
+        const asked = await send('POST', '/admin/api/players/merge', { from, into: into.player_id });
+        this.confirmMerge(asked, from, into);
+      } catch (error) {
+        this.done(error.message, 'critical');
+      }
+    });
+    this.show(
+      `Merge another player into ${into.name}`,
+      h('p', null, `Everything of the other player becomes ${into.name}’s: WFC profiles, sets, friends, chats; their launchers stay signed in, as ${into.name}. Then the other player is gone.`),
+      h('label', { class: 'editor-field' }, h('span', null, 'Number of the player to merge'), input),
+      h('div', { class: 'editor-actions' }, h('button', { class: 'button', type: 'button', onclick: () => this.dialog.close() }, 'Cancel'), next),
+    );
+    input.focus();
+  },
+
+  confirmMerge(asked, from, into) {
+    const { phrase, expires_at: expiresAt, impact, token } = asked;
+    const input = h('input', { type: 'text', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
+    const confirm = h('button', { class: 'button destroy', type: 'submit', disabled: true }, 'Merge');
+    input.addEventListener('input', () => {
+      confirm.disabled = input.value.trim() !== phrase;
+    });
+    confirm.addEventListener('click', async (event) => {
+      event.preventDefault();
+      confirm.disabled = true;
+      try {
+        await send('POST', '/admin/api/players/merge/confirm', { from, into: into.player_id, token, phrase: input.value.trim() });
+        this.done(`${impact.from.name} is merged into ${impact.into.name}.`, 'good');
+      } catch (error) {
+        this.done(error.message, 'critical');
+      }
+    });
+    const kinds = (side) => (side.signs_in_with.length ? side.signs_in_with.join(', ') : 'no account');
+    this.show(
+      `Merge ${impact.from.name} into ${impact.into.name}?`,
+      h('p', null,
+        h('strong', null, `${impact.from.name}`), ` (#${impact.from.player_id}, ${kinds(impact.from)}) goes into `,
+        h('strong', null, `${impact.into.name}`), ` (#${impact.into.player_id}, ${kinds(impact.into)}).`),
+      h('ul', null,
+        h('li', null, plural(impact.profiles, 'WFC profile', 'WFC profiles'), ' and ', plural(impact.matches, 'set', 'sets'), ' move over'),
+        h('li', null, plural(impact.friends, 'friend', 'friends'), ' move over'),
+        impact.between ? h('li', null, plural(impact.between, 'set', 'sets'), ' between the two go (nobody plays themselves)') : null,
+        h('li', null, impact.identities.length
+          ? `Signs in with ${impact.identities.join(', ')} from now on as ${impact.into.name}`
+          : `Its sign-in accounts go: ${impact.into.name} has one of each already`),
+      ),
+      warningNote('This cannot be undone.'),
+      h('label', { class: 'editor-field' }, h('span', null, 'Type ', h('code', null, phrase), ' to confirm'), input),
+      h('p', { class: 'confirm-expires' }, `This confirmation expires at ${clock.format(new Date(expiresAt))}.`),
+      h('div', { class: 'editor-actions' }, h('button', { class: 'button', type: 'button', onclick: () => this.dialog.close() }, 'Cancel'), confirm),
+    );
+    input.focus();
+  },
+};
+
 // --- Planned sections ----------------------------------------------------
 
 function renderPlanned() {
@@ -2609,7 +2772,7 @@ function render(data) {
   if (section.planned) body = renderPlanned();
   else if (route.id) body = section.detail(data, now);
   else body = section.render(data, now);
-  document.getElementById('body').replaceChildren(...body);
+  document.getElementById('body').replaceChildren(...body.filter((node) => node != null));
 }
 
 /** A row's page: its title and what it is, once its data is there. */

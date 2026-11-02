@@ -128,6 +128,11 @@ pub async fn wipe_leaderboards(pool: &PgPool) -> Result<Wiped, sqlx::Error> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Operation {
     WipeLeaderboards,
+    /// A player merged into another (Players).
+    MergePlayers {
+        from: i64,
+        into: i64,
+    },
 }
 
 impl Operation {
@@ -135,6 +140,7 @@ impl Operation {
     pub fn phrase(self) -> &'static str {
         match self {
             Self::WipeLeaderboards => "wipe all leaderboards",
+            Self::MergePlayers { .. } => "merge these players",
         }
     }
 }

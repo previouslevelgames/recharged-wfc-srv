@@ -28,11 +28,14 @@ pub struct Search {
 /// `player_id` searches by `rule_set` for an opponent playing `game` (the
 /// first four characters of its id, R4QE), starting over if they searched
 /// already. The search asks its first player at once when it can.
+/// `busy`: the WFC profiles in the game's own online matchmaking or match
+/// now (GPCM's DWC status), whose players are not asked.
 pub async fn start(
     pool: &PgPool,
     player_id: i64,
     rule_set: &RuleSet,
     game: &str,
+    busy: &[i32],
 ) -> Result<(), sqlx::Error> {
     sqlx::query!(
         "INSERT INTO searches (player_id, rule_set, rules, rules_hash, game)
@@ -48,7 +51,7 @@ pub async fn start(
     )
     .execute(pool)
     .await?;
-    advance(pool).await?;
+    advance(pool, busy).await?;
     Ok(())
 }
 
@@ -100,7 +103,9 @@ pub async fn get(pool: &PgPool, player_id: i64) -> Result<Option<Search>, sqlx::
 /// opponent and ends; a player who closed Recharged stops searching; the
 /// others without a challenge waiting ask another player (oldest search
 /// first). Returns the challenges sent.
-pub async fn advance(pool: &PgPool) -> Result<Vec<i64>, sqlx::Error> {
+/// Nobody busy is asked: in a match or a set, or with a WFC profile in
+/// `busy` (the game's own online matchmaking or match).
+pub async fn advance(pool: &PgPool, busy: &[i32]) -> Result<Vec<i64>, sqlx::Error> {
     sqlx::query!(
         "DELETE FROM searches USING matches
          WHERE searches.match_id = matches.match_id AND matches.state NOT IN ('challenged', 'declined',
@@ -144,11 +149,15 @@ pub async fn advance(pool: &PgPool) -> Result<Vec<i64>, sqlx::Error> {
                AND NOT EXISTS (SELECT 1 FROM matches
                                WHERE matches.state IN ('challenged', 'accepted')
                                  AND players.player_id IN (matches.home, matches.away))
+               AND NOT EXISTS (SELECT 1 FROM player_wfc_profiles
+                               WHERE player_wfc_profiles.player_id = players.player_id
+                                 AND player_wfc_profiles.profile_id = ANY($5))
              ORDER BY random() LIMIT 1",
             search.player_id,
             &search.asked,
             f64::from(HEARTBEAT_TIMEOUT_SECS),
             search.game,
+            busy,
         )
         .fetch_optional(pool)
         .await?;

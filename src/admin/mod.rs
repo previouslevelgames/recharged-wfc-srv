@@ -24,6 +24,7 @@ mod logs;
 mod maintenance;
 mod matches;
 mod matchmaking;
+mod merge;
 mod monitoring;
 mod overview;
 mod page;
@@ -185,6 +186,9 @@ pub(crate) fn router(
             "/admin/api/maintenance/test-sign-in",
             put(switch_test_sign_in),
         )
+        .route("/admin/api/wfc-profiles/{id}/player", put(link_profile))
+        .route("/admin/api/players/merge", post(arm_merge_players))
+        .route("/admin/api/players/merge/confirm", post(merge_players))
         .route("/admin/api/rules", post(create_rule_set))
         .route(
             "/admin/api/rules/{id}",
@@ -658,6 +662,126 @@ async fn wipe_leaderboards(
             warn!(target: "admin", email = %owner.email, ?wiped, "leaderboards wiped");
             Json(wiped).into_response()
         }
+        Err(failure) => {
+            warn!(target: "admin", error = %failure, "database error");
+            error(StatusCode::INTERNAL_SERVER_ERROR, "the database failed")
+        }
+    }
+}
+
+/// A WFC profile's player, set by hand: a player id, or `null` for none.
+#[derive(Deserialize)]
+struct LinkForm {
+    player_id: Option<i64>,
+}
+
+async fn link_profile(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Path(profile_id): Path<i32>,
+    Json(form): Json<LinkForm>,
+) -> Response {
+    let owner = match state.owner(&jar, &headers) {
+        Ok(owner) => owner,
+        Err(status) => return status.into_response(),
+    };
+    match merge::link(&state.pool, profile_id, form.player_id).await {
+        Ok(Ok(())) => {
+            info!(target: "admin", email = %owner.email, profile_id, player_id = ?form.player_id,
+                  "WFC profile linked by hand");
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Ok(Err(refusal)) => error(StatusCode::NOT_FOUND, refusal),
+        Err(failure) => {
+            warn!(target: "admin", error = %failure, "database error");
+            error(StatusCode::INTERNAL_SERVER_ERROR, "the database failed")
+        }
+    }
+}
+
+/// A merge's players: `from` goes into `into`.
+#[derive(Deserialize)]
+struct MergeForm {
+    from: i64,
+    into: i64,
+}
+
+/// The first ask: what the merge would move, the phrase to type and the
+/// token for the second ask; or why it can't be.
+async fn arm_merge_players(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Json(form): Json<MergeForm>,
+) -> Response {
+    let owner = match state.owner(&jar, &headers) {
+        Ok(owner) => owner,
+        Err(status) => return status.into_response(),
+    };
+    match merge::plan(&state.pool, form.from, form.into).await {
+        Ok(Ok(plan)) => {
+            let operation = Operation::MergePlayers {
+                from: form.from,
+                into: form.into,
+            };
+            Json(state.confirmations.arm(operation, &owner.email, plan)).into_response()
+        }
+        Ok(Err(refusal)) => error(StatusCode::CONFLICT, refusal),
+        Err(failure) => {
+            warn!(target: "admin", error = %failure, "database error");
+            error(StatusCode::INTERNAL_SERVER_ERROR, "the database failed")
+        }
+    }
+}
+
+/// The second ask: the players again, the first ask's token and the phrase.
+#[derive(Deserialize)]
+struct MergeConfirmation {
+    from: i64,
+    into: i64,
+    token: String,
+    phrase: String,
+}
+
+async fn merge_players(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Json(confirmation): Json<MergeConfirmation>,
+) -> Response {
+    let owner = match state.owner(&jar, &headers) {
+        Ok(owner) => owner,
+        Err(status) => return status.into_response(),
+    };
+    let operation = Operation::MergePlayers {
+        from: confirmation.from,
+        into: confirmation.into,
+    };
+    if let Err(refusal) = state.confirmations.confirm(
+        operation,
+        &owner.email,
+        &confirmation.token,
+        &confirmation.phrase,
+    ) {
+        return match refusal {
+            Refusal::Expired => error(
+                StatusCode::CONFLICT,
+                "this confirmation expired: start again",
+            ),
+            Refusal::Phrase => error(
+                StatusCode::BAD_REQUEST,
+                &format!("type \"{}\" to confirm: start again", operation.phrase()),
+            ),
+        };
+    }
+    match merge::merge(&state.pool, confirmation.from, confirmation.into).await {
+        Ok(Ok(merged)) => {
+            warn!(target: "admin", email = %owner.email, from = confirmation.from,
+                  into = confirmation.into, "players merged");
+            Json(merged).into_response()
+        }
+        Ok(Err(refusal)) => error(StatusCode::CONFLICT, refusal),
         Err(failure) => {
             warn!(target: "admin", error = %failure, "database error");
             error(StatusCode::INTERNAL_SERVER_ERROR, "the database failed")

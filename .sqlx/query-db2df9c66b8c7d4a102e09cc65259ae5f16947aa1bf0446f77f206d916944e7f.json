@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT p.profile_id, p.user_id, p.gsbrcd, p.ingamesn, p.created_at, p.last_login_at,\n                  p.last_ip, players.display_name AS \"player?\", discord.username AS \"discord?\"\n           FROM profiles p\n           LEFT JOIN player_wfc_profiles bound ON bound.profile_id = p.profile_id\n           LEFT JOIN players ON players.player_id = bound.player_id\n           LEFT JOIN player_identities discord\n                  ON discord.player_id = players.player_id AND discord.provider = 'discord'\n           WHERE p.profile_id = $1",
+  "query": "SELECT p.profile_id, p.user_id, p.gsbrcd, p.ingamesn, p.created_at, p.last_login_at,\n                  p.last_ip, players.player_id AS \"player_id?\", players.display_name AS \"player?\",\n                  discord.username AS \"discord?\"\n           FROM profiles p\n           LEFT JOIN player_wfc_profiles bound ON bound.profile_id = p.profile_id\n           LEFT JOIN players ON players.player_id = bound.player_id\n           LEFT JOIN player_identities discord\n                  ON discord.player_id = players.player_id AND discord.provider = 'discord'\n           WHERE p.profile_id = $1",
   "describe": {
     "columns": [
       {
@@ -82,6 +82,17 @@
       },
       {
         "ordinal": 7,
+        "name": "player_id?",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "player_id"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
         "name": "player?",
         "type_info": "Text",
         "origin": {
@@ -92,7 +103,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "discord?",
         "type_info": "Text",
         "origin": {
@@ -117,8 +128,9 @@
       false,
       true,
       true,
+      true,
       true
     ]
   },
-  "hash": "e86f25d1cdf91bc4e424d0847e03ad4cfed61f08bf61ac7ab9e74bdde2e66ef2"
+  "hash": "db2df9c66b8c7d4a102e09cc65259ae5f16947aa1bf0446f77f206d916944e7f"
 }

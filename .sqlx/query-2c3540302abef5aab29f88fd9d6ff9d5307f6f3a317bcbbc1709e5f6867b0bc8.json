@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE chat_messages SET recipient = $2 WHERE recipient = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2c3540302abef5aab29f88fd9d6ff9d5307f6f3a317bcbbc1709e5f6867b0bc8"
+}

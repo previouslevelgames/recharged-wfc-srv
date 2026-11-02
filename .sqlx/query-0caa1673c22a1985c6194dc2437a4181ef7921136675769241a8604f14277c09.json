@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE players SET\n             heartbeat_at = GREATEST(players.heartbeat_at, old.heartbeat_at),\n             last_seen_at = GREATEST(players.last_seen_at, old.last_seen_at)\n         FROM players old\n         WHERE players.player_id = $2 AND old.player_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0caa1673c22a1985c6194dc2437a4181ef7921136675769241a8604f14277c09"
+}

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM matches WHERE (home = $1 AND away = $2) OR (home = $2 AND away = $1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0f63254faaa9fe1db99424ac396e052465aacc31738bda7c3e18e0128bccee7f"
+}
