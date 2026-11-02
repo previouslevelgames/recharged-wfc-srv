@@ -23,26 +23,33 @@ const CATEGORIES = [
 const DAILY_BOARDS = new Set([1, 4]);
 // DWCRnkRegion.
 const REGIONS = { 1: 'JP', 2: 'US', 4: 'EU', 8: 'KR' };
-// DWC's status in GPCM's \status\ (docs/login.md, "Mutual friends"), with
-// its badge tone.
+// DWC's status in GPCM's \status\ (docs/login.md, "Mutual friends"): what
+// the game is doing online, with its badge tone and what it means.
 const STATUSES = {
-  0: ['Offline', null],
-  1: ['Online', 'good'],
-  2: ['Playing', 'accent'],
-  3: ['Matchmaking', 'warning'],
-  4: ['Matchmaking with friends', 'warning'],
-  5: ['Joining a group', 'warning'],
-  6: ['Hosting a group', 'warning'],
+  0: ['Offline', null, 'Not logged in to WFC'],
+  1: ['In the online menus', 'good', 'Logged in to WFC, neither searching nor playing'],
+  2: ['In a match', 'accent', 'Playing an online match'],
+  3: ['Searching RANKED', 'warning', "In the game's RANKED search, for anybody"],
+  4: ['Looking for friends', 'warning', 'Searching for a match among friends'],
+  5: ["Joining a friend's room", 'warning', 'Joining the friend match another player hosts'],
+  6: ['Hosting a friend room', 'warning', 'Its game hosts a friend match: friends join its room'],
 };
-// A login's status as STATUSES names it, a match by whom it is with: the
-// game matches with anybody only for ranked matches, friends meet in a room
-// one of them hosts.
+// A login's status as STATUSES names it, a match by whom it is with (the
+// game matches with anybody only for RANKED; friends meet in a room one of
+// them hosts), and a hosted room with who is in it.
 function statusOf(online) {
-  const [name, tone] = STATUSES[online.status] || ['Logged in', 'good'];
-  if (online.status === 2 && online.matchmaking === 'anybody') return ['Playing ranked', tone];
-  if (online.status === 2 && online.matchmaking === 'friends') return ['Playing with friends', tone];
-  if (online.status === 6 && online.room_players >= 2) return [`Hosting ${online.room_players} players`, 'accent'];
-  return [name, tone];
+  const [name, tone, about] = STATUSES[online.status] || ['Logged in', 'good', 'Logged in to WFC'];
+  if (online.status === 2 && online.matchmaking === 'anybody') return ['In a RANKED match', tone, 'Playing a RANKED match against anybody'];
+  if (online.status === 2 && online.matchmaking === 'friends') return ['In a friend match', tone, 'Playing a match with friends'];
+  if (online.status === 6 && online.room_players >= 2) {
+    const friends = online.room_players - 1;
+    return [name, 'accent', `${online.room_players} players in the room: the host and ${friends} ${friends === 1 ? 'friend' : 'friends'}`];
+  }
+  return [name, tone, about];
+}
+// The players in a room a login hosts, as a short note; '' for none.
+function roomNote(online) {
+  return online.status === 6 && online.room_players >= 2 ? `${online.room_players} players in the room · ` : '';
 }
 // DWC's dwc_mtype in a session's heartbeat (dwc_match.h), with its badge
 // tone. A session without one is not matchmaking.
@@ -723,10 +730,13 @@ function renderOverview(data, now) {
 function presence(player, now) {
   if (player.cpu_buddy) return [badge('accent', 'Server'), h('span', { class: 'sub' }, 'Accepts every request')];
   if (!player.online) return badge(null, 'Offline');
-  const [name, tone] = statusOf(player.online);
+  const [name, tone, about] = statusOf(player.online);
   // A status counts from when the game sent it, the login from its start.
   const start = player.online.status_since || player.online.since;
-  return [badge(tone, name), h('span', { class: 'sub' }, ['since ', ago(start, now)])];
+  return [
+    h('span', { class: 'badge', 'data-tone': tone, title: about }, name),
+    h('span', { class: 'sub' }, [roomNote(player.online), 'since ', ago(start, now)]),
+  ];
 }
 
 function renderPlayers(data, now) {
@@ -808,8 +818,8 @@ function renderPlayer(data, now) {
         !profile.online
           ? 'Not logged in to GPCM'
           : profile.online.status_since
-            ? ['Since ', ago(profile.online.status_since, now), ' · logged in to GPCM ', ago(profile.online.since, now)]
-            : ['Logged in to GPCM ', ago(profile.online.since, now)],
+            ? [statusOf(profile.online)[2], ' · since ', ago(profile.online.status_since, now), ' · logged in to GPCM ', ago(profile.online.since, now)]
+            : [statusOf(profile.online)[2], ' · logged in to GPCM ', ago(profile.online.since, now)],
       ),
       tile('Release', profile.release, profile.gsbrcd),
       tile('Account', h('code', null, `${profile.user_id}`), 'The console, registered with NAS'),
