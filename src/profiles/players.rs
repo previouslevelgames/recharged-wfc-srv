@@ -157,6 +157,36 @@ pub async fn by_wfc_identity(pool: &PgPool, profile_id: i32) -> Result<Option<i6
     .await
 }
 
+/// How each of the WFC profiles `profile_ids` that plays for a player brings
+/// that player back: `game` when it identifies the player (its WFC login
+/// signs in again, [`by_wfc_identity`]), otherwise the account of the
+/// player it is bound to (`discord`, `test`). Profiles of no player are left
+/// out.
+pub async fn sign_in_kinds(
+    pool: &PgPool,
+    profile_ids: &[i32],
+) -> Result<Vec<(i32, String)>, sqlx::Error> {
+    let rows = sqlx::query!(
+        r#"SELECT asked.profile_id AS "profile_id!",
+                  CASE WHEN identity.player_id IS NOT NULL THEN 'game' ELSE account.provider END AS "kind"
+           FROM unnest($1::int4[]) AS asked(profile_id)
+           LEFT JOIN player_identities identity
+             ON identity.provider = 'wfc' AND identity.external_id = asked.profile_id::text
+           LEFT JOIN player_wfc_profiles bound ON bound.profile_id = asked.profile_id
+           LEFT JOIN LATERAL (SELECT provider FROM player_identities
+                              WHERE player_identities.player_id = bound.player_id
+                                AND provider IN ('discord', 'test')
+                              ORDER BY provider LIMIT 1) account ON true"#,
+        profile_ids,
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| row.kind.map(|kind| (row.profile_id, kind)))
+        .collect())
+}
+
 /// Why an account was not linked to a Mii player.
 #[derive(Debug, PartialEq, Eq)]
 pub enum LinkRefusal {

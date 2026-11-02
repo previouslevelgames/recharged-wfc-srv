@@ -16,9 +16,10 @@ use axum::{
     Json,
     extract::{ConnectInfo, FromRequestParts, State},
     http::{HeaderMap, StatusCode, request::Parts},
-    response::Response,
+    response::{IntoResponse, Response},
 };
 use serde::Deserialize;
+use serde_json::json;
 use tracing::info;
 
 use super::{
@@ -206,6 +207,40 @@ pub(super) async fn sign_in_wfc(
     }
     info!(target: "profiles", player_id, profile_id = login.profile_id, "signed in by WFC login");
     session(&state, player_id).await
+}
+
+/// The most WFC profiles one [`known_wfc`] asks about.
+pub const MAX_KNOWN: usize = 32;
+
+#[derive(Deserialize)]
+pub(super) struct KnownWfc {
+    profile_ids: Vec<i32>,
+}
+
+/// Signed out, the launcher asks which of its game save's Miis (their WFC
+/// profiles) play for a Recharged profile already, so a new profile isn't
+/// made for one: `game` signs in again by that Mii's WFC login, `discord`
+/// by Discord. It names nobody: a WFC profile id tells no one who plays.
+pub(super) async fn known_wfc(
+    State(state): State<Arc<ProfilesState>>,
+    Json(known): Json<KnownWfc>,
+) -> Response {
+    if known.profile_ids.len() > MAX_KNOWN {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            &format!("at most {MAX_KNOWN} profile_ids"),
+        );
+    }
+    match players::sign_in_kinds(&state.pool, &known.profile_ids).await {
+        Ok(kinds) => {
+            let profiles: Vec<_> = kinds
+                .into_iter()
+                .map(|(profile_id, kind)| json!({ "profile_id": profile_id, "sign_in": kind }))
+                .collect();
+            Json(json!({ "profiles": profiles })).into_response()
+        }
+        Err(error) => database_error(error),
+    }
 }
 
 /// A new session for `player_id`, answered as a sign-in that ended.

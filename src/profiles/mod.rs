@@ -122,6 +122,7 @@ pub(crate) fn router(
         .route("/api/v1/sign-in/test", post(api_test_sign_in))
         .route("/api/v1/sign-in/mii", post(mii_sign_in::sign_in_mii))
         .route("/api/v1/sign-in/wfc", post(mii_sign_in::sign_in_wfc))
+        .route("/api/v1/sign-in/wfc/known", post(mii_sign_in::known_wfc))
         .route("/api/v1/sign-in/{id}", get(poll_sign_in))
         .route("/api/v1/sign-out", post(sign_out))
         .route("/api/v1/me", get(me))

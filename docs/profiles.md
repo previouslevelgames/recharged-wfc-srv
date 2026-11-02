@@ -126,6 +126,16 @@ that ticket, 404 `{"error": "no Recharged profile signs in with this WFC
 profile"}` when it identifies nobody (no player is made). A Mii player that
 signs out before its game ever logged in to WFC can't come back.
 
+**Before a new profile.** `POST /api/v1/sign-in/wfc/known` with
+`{"profile_ids": [1000000000, 1000000001]}` (at most 32, no session) answers
+`{"profiles": [{"profile_id": 1000000000, "sign_in": "game"}]}`: of the WFC
+profiles asked about, those that play for a player already, and how that
+player signs in again: `game` (the profile identifies it: its WFC login, as
+above), otherwise the account of the player it is bound to (`discord`,
+`test`). The signed-out launcher asks it for the Miis of its game save, so a
+player picking one of them gets their profile back instead of a new one. It
+names no player.
+
 **Connecting Discord.** A Mii player can connect Discord to the same profile,
 keeping its friends, chat, sets and WFC profiles: the launcher starts the
 sign-in above with the player's session (`Authorization: Bearer <token>` on
