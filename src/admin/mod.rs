@@ -388,9 +388,13 @@ async fn api_overview(State(state): State<Arc<AdminState>>, jar: CookieJar) -> R
         .await
 }
 
-async fn api_players(State(state): State<Arc<AdminState>>, jar: CookieJar) -> Response {
+async fn api_players(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    Query(search): Query<players::Search>,
+) -> Response {
     state
-        .page_data(&jar, players::read(&state.pool, &state.gpcm))
+        .page_data(&jar, players::read(&state.pool, &state.gpcm, &search))
         .await
 }
 
@@ -437,8 +441,14 @@ async fn api_database(State(state): State<Arc<AdminState>>, jar: CookieJar) -> R
     state.page_data(&jar, database::read(&state.pool)).await
 }
 
-async fn api_leaderboards(State(state): State<Arc<AdminState>>, jar: CookieJar) -> Response {
-    state.page_data(&jar, leaderboards::read(&state.pool)).await
+async fn api_leaderboards(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    Query(search): Query<players::Search>,
+) -> Response {
+    state
+        .page_data(&jar, leaderboards::read(&state.pool, &search))
+        .await
 }
 
 async fn api_competitive(State(state): State<Arc<AdminState>>, jar: CookieJar) -> Response {

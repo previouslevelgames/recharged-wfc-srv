@@ -746,9 +746,11 @@ function renderPlayers(data, now) {
     ),
     card(
       'Players',
-      shown < totals.profiles
-        ? `The ${integer.format(shown)} profiles that signed in last, online first, of ${integer.format(totals.profiles)}`
-        : 'Every profile, online first; the CPU buddy is the server\'s own',
+      pageSearch.text
+        ? `${integer.format(shown)} ${shown === 1 ? 'profile matches' : 'profiles match'} “${pageSearch.text}”, online first${shown >= 200 ? ' (the 200 that signed in last)' : ''}`
+        : shown < totals.profiles
+          ? `The ${integer.format(shown)} profiles that signed in last, online first, of ${integer.format(totals.profiles)}`
+          : 'Every profile, online first; the CPU buddy is the server\'s own',
       table(
         [
           { label: 'Player', cell: (p) => [h('a', { href: playerPath(p.profile_id) }, p.mii_name || 'Unnamed'), h('span', { class: 'sub' }, `Profile ${p.profile_id}`)] },
@@ -766,7 +768,7 @@ function renderPlayers(data, now) {
           { label: 'Joined', cell: (p) => ago(p.created_at, now) },
         ],
         profiles,
-        'No players yet. A console appears here after its first sign-in.',
+        pageSearch.text ? `No profile matches “${pageSearch.text}”.` : 'No players yet. A console appears here after its first sign-in.',
       ),
     ),
   ];
@@ -1722,7 +1724,7 @@ function renderMonitoring(data, now) {
 function renderLeaderboards(data, now) {
   const content = data.content;
   if (!content) return [unreachable(data.error)];
-  const { totals, categories, top } = content;
+  const { totals, categories, top, found } = content;
 
   const choices = h(
     'div',
@@ -1775,6 +1777,20 @@ function renderLeaderboards(data, now) {
       tile('Last score', totals.last_put ? ago(totals.last_put, now) : '—', totals.last_put ? dateTime.format(new Date(totals.last_put)) : 'No scores yet'),
       tile('Boards in use', [`${categories.length}`, h('small', null, `/ ${CATEGORIES.length}`)], 'Categories with scores'),
     ),
+    found &&
+      card(
+        'Found',
+        `The rows of every board that match “${pageSearch.text}”, with their rank`,
+        table(
+          [
+            { label: 'Board', cell: (e) => CATEGORIES[e.category] || `${e.category}` },
+            ...standings,
+            { label: 'Updated', cell: (e) => ago(e.updated_at, now) },
+          ],
+          found,
+          `No row on any board matches “${pageSearch.text}”.`,
+        ),
+      ),
     card(
       'Leaders',
       'The first 10 of a board, ranked as the game ranks them',
@@ -1982,6 +1998,45 @@ function renderDatabase(data, now) {
 
 /** The Logs page's controls. They stay out of the polled page, so typing
  * survives each refresh. */
+// The search box of the Players and Leaderboards lists: it stays above the
+// page while the page refreshes, and the server searches with every refresh
+// (?q=), so it finds profiles beyond the rows a page shows.
+const pageSearch = {
+  placeholders: {
+    players: 'Search: Mii, player, profile, friend code, console or address',
+    leaderboards: 'Search: Mii, player or profile',
+  },
+  text: '',
+  typing: null,
+
+  // The page's box, when it has one (the lists, not a profile's page).
+  shown() {
+    return !route.id && Object.hasOwn(this.placeholders, section.api);
+  },
+
+  query() {
+    return this.shown() && this.text ? `?${new URLSearchParams({ q: this.text })}` : '';
+  },
+
+  build() {
+    if (!this.shown()) return;
+    const label = this.placeholders[section.api];
+    const input = h('input', {
+      type: 'search',
+      placeholder: label,
+      'aria-label': label,
+      oninput: () => {
+        clearTimeout(this.typing);
+        this.typing = setTimeout(() => {
+          this.text = input.value.trim();
+          poll();
+        }, 300);
+      },
+    });
+    document.getElementById('body').before(h('section', { class: 'card log-tools', 'aria-label': 'Search' }, input));
+  },
+};
+
 const logs = {
   node: null,
   day: null, // The file shown, or null for the newest.
@@ -2832,7 +2887,7 @@ async function poll() {
   clearTimeout(timer);
   const asked = ++polls;
   try {
-    const query = section.api === 'logs' ? logs.query() : '';
+    const query = section.api === 'logs' ? logs.query() : pageSearch.query();
     const api = route.id ? `${section.api}/${route.id}` : section.api || 'overview';
     const response = await fetch(`/admin/api/${api}${query}`, {
       cache: 'no-store',
@@ -2875,6 +2930,8 @@ document.getElementById('content').replaceChildren(
   ),
   h('div', { class: 'page-body', id: 'body' }, banner({ level: 'pending', title: 'Loading…', detail: 'Asking the server.' })),
 );
+
+pageSearch.build();
 
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
