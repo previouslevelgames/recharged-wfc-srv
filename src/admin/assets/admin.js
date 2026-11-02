@@ -80,6 +80,7 @@ const LEVELS = {
 // know.
 const TWEAK_NAMES = {
   fast_terrain: 'Fast terrain',
+  mirror_match: 'Mirror match',
   no_mega_strikes: 'No Mega Strikes',
   thunder_island_walls: 'Thunder Island walls',
 };

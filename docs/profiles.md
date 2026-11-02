@@ -356,7 +356,7 @@ session, lists the rule sets: `{"rule_sets": [{"id", "name", "rules", "hash"}]}`
 
 | Rule | Values |
 |---|---|
-| `tweaks` | The port's gameplay tweaks for both teams: `fast_terrain`, `no_mega_strikes`, `thunder_island_walls`. The others stay off; fair ball contests are always on online. |
+| `tweaks` | The port's gameplay tweaks for both teams: `fast_terrain`, `no_mega_strikes`, `thunder_island_walls`, and `mirror_match` (both players may draft the same captain). The others stay off; fair ball contests are always on online. |
 | `skill` | `training`, `rookie`, `professional`, `superstar`, `legend`; `rookie` when left out. The CPU's skill: no effect on a match between two games (the game gives both teams the human level) |
 | `limit` | `time` or `goals`: what ends a game |
 | `time` | A game's length in seconds, 60 to 900 in steps of 30 |
