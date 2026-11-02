@@ -13,7 +13,7 @@ use super::page::snapshot;
 use crate::{
     accounts,
     gamestats::submission::Submission,
-    gpcm::{Gpcm, Presence},
+    gpcm::{Gpcm, Matchmaking, Presence},
     reports::{
         self,
         outcome::{self, Compared},
@@ -74,6 +74,11 @@ struct Online {
     /// When `status` began.
     #[serde(with = "time::serde::rfc3339::option")]
     status_since: Option<OffsetDateTime>,
+    /// Whom the matchmaking (and the match it led to) is with: `anybody` or
+    /// `friends`.
+    matchmaking: Option<&'static str>,
+    /// A friend room it hosts: its players, the host too.
+    room_players: Option<u8>,
     friend_requests: usize,
     mutual_friends: usize,
 }
@@ -84,6 +89,11 @@ impl From<&Presence> for Online {
             since: presence.logged_in_at,
             status: presence.status,
             status_since: presence.status_since,
+            matchmaking: presence.matchmaking.map(|matchmaking| match matchmaking {
+                Matchmaking::Anybody => "anybody",
+                Matchmaking::Friends => "friends",
+            }),
+            room_players: presence.room_players,
             friend_requests: presence.friend_requests,
             mutual_friends: presence.mutual_friends,
         }

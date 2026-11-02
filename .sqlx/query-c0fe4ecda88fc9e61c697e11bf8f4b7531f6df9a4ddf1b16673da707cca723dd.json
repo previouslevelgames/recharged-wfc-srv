@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT players.player_id, players.display_name,\n                  discord.username AS \"discord?\", discord.avatar_url AS \"avatar_url?\",\n                  test.username AS \"test?\",\n                  coalesce(players.heartbeat_at > now() - make_interval(secs => $2), false)\n                      AS \"online!\",\n                  players.activity,\n                  EXISTS (SELECT 1 FROM matches\n                          WHERE state IN ('challenged', 'accepted')\n                            AND (home = players.player_id OR away = players.player_id))\n                      AS \"busy!\",\n                  extract(epoch FROM players.heartbeat_at)::bigint AS last_online,\n                  EXISTS (SELECT 1 FROM friends\n                          WHERE friends.player_id = $3 AND friends.friend_id = players.player_id)\n                      AS \"friend!\",\n                  EXISTS (SELECT 1 FROM friends\n                          WHERE friends.player_id = players.player_id AND friends.friend_id = $3)\n                      AS \"keeps_you!\",\n                  (SELECT count(*) FROM chat_messages\n                   WHERE chat_messages.sender = players.player_id AND chat_messages.recipient = $3\n                     AND chat_messages.read_at IS NULL) AS \"unread!\",\n                  discord.external_id AS \"discord_id?\", wfc.username AS \"friend_code?\"\n           FROM players\n           LEFT JOIN player_identities discord\n                  ON discord.player_id = players.player_id AND discord.provider = 'discord'\n           LEFT JOIN player_identities test\n                  ON test.player_id = players.player_id AND test.provider = 'test'\n           LEFT JOIN player_identities wfc\n                  ON wfc.player_id = players.player_id AND wfc.provider = 'wfc'\n           WHERE players.player_id = ANY($1)",
+  "query": "SELECT players.player_id, players.display_name,\n                  discord.username AS \"discord?\", discord.avatar_url AS \"avatar_url?\",\n                  test.username AS \"test?\",\n                  coalesce(players.heartbeat_at > now() - make_interval(secs => $2), false)\n                      AS \"online!\",\n                  players.activity, players.match_kind,\n                  EXISTS (SELECT 1 FROM matches\n                          WHERE state IN ('challenged', 'accepted')\n                            AND (home = players.player_id OR away = players.player_id))\n                      AS \"busy!\",\n                  extract(epoch FROM players.heartbeat_at)::bigint AS last_online,\n                  EXISTS (SELECT 1 FROM friends\n                          WHERE friends.player_id = $3 AND friends.friend_id = players.player_id)\n                      AS \"friend!\",\n                  EXISTS (SELECT 1 FROM friends\n                          WHERE friends.player_id = players.player_id AND friends.friend_id = $3)\n                      AS \"keeps_you!\",\n                  (SELECT count(*) FROM chat_messages\n                   WHERE chat_messages.sender = players.player_id AND chat_messages.recipient = $3\n                     AND chat_messages.read_at IS NULL) AS \"unread!\",\n                  discord.external_id AS \"discord_id?\", wfc.username AS \"friend_code?\"\n           FROM players\n           LEFT JOIN player_identities discord\n                  ON discord.player_id = players.player_id AND discord.provider = 'discord'\n           LEFT JOIN player_identities test\n                  ON test.player_id = players.player_id AND test.provider = 'test'\n           LEFT JOIN player_identities wfc\n                  ON wfc.player_id = players.player_id AND wfc.provider = 'wfc'\n           WHERE players.player_id = ANY($1)",
   "describe": {
     "columns": [
       {
@@ -77,36 +77,47 @@
       },
       {
         "ordinal": 7,
+        "name": "match_kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "match_kind"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
         "name": "busy!",
         "type_info": "Bool",
         "origin": "Expression"
       },
       {
-        "ordinal": 8,
+        "ordinal": 9,
         "name": "last_online",
         "type_info": "Int8",
         "origin": "Expression"
       },
       {
-        "ordinal": 9,
+        "ordinal": 10,
         "name": "friend!",
         "type_info": "Bool",
         "origin": "Expression"
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "keeps_you!",
         "type_info": "Bool",
         "origin": "Expression"
       },
       {
-        "ordinal": 11,
+        "ordinal": 12,
         "name": "unread!",
         "type_info": "Int8",
         "origin": "Expression"
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "discord_id?",
         "type_info": "Text",
         "origin": {
@@ -117,7 +128,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "friend_code?",
         "type_info": "Text",
         "origin": {
@@ -143,6 +154,7 @@
       true,
       null,
       true,
+      true,
       null,
       null,
       null,
@@ -152,5 +164,5 @@
       true
     ]
   },
-  "hash": "0ebccce606f1ea3118a7fbb236d0c79173f384ceda27bdd5e36ae420356bfe6a"
+  "hash": "c0fe4ecda88fc9e61c697e11bf8f4b7531f6df9a4ddf1b16673da707cca723dd"
 }

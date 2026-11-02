@@ -71,7 +71,8 @@ pub async fn sign_in(pool: &PgPool, identity: &Identity<'_>) -> Result<i64, sqlx
         .await?
         {
             sqlx::query!(
-                "UPDATE players SET display_name = $2, last_seen_at = now(), heartbeat_at = now(), activity = NULL
+                "UPDATE players SET display_name = $2, last_seen_at = now(), heartbeat_at = now(), activity = NULL,
+                     match_kind = NULL
                  WHERE player_id = $1",
                 player_id,
                 identity.display_name,
@@ -263,7 +264,8 @@ pub async fn link(
     .execute(&mut *transaction)
     .await?;
     sqlx::query!(
-        "UPDATE players SET display_name = $2, last_seen_at = now(), heartbeat_at = now(), activity = NULL
+        "UPDATE players SET display_name = $2, last_seen_at = now(), heartbeat_at = now(), activity = NULL,
+                     match_kind = NULL
          WHERE player_id = $1",
         player_id,
         identity.display_name,
@@ -350,23 +352,90 @@ impl Activity {
             Self::Match => "match",
         }
     }
+
+    /// The `Recharged-Activity` and `Recharged-Match` headers of a request.
+    pub fn from_headers(headers: &axum::http::HeaderMap) -> (Self, Option<MatchKind>) {
+        let header = |name| headers.get(name).and_then(|value| value.to_str().ok());
+        let activity = Self::from_header(header("recharged-activity"));
+        let kind = (activity == Self::Match)
+            .then(|| MatchKind::from_header(header("recharged-match")))
+            .flatten();
+        (activity, kind)
+    }
+}
+
+/// What kind of match a player's game is in (docs/profiles.md, "Activity"),
+/// from its `Recharged-Match` header; games before 1.2.1 don't say.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MatchKind {
+    /// Online, matched with anybody.
+    Ranked,
+    /// Online (or on a LAN) with friends.
+    Friends,
+    /// An online tournament.
+    Tournament,
+    /// Domination against the computer (or the computer against itself).
+    Cpu,
+    /// Domination with players on both teams at one computer.
+    Local,
+    /// Road to the Striker Cup.
+    Cup,
+    /// A Striker Challenge.
+    Challenge,
+    /// A Strikers 101 lesson.
+    Training,
+}
+
+impl MatchKind {
+    const ALL: [Self; 8] = [
+        Self::Ranked,
+        Self::Friends,
+        Self::Tournament,
+        Self::Cpu,
+        Self::Local,
+        Self::Cup,
+        Self::Challenge,
+        Self::Training,
+    ];
+
+    /// None for no header and anything this server doesn't know.
+    pub fn from_header(value: Option<&str>) -> Option<Self> {
+        let value = value?.trim();
+        Self::ALL.into_iter().find(|kind| kind.name() == value)
+    }
+
+    /// As the header, `players.match_kind` and the lists have it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Ranked => "ranked",
+            Self::Friends => "friends",
+            Self::Tournament => "tournament",
+            Self::Cpu => "cpu",
+            Self::Local => "local",
+            Self::Cup => "cup",
+            Self::Challenge => "challenge",
+            Self::Training => "training",
+        }
+    }
 }
 
 /// `player_id`'s launcher or game made a request: they have Recharged open,
-/// doing `activity` (written at most every few seconds, and at once when the
-/// activity changes).
+/// doing `activity`, in a match of `kind` (written at most every few
+/// seconds, and at once when either changes).
 pub async fn heartbeat(
     pool: &PgPool,
     player_id: i64,
-    activity: Activity,
+    (activity, kind): (Activity, Option<MatchKind>),
 ) -> Result<(), sqlx::Error> {
+    let kind = (activity == Activity::Match).then_some(kind).flatten();
     sqlx::query!(
-        "UPDATE players SET heartbeat_at = now(), activity = $2
+        "UPDATE players SET heartbeat_at = now(), activity = $2, match_kind = $3
          WHERE player_id = $1
            AND (heartbeat_at IS NULL OR heartbeat_at < now() - interval '5 seconds'
-                OR activity IS DISTINCT FROM $2)",
+                OR activity IS DISTINCT FROM $2 OR match_kind IS DISTINCT FROM $3)",
         player_id,
         activity.column(),
+        kind.map(MatchKind::name),
     )
     .execute(pool)
     .await?;
@@ -410,6 +479,9 @@ pub struct Listed {
     pub busy: bool,
     /// While online: "launcher", "game" or "match" (see [`Activity`]).
     pub activity: Option<&'static str>,
+    /// In a match: its kind, when the game said (see [`MatchKind`]).
+    #[serde(rename = "match")]
+    pub match_kind: Option<&'static str>,
     /// Their last heartbeat in Unix seconds; none before the first.
     pub last_online: Option<i64>,
     pub friend: bool,
@@ -542,7 +614,7 @@ pub(super) async fn listed(
                   test.username AS "test?",
                   coalesce(players.heartbeat_at > now() - make_interval(secs => $2), false)
                       AS "online!",
-                  players.activity,
+                  players.activity, players.match_kind,
                   EXISTS (SELECT 1 FROM matches
                           WHERE state IN ('challenged', 'accepted')
                             AND (home = players.player_id OR away = players.player_id))
@@ -589,6 +661,11 @@ pub(super) async fn listed(
             activity: row
                 .online
                 .then(|| Activity::from_header(row.activity.as_deref()).name()),
+            match_kind: row
+                .online
+                .then(|| MatchKind::from_header(row.match_kind.as_deref()))
+                .flatten()
+                .map(MatchKind::name),
             last_online: row.last_online,
             friend: row.friend,
             chat: row.friend && row.keeps_you,
