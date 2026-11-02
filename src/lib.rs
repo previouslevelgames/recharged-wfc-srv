@@ -14,6 +14,7 @@ mod html;
 mod master;
 mod nas;
 mod natneg;
+mod online;
 mod pairing;
 pub mod profiles;
 pub mod relay;
@@ -140,6 +141,11 @@ impl App {
     /// The QR2 master server on `socket` (UDP 27900).
     pub async fn serve_master(&self, socket: UdpSocket) -> std::io::Result<()> {
         self.master.clone().serve(socket).await
+    }
+
+    /// Samples the players online once a minute, for `/admin`'s Monitoring.
+    pub async fn sample_online(&self) -> std::io::Result<()> {
+        online::run(self.pool.clone(), self.gpcm.clone()).await
     }
 }
 

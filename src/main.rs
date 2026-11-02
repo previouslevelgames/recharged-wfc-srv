@@ -149,6 +149,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         result = app.serve_master(master) => result?,
         result = app.serve_server_browser(browser) => result?,
         result = app.serve_natneg(natneg, relay) => result?,
+        result = app.sample_online() => result?,
     }
     Ok(())
 }

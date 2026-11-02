@@ -23,6 +23,8 @@
   --series-3: #1baf7a;
   --series-4: #eda100;
   --series-5: #e87ba4;
+  --series-6: #7c5ad8;
+  --series-7: #1d93b0;
   --shadow: 0 1px 2px rgba(11, 11, 11, 0.04), 0 4px 16px rgba(11, 11, 11, 0.04);
   --radius: 14px;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -48,6 +50,8 @@
     --series-3: #199e70;
     --series-4: #c98500;
     --series-5: #d55181;
+    --series-6: #9b7cf0;
+    --series-7: #2fb0cc;
     --shadow: none;
   }
 }
@@ -881,6 +885,26 @@ h1 .server-label {
 
 [data-kind="matches"] {
   --kind: var(--accent);
+}
+
+[data-kind="online"] {
+  --kind: var(--series-6);
+}
+
+[data-kind="recharged"] {
+  --kind: var(--series-7);
+}
+
+.tl-area[data-kind] {
+  fill: var(--kind);
+}
+
+.tl-line[data-kind] {
+  stroke: var(--kind);
+}
+
+.tl-dot[data-kind] {
+  background: var(--kind);
 }
 
 [data-kind="desync"] {

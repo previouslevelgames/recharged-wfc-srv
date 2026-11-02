@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO online_samples (at, wfc, playing, recharged)\n         VALUES (date_trunc('minute', now()), $1, $2, $3)\n         ON CONFLICT (at) DO UPDATE\n         SET wfc = EXCLUDED.wfc, playing = EXCLUDED.playing, recharged = EXCLUDED.recharged",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d91b6c5723047dc571ed1cc966df705bb2a9eacdecf0cb7b7ce107d9a0cd8be2"
+}

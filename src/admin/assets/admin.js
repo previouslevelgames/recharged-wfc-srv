@@ -1315,6 +1315,7 @@ const PROBLEM_KINDS = [
   { kind: 'error', name: 'Error codes' },
 ];
 // The plots' heights in pixels, as admin.css sets them.
+const PLAYERS_HEIGHT = 80;
 const MATCHES_HEIGHT = 80;
 const PROBLEMS_HEIGHT = 120;
 // Hours between the time axis' labels.
@@ -1378,17 +1379,55 @@ function timelineModel(timeline, now) {
     for (let next = index + 1; next < levels.length && levels[next][0] < column.end; next += 1) peak = Math.max(peak, levels[next][1]);
     column.peak = peak;
   }
+  // Players online: the server's samples, the most of each span of
+  // online_minutes, and each column's most.
+  const onlineStep = (timeline.online_minutes || 10) * 60000;
+  const online = (timeline.online || []).map((point) => ({ ...point, at: Date.parse(point.at) }));
+  for (const point of online) {
+    const column = byStart.get(Math.floor(point.at / step) * step);
+    if (!column) continue;
+    const most = column.online || { wfc: 0, playing: 0, recharged: 0 };
+    column.online = {
+      wfc: Math.max(most.wfc, point.wfc),
+      playing: Math.max(most.playing, point.playing),
+      recharged: Math.max(most.recharged, point.recharged),
+    };
+  }
+  const onlineNow = timeline.online_now || { wfc: 0, playing: 0, recharged: 0 };
   return {
     start,
     now,
     step,
     columns,
     totals,
+    online,
+    onlineStep,
+    onlineNow,
+    onlineMost: Math.max(onlineNow.wfc, onlineNow.recharged, ...online.map((point) => Math.max(point.wfc, point.recharged))),
     levels,
     current: level,
     most: Math.max(0, ...levels.map(([, value]) => value)),
     worst: Math.max(0, ...columns.map((column) => column.total)),
   };
+}
+
+/** A sampled series as step paths in a plot's 0–1000 box: a run of adjacent
+ * spans is one path, a span without a sample breaks it. `y` maps a value. */
+function stepRuns(points, value, start, now, span, width, y) {
+  const vx = (at) => (((Math.min(now, Math.max(start, at)) - start) / span) * 1000).toFixed(2);
+  const runs = [];
+  let run = null;
+  for (const point of points) {
+    const end = point.at + width;
+    if (end <= start || point.at >= now) continue;
+    if (run && run.next === point.at) run.d += ` V${y(value(point))} H${vx(end)}`;
+    else {
+      run = { from: Math.max(start, point.at), d: `M${vx(point.at)},${y(value(point))} H${vx(end)}` };
+      runs.push(run);
+    }
+    run.next = end;
+  }
+  return runs.map((each) => ({ line: each.d, area: `${each.d} V__BASE__ H${vx(each.from)} Z` }));
 }
 
 /** A plot's horizontal hairlines and the y-axis labels for `ticks`. */
@@ -1414,6 +1453,34 @@ function timelineChart(timeline, now) {
   const span = now - start;
   const x = (at) => ((at - start) / span) * 100;
   const hours = Math.round(span / 3600000);
+
+  // Players online: logged in to WFC as an area, with Recharged open as a
+  // line, by the server's samples (gaps where it took none).
+  const playerTicks = niceTicks(model.onlineMost);
+  const playerAxis = yAxis(playerTicks, PLAYERS_HEIGHT);
+  const py = (value) => Math.min(PLAYERS_HEIGHT - 1, Math.max(1, playerAxis.y(value))).toFixed(1);
+  const players = svg('svg', { viewBox: `0 0 1000 ${PLAYERS_HEIGHT}`, preserveAspectRatio: 'none', 'aria-hidden': 'true' });
+  for (const run of stepRuns(model.online, (point) => point.wfc, start, now, span, model.onlineStep, py)) {
+    players.append(
+      svg('path', { class: 'tl-area', 'data-kind': 'online', d: run.area.replace('__BASE__', `${PLAYERS_HEIGHT}`) }),
+      svg('path', { class: 'tl-line', 'data-kind': 'online', d: run.line, 'vector-effect': 'non-scaling-stroke' }),
+    );
+  }
+  for (const run of stepRuns(model.online, (point) => point.recharged, start, now, span, model.onlineStep, py)) {
+    players.append(svg('path', { class: 'tl-line', 'data-kind': 'recharged', d: run.line, 'vector-effect': 'non-scaling-stroke' }));
+  }
+  const playerDot = h('span', { class: 'tl-dot', 'data-kind': 'online' });
+  playerDot.style.top = `${playerAxis.y(model.onlineNow.wfc)}px`;
+  const playerCross = h('span', { class: 'tl-cross' });
+  const playerPlot = h(
+    'div',
+    { class: 'tl-plot', style: { height: `${PLAYERS_HEIGHT}px` } },
+    playerAxis.grid,
+    h('div', { class: 'tl-clip' }, players),
+    playerDot,
+    !model.online.length && h('div', { class: 'tl-none' }, h('span', null, 'No samples yet: the server counts the players online every minute.')),
+    playerCross,
+  );
 
   // Matches in progress: a step area, its line 2px whatever the width.
   const matchTicks = niceTicks(model.most);
@@ -1480,7 +1547,7 @@ function timelineChart(timeline, now) {
     const label = h('span', null, tick.getHours() === 0 ? weekdayDay.format(tick) : hourMinute.format(tick));
     label.style.left = `${left}%`;
     axis.append(label);
-    for (const plot of [matchPlot, problemPlot]) {
+    for (const plot of [playerPlot, matchPlot, problemPlot]) {
       const line = h('span', { class: 'tl-vline', 'aria-hidden': 'true' });
       line.style.left = `${left}%`;
       plot.prepend(line);
@@ -1496,8 +1563,17 @@ function timelineChart(timeline, now) {
       class: 'tl-chart',
       tabindex: '0',
       role: 'group',
-      'aria-label': `Last ${hours} hours: ${model.current} matches in progress now, at most ${model.most} at once; ${count(columns.reduce((sum, column) => sum + column.total, 0))} problems. Arrow keys step through the half hours; the table below lists them.`,
+      'aria-label': `Last ${hours} hours: ${model.onlineNow.wfc} players online now, at most ${model.onlineMost}; ${model.current} matches in progress now, at most ${model.most} at once; ${count(columns.reduce((sum, column) => sum + column.total, 0))} problems. Arrow keys step through the half hours; the table below lists them.`,
     },
+    h(
+      'div',
+      { class: 'tl-head' },
+      h('span', { class: 'tl-key', 'data-kind': 'online' }),
+      h('strong', null, 'Players online'),
+      h('span', { class: 'sub' }, `${count(model.onlineNow.wfc)} now · ${count(model.onlineMost)} at most`),
+      h('span', { class: 'tl-legend' }, h('span', { class: 'tl-key', 'data-kind': 'recharged' }), 'With Recharged open', h('span', { class: 'sub' }, `${count(model.onlineNow.recharged)} now`)),
+    ),
+    h('div', { class: 'tl-row' }, playerAxis.labels, playerPlot),
     h('div', { class: 'tl-head' }, h('span', { class: 'tl-key', 'data-kind': 'matches' }), h('strong', null, 'Matches in progress'), h('span', { class: 'sub' }, `${count(model.current)} now · ${count(model.most)} at most`)),
     h('div', { class: 'tl-row' }, matchAxis.labels, matchPlot),
     h(
@@ -1522,12 +1598,15 @@ function timelineChart(timeline, now) {
     chart.classList.add('is-picking');
     columnNodes.get(column.at)?.classList.add('is-active');
     const middle = Math.min(100, Math.max(0, x(column.at + step / 2)));
-    for (const cross of [matchCross, problemCross]) cross.style.left = `${middle}%`;
+    for (const cross of [playerCross, matchCross, problemCross]) cross.style.left = `${middle}%`;
     const value = (number) => h('strong', { class: number ? null : 'zero' }, count(number));
     const codes = [...column.codes].sort((a, b) => b[1] - a[1] || a[0] - b[0]);
     tip.replaceChildren(
       ...[
         h('span', { class: 'tl-tip-when' }, `${weekdayDay.format(column.at)} ${hourMinute.format(column.at)}–${hourMinute.format(column.end)}`),
+        column.online && h('span', { class: 'tl-tip-row' }, h('span', { class: 'tl-key', 'data-kind': 'online' }), value(column.online.wfc), 'players online at most'),
+        column.online && h('span', { class: 'tl-tip-row' }, h('span', { class: 'tl-key', 'data-kind': 'recharged' }), value(column.online.recharged), 'with Recharged open'),
+        column.online && h('span', { class: 'tl-tip-row' }, h('span', { class: 'tl-key' }), value(column.online.playing), 'in an online match'),
         h('span', { class: 'tl-tip-row' }, h('span', { class: 'tl-key', 'data-kind': 'matches' }), value(column.peak), 'matches at most'),
         ...PROBLEM_KINDS.map(({ kind, name }) => h('span', { class: 'tl-tip-row' }, h('span', { class: 'tl-key', 'data-kind': kind }), value(column.kinds[kind]), name)),
         codes.length > 0 && h('span', { class: 'tl-tip-codes' }, codes.map(([code, times]) => (times > 1 ? `${code} ×${times}` : `${code}`)).join(' · ')),
@@ -1580,7 +1659,7 @@ function timelineChart(timeline, now) {
   show();
 
   // The same numbers without the chart: every half hour with something in it.
-  const rows = columns.filter((column) => column.total || column.peak).reverse();
+  const rows = columns.filter((column) => column.total || column.peak || column.online?.wfc).reverse();
   const details = h(
     'details',
     { class: 'tl-table', open: timelineView.table },
@@ -1588,6 +1667,8 @@ function timelineChart(timeline, now) {
     table(
       [
         { label: 'From', cell: (c) => `${weekdayDay.format(c.at)} ${hourMinute.format(c.at)}` },
+        { label: 'Players at most', num: true, cell: (c) => (c.online ? integer.format(c.online.wfc) : '—') },
+        { label: 'Recharged open', num: true, cell: (c) => (c.online ? integer.format(c.online.recharged) : '—') },
         { label: 'Matches at most', num: true, cell: (c) => integer.format(c.peak) },
         ...PROBLEM_KINDS.map(({ kind, name }) => ({ label: name, num: true, cell: (c) => flagged(c.kinds[kind], kind === 'desync' ? 'serious' : 'warning') })),
         { label: 'Codes', class: 'wrap', cell: (c) => [...c.codes].map(([code, times]) => (times > 1 ? `${code} ×${times}` : `${code}`)).join(', ') },
@@ -1603,7 +1684,7 @@ function timelineChart(timeline, now) {
   return h(
     'section',
     { class: 'card' },
-    h('header', { class: 'card-head' }, h('h2', null, `Last ${hours} hours`), h('p', null, `Matches Recharged builds reported, and what went wrong, by ${timeline.column_minutes} minutes; your local time`)),
+    h('header', { class: 'card-head' }, h('h2', null, `Last ${hours} hours`), h('p', null, `Players online, the matches Recharged builds reported, and what went wrong, by ${timeline.column_minutes} minutes; your local time`)),
     h('div', { class: 'timeline' }, chart, details),
   );
 }
@@ -1664,10 +1745,11 @@ function renderMonitoring(data, now) {
     ),
     card(
       'By day',
-      'UTC days; a game counts once, however many sides reported it',
+      'UTC days; a game counts once, however many sides reported it; players online at most, as sampled every minute',
       table(
         [
           { label: 'Day', cell: (d) => calendarDay.format(new Date(d.day)) },
+          { label: 'Players online', num: true, cell: (d) => (d.peak_online == null ? '—' : integer.format(d.peak_online)) },
           { label: 'Matches', num: true, cell: (d) => integer.format(d.matches) },
           { label: 'Abandoned', num: true, cell: (d) => flagged(d.abandoned, 'warning') },
           { label: 'Games', num: true, cell: (d) => integer.format(d.games) },
