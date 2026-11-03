@@ -530,6 +530,9 @@ pub struct Listed {
     pub unread: i64,
     /// Their Discord account id, for a friend the player can chat with.
     pub discord_id: Option<String>,
+    /// While online: the game their Recharged plays (`R4QE`, `R4QP`, ...),
+    /// when it says; sets pair only players of one.
+    pub game: Option<String>,
 }
 
 /// Who has Recharged open, but `player_id`, by name.
@@ -654,9 +657,10 @@ pub(super) async fn listed(
                       AS "online!",
                   players.activity, players.match_kind,
                   EXISTS (SELECT 1 FROM matches
-                          WHERE state IN ('challenged', 'accepted')
+                          WHERE (state = 'challenged'
+                                 OR state = 'accepted' AND (go_at IS NOT NULL OR playing_at IS NOT NULL))
                             AND (home = players.player_id OR away = players.player_id))
-                      AS "busy!",
+                      AS "busy!", players.game,
                   extract(epoch FROM players.heartbeat_at)::bigint AS last_online,
                   EXISTS (SELECT 1 FROM friends
                           WHERE friends.player_id = $3 AND friends.friend_id = players.player_id)
@@ -711,6 +715,7 @@ pub(super) async fn listed(
             discord_id: (row.friend && row.keeps_you)
                 .then_some(row.discord_id)
                 .flatten(),
+            game: row.online.then_some(row.game).flatten(),
         })
         .collect();
     listed.sort_by_key(|entry| ids.iter().position(|id| *id == entry.player.id));

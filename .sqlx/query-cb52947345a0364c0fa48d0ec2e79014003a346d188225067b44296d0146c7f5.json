@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE matches SET state = 'cancelled', updated_at = now()\n         WHERE state = 'accepted' AND go_at IS NULL AND playing_at IS NULL\n           AND (home = $1 OR away = $1) AND match_id IS DISTINCT FROM $2\n         RETURNING match_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "match_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "match_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "cb52947345a0364c0fa48d0ec2e79014003a346d188225067b44296d0146c7f5"
+}

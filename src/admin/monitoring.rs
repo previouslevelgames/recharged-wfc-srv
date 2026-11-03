@@ -4,14 +4,14 @@
 //! a match, as GPCM saw it; the error codes the games showed; and the
 //! reports the server refused. Over the last [`DAYS`] days (UTC), by day,
 //! build, stadium and code, and the last [`TIMELINE_HOURS`] hours as a
-//! timeline.
+//! timeline, which also shows the players online (`crate::online`).
 
 use serde::Serialize;
 use sqlx::{PgConnection, PgPool};
 use time::{Duration, OffsetDateTime, Time};
 
 use super::page::snapshot;
-use crate::reports;
+use crate::{gpcm::Gpcm, online, reports};
 
 /// The days shown, today's included.
 const DAYS: i64 = 14;
@@ -22,6 +22,8 @@ const TIMELINE_HOURS: i64 = 48;
 const COLUMN_MINUTES: i32 = 30;
 /// Matches on the timeline at most: far more than two days have had.
 const TIMELINE_MATCHES: i64 = 5000;
+/// The players online on the timeline: the most of each span this long.
+const ONLINE_MINUTES: i32 = 10;
 
 #[derive(Serialize)]
 pub struct Monitoring {
@@ -47,6 +49,23 @@ struct Timeline {
     matches: Vec<Span>,
     /// By column and kind, the oldest first; an error code's by code.
     problems: Vec<Problem>,
+    /// The players online, the most in every [`ONLINE_MINUTES`], the oldest
+    /// first; none before the server sampled them.
+    online_minutes: i32,
+    online: Vec<Online>,
+    /// The players online now.
+    online_now: Online,
+}
+
+/// Players online: logged in to WFC, of them in an online match, and with
+/// Recharged open (`crate::online`).
+#[derive(Serialize)]
+struct Online {
+    #[serde(with = "time::serde::rfc3339")]
+    at: OffsetDateTime,
+    wfc: i32,
+    playing: i32,
+    recharged: i32,
 }
 
 #[derive(Serialize)]
@@ -86,6 +105,9 @@ struct Day {
     left: i64,
     /// Error codes the games showed.
     errors: i64,
+    /// The most players logged in to WFC at once (sampled every minute),
+    /// for days the server sampled.
+    peak_online: Option<i32>,
 }
 
 /// The sides one build reported: its own games' endings.
@@ -165,8 +187,15 @@ struct Refusal {
     last_at: OffsetDateTime,
 }
 
-pub async fn read(pool: &PgPool) -> Result<Monitoring, sqlx::Error> {
+pub async fn read(pool: &PgPool, gpcm: &Gpcm) -> Result<Monitoring, sqlx::Error> {
     reports::settle_idle(pool).await?;
+    let (wfc, playing, recharged) = online::now(pool, gpcm).await?;
+    let online_now = Online {
+        at: OffsetDateTime::now_utc(),
+        wfc,
+        playing,
+        recharged,
+    };
     let today = OffsetDateTime::now_utc().replace_time(Time::MIDNIGHT);
     let since = today - Duration::days(DAYS - 1);
     let mut tx = snapshot(pool).await?;
@@ -178,7 +207,7 @@ pub async fn read(pool: &PgPool) -> Result<Monitoring, sqlx::Error> {
         incidents: incidents(&mut tx, since).await?,
         errors: errors(&mut tx, since).await?,
         refusals: refusals(&mut tx).await?,
-        timeline: timeline(&mut tx).await?,
+        timeline: timeline(&mut tx, online_now).await?,
     };
     tx.commit().await?;
     Ok(monitoring)
@@ -210,15 +239,18 @@ async fn by_day(conn: &mut PgConnection, since: OffsetDateTime) -> Result<Vec<Da
                FROM online_match_sides WHERE left_at >= $1 GROUP BY 1),
            e AS (
                SELECT (received_at AT TIME ZONE 'UTC')::date AS day, count(*) AS errors
-               FROM client_errors WHERE received_at >= $1 GROUP BY 1)
+               FROM client_errors WHERE received_at >= $1 GROUP BY 1),
+           o AS (
+               SELECT (at AT TIME ZONE 'UTC')::date AS day, max(wfc) AS peak_online
+               FROM online_samples WHERE at >= $1 GROUP BY 1)
            SELECT days.day::text AS "day!",
                   coalesce(m.matches, 0) AS "matches!", coalesce(m.abandoned, 0) AS "abandoned!",
                   coalesce(g.games, 0) AS "games!", coalesce(g.desyncs, 0) AS "desyncs!",
                   coalesce(g.disconnects, 0) AS "disconnects!", coalesce(l.left, 0) AS "left!",
-                  coalesce(e.errors, 0) AS "errors!"
+                  coalesce(e.errors, 0) AS "errors!", o.peak_online
            FROM days
            LEFT JOIN m USING (day) LEFT JOIN g USING (day) LEFT JOIN l USING (day)
-           LEFT JOIN e USING (day)
+           LEFT JOIN e USING (day) LEFT JOIN o USING (day)
            ORDER BY days.day DESC"#,
         since,
     )
@@ -338,7 +370,7 @@ async fn errors(
     .await
 }
 
-async fn timeline(conn: &mut PgConnection) -> Result<Timeline, sqlx::Error> {
+async fn timeline(conn: &mut PgConnection, online_now: Online) -> Result<Timeline, sqlx::Error> {
     let from = OffsetDateTime::now_utc() - Duration::hours(TIMELINE_HOURS);
     let matches = sqlx::query_as!(
         Span,
@@ -387,11 +419,25 @@ async fn timeline(conn: &mut PgConnection) -> Result<Timeline, sqlx::Error> {
     )
     .fetch_all(&mut *conn)
     .await?;
+    let online = sqlx::query_as!(
+        Online,
+        r#"SELECT date_bin(make_interval(mins => $2), at, TIMESTAMPTZ '1970-01-01 00:00:00+00') AS "at!",
+                  max(wfc) AS "wfc!", max(playing) AS "playing!", max(recharged) AS "recharged!"
+           FROM online_samples WHERE at >= $1
+           GROUP BY 1 ORDER BY 1"#,
+        from,
+        ONLINE_MINUTES,
+    )
+    .fetch_all(&mut *conn)
+    .await?;
     Ok(Timeline {
         from,
         column_minutes: COLUMN_MINUTES,
         matches,
         problems,
+        online_minutes: ONLINE_MINUTES,
+        online,
+        online_now,
     })
 }
 
@@ -415,6 +461,12 @@ mod tests {
 
     use super::*;
     use crate::admin::matches::tests::Games;
+    use crate::nas::Tickets;
+    use std::sync::Arc;
+
+    fn gpcm(pool: &PgPool) -> Gpcm {
+        Gpcm::new(pool.clone(), Arc::new(Tickets::default()), Arc::default())
+    }
 
     #[sqlx::test]
     async fn counts_what_went_wrong_and_lists_it(pool: PgPool) {
@@ -438,7 +490,7 @@ mod tests {
         }
         reports::left(&pool, games.sam, "closed").await.unwrap();
 
-        let monitoring = read(&pool).await.unwrap();
+        let monitoring = read(&pool, &gpcm(&pool)).await.unwrap();
         let today = &monitoring.by_day[0];
         assert_eq!(monitoring.by_day.len(), DAYS as usize);
         assert_eq!(
@@ -528,7 +580,7 @@ mod tests {
             .unwrap();
         }
 
-        let timeline = read(&pool).await.unwrap().timeline;
+        let timeline = read(&pool, &gpcm(&pool)).await.unwrap().timeline;
         let mut ended: Vec<_> = timeline
             .matches
             .iter()
@@ -559,5 +611,85 @@ mod tests {
             assert_eq!(problem.at.unix_timestamp() % column.whole_seconds(), 0);
             assert!(problem.at > timeline.from - column);
         }
+    }
+
+    #[sqlx::test]
+    async fn the_timeline_has_the_players_online(pool: PgPool) {
+        // Nobody sampled yet: no points, and nobody online now.
+        let timeline = read(&pool, &gpcm(&pool)).await.unwrap().timeline;
+        assert!(timeline.online.is_empty());
+        assert_eq!(
+            (timeline.online_now.wfc, timeline.online_now.recharged),
+            (0, 0)
+        );
+
+        // A player with Recharged open, and samples: three in one span of
+        // ten minutes, one in the next, one older than the timeline.
+        sqlx::query("INSERT INTO players (display_name, heartbeat_at) VALUES ('Mario', now())")
+            .execute(&pool)
+            .await
+            .unwrap();
+        crate::online::sample(&pool, &gpcm(&pool)).await.unwrap();
+        let span = i64::from(ONLINE_MINUTES) * 60;
+        let base = OffsetDateTime::now_utc().unix_timestamp() / span * span - 3 * span;
+        for (offset, wfc, playing, recharged) in [
+            (0, 3, 0, 1),
+            (60, 7, 2, 2),
+            (120, 5, 4, 1),
+            (span, 2, 0, 0),
+            (-3 * 24 * 3600, 40, 10, 9),
+        ] {
+            sqlx::query(
+                "INSERT INTO online_samples (at, wfc, playing, recharged)
+                 VALUES (to_timestamp($1), $2, $3, $4)",
+            )
+            .bind((base + offset) as f64)
+            .bind(wfc)
+            .bind(playing)
+            .bind(recharged)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let monitoring = read(&pool, &gpcm(&pool)).await.unwrap();
+        let timeline = monitoring.timeline;
+        assert_eq!(timeline.online_now.recharged, 1);
+        let points: Vec<_> = timeline
+            .online
+            .iter()
+            .map(|point| {
+                (
+                    point.at.unix_timestamp() - base,
+                    point.wfc,
+                    point.playing,
+                    point.recharged,
+                )
+            })
+            .collect();
+        // Each span's most; the sample of now (the player, nobody in WFC) last.
+        assert_eq!(&points[..2], [(0, 7, 4, 2), (span, 2, 0, 0)]);
+        assert_eq!(points.last().map(|point| (point.1, point.3)), Some((0, 1)));
+        // The day's peak: the most logged in to WFC that day (the day of the
+        // samples: just after midnight UTC, yesterday).
+        let sampled = OffsetDateTime::from_unix_timestamp(base)
+            .unwrap()
+            .date()
+            .to_string();
+        let day = monitoring
+            .by_day
+            .iter()
+            .find(|day| day.day == sampled)
+            .unwrap();
+        assert!(
+            day.peak_online.is_some_and(|peak| peak >= 7),
+            "{:?}",
+            day.peak_online
+        );
+        let old = OffsetDateTime::from_unix_timestamp(base - 3 * 24 * 3600)
+            .unwrap()
+            .date()
+            .to_string();
+        let day = monitoring.by_day.iter().find(|day| day.day == old).unwrap();
+        assert_eq!(day.peak_online, Some(40));
     }
 }

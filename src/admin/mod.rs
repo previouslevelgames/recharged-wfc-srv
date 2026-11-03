@@ -434,7 +434,9 @@ async fn api_match(
 }
 
 async fn api_monitoring(State(state): State<Arc<AdminState>>, jar: CookieJar) -> Response {
-    state.page_data(&jar, monitoring::read(&state.pool)).await
+    state
+        .page_data(&jar, monitoring::read(&state.pool, &state.gpcm))
+        .await
 }
 
 async fn api_database(State(state): State<Arc<AdminState>>, jar: CookieJar) -> Response {

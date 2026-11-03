@@ -160,8 +160,11 @@ Mii, Recharged player, profile number, friend code, console or address
 ("laso" finds RAULASO, "0868" a friend code), beyond the 200 the list shows;
 the one of **Leaderboards** finds a Mii, player, profile or friend code on
 every board, with its rank. **Monitoring** starts with the last 48 hours as a timeline that moves
-with the clock: the matches in progress, and below them what went wrong in each
-half hour, with a table of the same numbers. Then it shows how online matches
+with the clock: the players online (logged in to WFC, and of them with
+Recharged open; the server counts them every minute and keeps 30 days), the
+matches in progress, and below them what went wrong in each half hour, with a
+table of the same numbers. Its by-day table shows each day's most players
+online. Then it shows how online matches
 go wrong over the last 14 days: games out of sync and lost connections by day, build and stadium, games
 that left WFC in the middle of a match, the error codes players saw, and the
 reports the server refused ([reports.md](reports.md#diagnostics)).
