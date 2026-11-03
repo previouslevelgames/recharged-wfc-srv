@@ -134,7 +134,7 @@ player signs in again: `game` (the profile identifies it: its WFC login, as
 above), otherwise the account of the player it is bound to (`discord`,
 `test`). The signed-out launcher asks it for the Miis of its game save, so a
 player picking one of them gets their profile back instead of a new one. It
-names no player.
+names no player. One address asks it at most 20 times a minute (429 after).
 
 **Connecting Discord.** A Mii player can connect Discord to the same profile,
 keeping its friends, chat, sets and WFC profiles: the launcher starts the
@@ -444,7 +444,7 @@ terrain and Thunder Island walls; 3 minutes before 1.2.7).
 
 | Route | |
 |---|---|
-| `GET /api/v1/players` | `{"online": [...], "recent": [...], "friends": [...]}`: who has Recharged open (by name, at most 100), the last 10 players played a set with, and the player's friends (see "Friends"). Each is a player as in a sign-in, with `online`, `busy` (has a set to play), `activity` (while online: `launcher`, `game` or `match`, see "Activity"), `match` (in a match: its kind, see "Activity"), `last_online` (their last heartbeat in Unix seconds, `null` before the first) and `friend` (the player keeps them as one). |
+| `GET /api/v1/players` | `{"online": [...], "recent": [...], "friends": [...]}`: who has Recharged open (by name, at most 100), the last 10 players played a set with, and the player's friends (see "Friends"). Each is a player as in a sign-in, with `online`, `busy` (has a set to play), `activity` (while online: `launcher`, `game` or `match`, see "Activity"), `match` (in a match: its kind, see "Activity"), `game` (while online: the game their Recharged plays, `R4QE` and so on, see "Activity"), `last_online` (their last heartbeat in Unix seconds, `null` before the first) and `friend` (the player keeps them as one). `busy` counts a challenge waiting for an answer and a set that goes or plays, not a stopped one. |
 | `POST /api/v1/matches` | `{"opponent": "<Discord username>", "rule_set": <id>}`, or `"opponent_id": <player id>` instead of the name (a Mii player only by id): a challenge, 201. Instead of a rule set, `"rules": {…}` (see "Rules") and `"name"`, the preset they come from (1 to 48 characters; `Custom` without one): the match's `rule_set` then is that name; 400 for rules the game doesn't have. 404 for nobody of that name, 409 when either already has a match to play, or the opponent doesn't have Recharged open or is playing a match (see "Activity"). |
 | `GET /api/v1/matches/current` | `{"match": …, "search": …, "poll_interval": 2, "server_time": <unix seconds>}`: the match still to be played, or the last one that ended within the hour, or `null`; the player's search (see "Random opponents"); `poll_interval` is how soon to ask again (2 while the set waits for its players or the player searches, 10 while they play, 5 otherwise) |
 | `POST /api/v1/search`, `DELETE /api/v1/search` | Search for a random opponent, and stop (see "Random opponents") |
@@ -453,7 +453,7 @@ terrain and Thunder Island walls; 3 minutes before 1.2.7).
 | `POST /api/v1/matches/<id>/ready-to-play` | `{"ready": true}` or `false`: the launcher's Ready to play!, see "Sets" |
 | `POST /api/v1/matches/<id>/ready` | `{"profile_id", "rules_hash"}`: the game's, see below |
 | `POST /api/v1/matches/<id>/report` | `{"games": [...]}`, see below |
-| `POST /api/v1/matches/<id>/rematch` | After a finished or disputed set: the same opponent and rules again, see "Sets" |
+| `POST /api/v1/matches/<id>/rematch` | After a set that ended (finished, disputed, or without a result): the same opponent and rules again, see "Sets" |
 
 A match as the player sees it:
 
@@ -470,10 +470,12 @@ A match as the player sees it:
 
 `random` marks a challenge a search sent (see "Random opponents"). `state` is
 `challenged`, `accepted`, `declined`, `cancelled`, `expired` (a challenge
-unanswered for 10 minutes, a random one for 30 seconds, or an accepted match
-unchanged for 2 hours), `dissolved` (a player closed Recharged, or the set was broken off,
-see "Sets"), `finished` or `disputed`. Each player has one match to play at
-a time.
+unanswered for 10 minutes, a random one for 30 seconds, a stopped set nobody
+is ready for after 10 minutes, or an accepted match unchanged for 2 hours),
+`dissolved` (a player closed Recharged, or the set was broken off, see
+"Sets"), `finished` or `disputed`. Each player has one match to play at a
+time: a challenge waiting for its answer, or a set that goes or plays. A
+stopped set (`open`, see "Sets") keeps nobody from another one.
 
 ### Sets
 
@@ -496,20 +498,29 @@ still work:
   ready, then counts as not ready until it says so again.
 - A set whose games haven't met 5 minutes after the go waits for Ready to
   play! again.
+- A set that stopped before its games met (`open`: a player took Ready to
+  play! back, left the search or the games never met) keeps neither player
+  from another set: a challenge, an accept or a search of either calls it
+  off (`cancelled`), and nobody ready for it for 10 minutes ends it
+  (`expired`). The launchers and games of 1.2.0 call it off at once when
+  their player leaves the search, closes the game or answers **Not now**.
 - A player without a heartbeat for 60 seconds has closed Recharged: their
-  sets without a report of theirs end (`dissolved`). So a challenger set
+  sets without a report of theirs end (`dissolved`), unless the other
+  player's report settles them (see "Results"). So a challenger set
   lasts while both have Recharged open, and only a player with Recharged
   open can be challenged.
 - A playing set with a game that stopped saying it is ready (below) 60
   seconds ago, and that neither player reported, was broken off: it ends
   without a result (`dissolved`), even while both have Recharged open. A
-  set with one report waits for the other's, 5 minutes at most: then it
-  ends without a result too (`dissolved`), as when the games disagreed on
-  the series or a report got lost.
+  set with one report waits for the other's, 5 minutes at most, or until
+  the other player closed Recharged: then the one report settles it (see
+  "Results"), or it ends without a result when nothing in it counts.
 - A game saying it is ready (below) counts as its player's Ready to play!,
   for launchers without the button.
 - `rematch`: the first player to ask challenges the other with the ended
   set's rules (`rematch_of` names it); the other's **Rematch** accepts it.
+  A set that ended without a result (called off, expired, broken off) can
+  be played again the same way.
 
 ### Meeting in RANKED
 
@@ -540,7 +551,19 @@ After the series, each game reports what it saw, game by game:
 
 A report holds 1 to `games` games (the whole series, decided or not, e.g.
 when it ended early); captains and stadiums are lowercase names.
+
+A game that broke off (a player left or lost the connection; 1.2.0 games from
+2026-11-03 on) is the report's last, with its score then, `"interrupted":
+true` and `"played"`, how much of its clock went (0 to 1). It counts at that
+score once a third of it was played and a goal was scored: a third of its
+clock, or for a goal limit, a third of the goals by the leader (first to 10:
+4). A 0-0 that broke off never counts. A server before 1.2.8 refuses such a
+report; the games then report the series without it.
+
 The second report settles the match: `finished` with the series' winner (more
-games won; `winner` is `you`, `opponent` or `draw`) when both saw the same
-games, `disputed` otherwise. A player reports once. The view then shows the
-player's own report as `games`.
+of the counting games won; `winner` is `you`, `opponent` or `draw`) when both
+saw the same games (a broken-off game's `played` may differ a little), no
+result (`dissolved`) when nothing counts, and `disputed` when they saw
+different games. A player reports once. The view then shows the player's own
+report as `games`. When the other player closed Recharged, or 5 minutes pass
+without their report, the one report settles the set the same way.

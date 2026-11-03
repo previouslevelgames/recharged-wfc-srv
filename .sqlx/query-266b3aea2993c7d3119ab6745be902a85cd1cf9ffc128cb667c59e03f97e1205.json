@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE matches SET state = 'finished', winner = $2, updated_at = now()\n             WHERE match_id = $1 AND state = 'accepted'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "266b3aea2993c7d3119ab6745be902a85cd1cf9ffc128cb667c59e03f97e1205"
+}

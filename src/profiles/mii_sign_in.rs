@@ -36,23 +36,48 @@ pub const MAX_NAME: usize = 32;
 /// New Mii players one address can make in [`WINDOW`].
 pub const NEW_PLAYERS_PER_WINDOW: u32 = 5;
 const WINDOW: Duration = Duration::from_secs(60 * 60);
+/// [`known_wfc`] asks one address can make in [`KNOWN_WINDOW`]: a signed-out
+/// launcher asks once for its game save's Miis, and again when they change;
+/// many more is going through profile ids.
+pub const KNOWN_PER_WINDOW: u32 = 20;
+const KNOWN_WINDOW: Duration = Duration::from_secs(60);
 
-/// How many Mii players each address made lately. A plain `std` mutex: it is
-/// never held across an `.await`.
-#[derive(Default)]
-pub struct Creations {
+/// How often each address did something lately (made a Mii player, asked
+/// [`known_wfc`]). A plain `std` mutex: it is never held across an `.await`.
+pub struct PerAddress {
     windows: Mutex<HashMap<IpAddr, (Instant, u32)>>,
+    per_window: u32,
+    window: Duration,
 }
 
-impl Creations {
-    /// Whether `address` may make one more player now; it counts.
+impl PerAddress {
+    /// At most `per_window` in each `window` per address.
+    pub fn new(per_window: u32, window: Duration) -> Self {
+        Self {
+            windows: Mutex::default(),
+            per_window,
+            window,
+        }
+    }
+
+    /// New Mii players: [`NEW_PLAYERS_PER_WINDOW`] an hour.
+    pub fn creations() -> Self {
+        Self::new(NEW_PLAYERS_PER_WINDOW, WINDOW)
+    }
+
+    /// [`known_wfc`]'s asks: [`KNOWN_PER_WINDOW`] a minute.
+    pub fn known() -> Self {
+        Self::new(KNOWN_PER_WINDOW, KNOWN_WINDOW)
+    }
+
+    /// Whether `address` may do it once more now; it counts.
     pub fn allow(&self, address: IpAddr) -> bool {
         let now = Instant::now();
         let mut windows = self.windows.lock().unwrap();
-        windows.retain(|_, (since, _)| now.duration_since(*since) < WINDOW);
-        let (_, made) = windows.entry(bucket(address)).or_insert((now, 0));
-        *made += 1;
-        *made <= NEW_PLAYERS_PER_WINDOW
+        windows.retain(|_, (since, _)| now.duration_since(*since) < self.window);
+        let (_, done) = windows.entry(bucket(address)).or_insert((now, 0));
+        *done += 1;
+        *done <= self.per_window
     }
 }
 
@@ -225,8 +250,15 @@ pub(super) struct KnownWfc {
 /// by Discord. It names nobody: a WFC profile id tells no one who plays.
 pub(super) async fn known_wfc(
     State(state): State<Arc<ProfilesState>>,
+    ClientAddress(address): ClientAddress,
     Json(known): Json<KnownWfc>,
 ) -> Response {
+    if !state.known_asks.allow(address) {
+        return json_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many asks from this address; try again in a minute",
+        );
+    }
     if known.profile_ids.len() > MAX_KNOWN {
         return json_error(
             StatusCode::BAD_REQUEST,
@@ -289,7 +321,7 @@ mod tests {
 
     #[test]
     fn an_address_makes_a_few_players_an_hour() {
-        let creations = Creations::default();
+        let creations = PerAddress::creations();
         let (here, there) = ([203, 0, 113, 1].into(), [203, 0, 113, 2].into());
         assert!((0..NEW_PLAYERS_PER_WINDOW).all(|_| creations.allow(here)));
         assert!(!creations.allow(here));
@@ -301,6 +333,15 @@ mod tests {
         assert!((0..NEW_PLAYERS_PER_WINDOW).all(|_| creations.allow(first)));
         assert!(!creations.allow(second));
         assert!(creations.allow(other));
+    }
+
+    #[test]
+    fn an_address_asks_for_known_miis_a_few_times_a_minute() {
+        let asks = PerAddress::known();
+        let (here, there) = ([203, 0, 113, 1].into(), [203, 0, 113, 2].into());
+        assert!((0..KNOWN_PER_WINDOW).all(|_| asks.allow(here)));
+        assert!(!asks.allow(here));
+        assert!(asks.allow(there));
     }
 
     #[test]
