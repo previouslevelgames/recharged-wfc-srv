@@ -134,7 +134,7 @@ player signs in again: `game` (the profile identifies it: its WFC login, as
 above), otherwise the account of the player it is bound to (`discord`,
 `test`). The signed-out launcher asks it for the Miis of its game save, so a
 player picking one of them gets their profile back instead of a new one. It
-names no player.
+names no player. One address asks it at most 20 times a minute (429 after).
 
 **Connecting Discord.** A Mii player can connect Discord to the same profile,
 keeping its friends, chat, sets and WFC profiles: the launcher starts the

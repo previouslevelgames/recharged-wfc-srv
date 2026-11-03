@@ -85,7 +85,9 @@ struct ProfilesState {
     http: reqwest::Client,
     sign_ins: SignIns,
     /// The Mii players each address made lately.
-    mii_players: mii_sign_in::Creations,
+    mii_players: mii_sign_in::PerAddress,
+    /// The known-Mii asks each address made lately.
+    known_asks: mii_sign_in::PerAddress,
     /// Who is logged in to WFC with which login ticket.
     gpcm: Arc<Gpcm>,
     /// Matches' games kept for RANKED, which the server browser reads.
@@ -111,7 +113,8 @@ pub(crate) fn router(
         pool,
         http,
         sign_ins: SignIns::default(),
-        mii_players: mii_sign_in::Creations::default(),
+        mii_players: mii_sign_in::PerAddress::creations(),
+        known_asks: mii_sign_in::PerAddress::known(),
         gpcm,
         pairings,
         page,
