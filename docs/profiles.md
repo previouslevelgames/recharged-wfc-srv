@@ -389,7 +389,7 @@ A person with two rows (two WFC accounts, a Mii of each version, or a Mii
 player and a Discord player) is put together on the admin dashboard, on a
 profile's page (owners only):
 
-- **Link…** puts that WFC profile together with another WFC profile of the
+- **Link WFC profile…** puts that WFC profile together with another WFC profile of the
   same person, by its profile number (`PUT
   /admin/api/wfc-profiles/<profile>/player`, `{"profile_id": <other>}`): both
   play for the player either plays for already, or for a new one named after
@@ -399,7 +399,7 @@ profile's page (owners only):
   their number (`{"player_id": <id>}`, or `null` to unlink). A launcher that
   proves a profile later binds it to its own player again (merge the made one
   into it then).
-- **Merge another player into this one**, in two asks as the leaderboard wipe
+- **Keep this player and merge another…**, in two asks as the leaderboard wipe
   (`POST /admin/api/players/merge` with `{"from", "into"}` answers what it
   moves, the phrase and a token; `.../merge/confirm` with them merges): the
   WFC profiles, sets and reports, chats, friends and Mii friends and the
