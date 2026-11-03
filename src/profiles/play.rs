@@ -856,14 +856,17 @@ pub(super) async fn ready(
     let pairing = state
         .pairings
         .ready(found.id, side, profile.profile_id, &profile.game);
-    if let Err(error) =
-        matches::game_ready(&state.pool, found.id, side, pairing == Pairing::Paired).await
+    // Another game of the player's took the set: this one leaves it.
+    if pairing != Pairing::Replaced
+        && let Err(error) =
+            matches::game_ready(&state.pool, found.id, side, pairing == Pairing::Paired).await
     {
         return database_error(error);
     }
     Json(json!({
         "paired": pairing == Pairing::Paired,
         "other_release": pairing == Pairing::OtherRelease,
+        "replaced": pairing == Pairing::Replaced,
     }))
     .into_response()
 }

@@ -23,7 +23,9 @@ pub const HEARTBEAT_TIMEOUT_SECS: i32 = 60;
 /// goes back to waiting for Ready to play!.
 const GO_TIMEOUT_SECS: i32 = 300;
 /// A game of a playing set last called this long ago, and neither player
-/// reported: the set was broken off and ends (`dissolved`).
+/// reported: the set was broken off and ends (`dissolved`). After one
+/// report whose last game broke off, the other's game this quiet won't
+/// report either: the set is settled from the one report, as below.
 const GAME_GONE_SECS: i32 = 60;
 /// One player reported this long ago and the other never did (their games
 /// disagreed on the series, or a report got lost): the set is settled from
@@ -243,8 +245,9 @@ struct Row {
 ///   [`HEARTBEAT_TIMEOUT_SECS`]) and has not reported (`dissolved`);
 /// - playing sets without a report with a game that stopped saying it is
 ///   ready [`GAME_GONE_SECS`] ago (`dissolved`);
-/// - sets with one report and the other player gone (Recharged closed, or
-///   [`ONE_REPORT_SECS`] without their report): settled from
+/// - sets with one report and the other player gone (Recharged closed, its
+///   game quiet for [`GAME_GONE_SECS`] after a report of a game that broke
+///   off, or [`ONE_REPORT_SECS`] without their report): settled from
 ///   the one report when a game in it counts ([`Game::counts`]), else
 ///   `dissolved`;
 /// - a go older than [`GO_TIMEOUT_SECS`] without the games meeting: both
@@ -309,11 +312,20 @@ pub async fn sweep(pool: &PgPool) -> Result<Vec<i64>, sqlx::Error> {
              WHERE state = 'accepted'
                AND (SELECT count(*) FROM match_reports
                     WHERE match_reports.match_id = matches.match_id) = 1
-               AND (SELECT min(reported_at) FROM match_reports
-                    WHERE match_reports.match_id = matches.match_id)
-                   < now() - make_interval(secs => $1)
+               AND EXISTS (
+                   SELECT 1 FROM match_reports r
+                   WHERE r.match_id = matches.match_id
+                     AND (r.reported_at < now() - make_interval(secs => $1)
+                          OR matches.playing_at IS NOT NULL
+                             AND r.games::jsonb -> -1 ->> 'interrupted' = 'true'
+                             AND coalesce(CASE WHEN r.player_id = matches.home
+                                               THEN matches.away_game_ready_at
+                                               ELSE matches.home_game_ready_at END,
+                                          matches.playing_at)
+                                 < now() - make_interval(secs => $2)))
              RETURNING match_id",
             f64::from(ONE_REPORT_SECS),
+            f64::from(GAME_GONE_SECS),
         )
         .fetch_all(pool)
         .await?,
@@ -423,7 +435,9 @@ pub async fn challenge(
 }
 
 /// Sets one player reported while the other's report won't come any more:
-/// they closed Recharged, or [`ONE_REPORT_SECS`] passed. A set with a game that counts
+/// they closed Recharged, the report's last game broke off and the other's
+/// game has been quiet for [`GAME_GONE_SECS`], or [`ONE_REPORT_SECS`] passed.
+/// A set with a game that counts
 /// ([`Game::counts`]) is settled from the one report, as it stood when the
 /// other player's game went; the others end below. Returns the settled ones.
 async fn settle_one_report(pool: &PgPool) -> Result<Vec<i64>, sqlx::Error> {
@@ -435,9 +449,16 @@ async fn settle_one_report(pool: &PgPool) -> Result<Vec<i64>, sqlx::Error> {
            WHERE m.state = 'accepted'
              AND (SELECT count(*) FROM match_reports x WHERE x.match_id = m.match_id) = 1
              AND (r.reported_at < now() - make_interval(secs => $1)
-                  OR coalesce(other.heartbeat_at, m.created_at) < now() - make_interval(secs => $2))"#,
+                  OR coalesce(other.heartbeat_at, m.created_at) < now() - make_interval(secs => $2)
+                  OR m.playing_at IS NOT NULL
+                     AND r.games::jsonb -> -1 ->> 'interrupted' = 'true'
+                     AND coalesce(CASE WHEN r.player_id = m.home THEN m.away_game_ready_at
+                                       ELSE m.home_game_ready_at END,
+                                  m.playing_at)
+                         < now() - make_interval(secs => $3))"#,
         f64::from(ONE_REPORT_SECS),
         f64::from(HEARTBEAT_TIMEOUT_SECS),
+        f64::from(GAME_GONE_SECS),
     )
     .fetch_all(pool)
     .await?;
@@ -1491,6 +1512,43 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(settled.state, "finished");
+    }
+
+    #[sqlx::test]
+    async fn a_set_broken_off_is_settled_once_the_other_game_went_quiet(pool: PgPool) {
+        // Bowser's game closed during the match, his launcher stays open:
+        // Mario's report of the game that broke off settles the set once
+        // Bowser's game has been quiet for a minute.
+        let (found, mario, bowser) = playing_set(&pool).await;
+        report(&pool, found.id, mario, &[broke_off(4, 1, 0.5)])
+            .await
+            .unwrap()
+            .unwrap();
+        games_said_ready(&pool, found.id, [5, 50]).await;
+        assert!(
+            sweep(&pool).await.unwrap().is_empty(),
+            "Bowser's game may still report"
+        );
+        games_said_ready(&pool, found.id, [5, 61]).await;
+        assert_eq!(sweep(&pool).await.unwrap(), [found.id]);
+        let ended = get(&pool, found.id, mario).await.unwrap().unwrap();
+        assert_eq!(
+            (ended.state.as_str(), ended.winner),
+            ("finished", Some(mario))
+        );
+        assert!(!busy_now(&pool, mario, bowser).await);
+
+        // At 0-0 nothing counts: the set ends without a result, as soon.
+        let (found, mario, bowser) = playing_set(&pool).await;
+        report(&pool, found.id, mario, &[broke_off(0, 0, 0.5)])
+            .await
+            .unwrap()
+            .unwrap();
+        games_said_ready(&pool, found.id, [5, 61]).await;
+        assert_eq!(sweep(&pool).await.unwrap(), [found.id]);
+        let ended = get(&pool, found.id, mario).await.unwrap().unwrap();
+        assert_eq!((ended.state.as_str(), ended.winner), ("dissolved", None));
+        assert!(!busy_now(&pool, mario, bowser).await);
     }
 
     #[sqlx::test]

@@ -389,7 +389,7 @@ A person with two rows (two WFC accounts, a Mii of each version, or a Mii
 player and a Discord player) is put together on the admin dashboard, on a
 profile's page (owners only):
 
-- **Link…** puts that WFC profile together with another WFC profile of the
+- **Link WFC profile…** puts that WFC profile together with another WFC profile of the
   same person, by its profile number (`PUT
   /admin/api/wfc-profiles/<profile>/player`, `{"profile_id": <other>}`): both
   play for the player either plays for already, or for a new one named after
@@ -399,7 +399,7 @@ profile's page (owners only):
   their number (`{"player_id": <id>}`, or `null` to unlink). A launcher that
   proves a profile later binds it to its own player again (merge the made one
   into it then).
-- **Merge another player into this one**, in two asks as the leaderboard wipe
+- **Keep this player and merge another…**, in two asks as the leaderboard wipe
   (`POST /admin/api/players/merge` with `{"from", "into"}` answers what it
   moves, the phrase and a token; `.../merge/confirm` with them merges): the
   WFC profiles, sets and reports, chats, friends and Mii friends and the
@@ -513,8 +513,12 @@ still work:
   seconds ago, and that neither player reported, was broken off: it ends
   without a result (`dissolved`), even while both have Recharged open. A
   set with one report waits for the other's, 5 minutes at most, or until
-  the other player closed Recharged: then the one report settles it (see
-  "Results"), or it ends without a result when nothing in it counts.
+  the other player closed Recharged, or (when the report's last game broke
+  off) until the other's game has not said it is ready for 60 seconds: then
+  the one report settles it (see "Results"), or it ends without a result
+  when nothing in it counts. A game that closes during its set's match
+  reports the series with that game broken off, so the set is settled at
+  once.
 - A game saying it is ready (below) counts as its player's Ready to play!,
   for launchers without the button.
 - `rematch`: the first player to ask challenges the other with the ended
@@ -528,8 +532,12 @@ Once the match is accepted, the port says every 10 seconds that its game is
 ready: logged in to WFC as `profile_id`, one of the player's profiles, and
 applying the rules with `rules_hash`. Readiness lasts 30 seconds without being
 said again, so a game that went away stops being kept. The answer is
-`{"paired", "other_release"}`: `paired` once both games are ready, and the
-set's stage is then `playing`. The games go on saying it while they play the
+`{"paired", "other_release", "replaced"}`: `paired` once both games are ready,
+and the set's stage is then `playing`. A player has one game in a set: when
+another of their games (another WFC profile) says it is ready while the first
+still is, the newer one takes the set, and the one it replaced is answered
+`replaced` and leaves it; until it stops saying it is ready, its search lists
+nobody and nobody's lists it. The games go on saying it while they play the
 set; `matches.home_game_ready_at` and `away_game_ready_at` keep the last time
 each did, even when the answer was a 409 (such as a WFC login the server lost
 in a restart, while the match goes on).
@@ -565,5 +573,6 @@ of the counting games won; `winner` is `you`, `opponent` or `draw`) when both
 saw the same games (a broken-off game's `played` may differ a little), no
 result (`dissolved`) when nothing counts, and `disputed` when they saw
 different games. A player reports once. The view then shows the player's own
-report as `games`. When the other player closed Recharged, or 5 minutes pass
-without their report, the one report settles the set the same way.
+report as `games`. When the other player closed Recharged, their game went
+quiet for 60 seconds after a report whose last game broke off, or 5 minutes
+pass without their report, the one report settles the set the same way.

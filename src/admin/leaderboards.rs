@@ -5,7 +5,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::{PgConnection, PgPool};
 use time::{Date, OffsetDateTime};
 
@@ -16,8 +16,10 @@ use crate::gamestats::{
     submission::Submission,
 };
 
-/// Rows shown per category.
+/// Rows shown per category, unless `top` asks for more.
 const TOP: i64 = 10;
+/// The most rows per category `top` gets.
+const MOST_SHOWN: usize = 1000;
 /// Rows a search shows at most, over all categories.
 const FOUND: usize = 100;
 
@@ -99,9 +101,31 @@ struct Entry {
     updated_at: OffsetDateTime,
 }
 
-pub async fn read(pool: &PgPool, search: &Search) -> Result<Leaderboards, sqlx::Error> {
+/// How many rows of each category to show: `top`, [`TOP`] by default, at
+/// most [`MOST_SHOWN`] (the whole board, for diagnosing).
+#[derive(Deserialize, Default)]
+pub struct Shown {
+    top: Option<usize>,
+}
+
+impl Shown {
+    #[cfg(test)]
+    pub fn new(top: usize) -> Self {
+        Self { top: Some(top) }
+    }
+
+    fn rows(&self) -> usize {
+        self.top.unwrap_or(TOP as usize).clamp(1, MOST_SHOWN)
+    }
+}
+
+pub async fn read(
+    pool: &PgPool,
+    search: &Search,
+    shown: &Shown,
+) -> Result<Leaderboards, sqlx::Error> {
     let mut tx = snapshot(pool).await?;
-    let (top, found) = top(&mut tx, search).await?;
+    let (top, found) = top(&mut tx, search, shown.rows()).await?;
     let leaderboards = Leaderboards {
         totals: totals(&mut tx).await?,
         categories: categories(&mut tx).await?,
@@ -144,10 +168,12 @@ async fn categories(conn: &mut PgConnection) -> Result<Vec<Category>, sqlx::Erro
     .await
 }
 
-/// The first rows of each category, and with a search the rows it finds.
+/// The first `shown` rows of each category, and with a search the rows it
+/// finds.
 async fn top(
     conn: &mut PgConnection,
     search: &Search,
+    shown: usize,
 ) -> Result<(Vec<Entry>, Option<Vec<Entry>>), sqlx::Error> {
     let rows = sqlx::query_as!(
         Row,
@@ -166,7 +192,7 @@ async fn top(
     let mut top = Vec::new();
     let mut found = Vec::new();
     for (category, rows) in boards {
-        let (leaders, _, matches) = ranked(category, rows, &owners, |entry| {
+        let (leaders, _, matches) = ranked(category, rows, &owners, shown, |entry| {
             entry.profile_ids.iter().any(|id| numbered.contains(id))
                 || text.as_deref().is_some_and(|text| {
                     [&entry.name, &entry.player]
@@ -212,15 +238,17 @@ impl Owners {
 /// ranked and ordered like the game's descending boards
 /// (`gamestats::leaderboard`), and how many rows the board has then.
 fn leaders(category: i32, rows: Vec<Row>, owners: &Owners) -> (Vec<Entry>, usize) {
-    let (top, count, _) = ranked(category, rows, owners, |_| false);
+    let (top, count, _) = ranked(category, rows, owners, TOP as usize, |_| false);
     (top, count)
 }
 
-/// [`leaders`], and every row of the board that `wanted` takes.
+/// The first `shown` rows like [`leaders`], and every row of the board that
+/// `wanted` takes.
 fn ranked(
     category: i32,
     rows: Vec<Row>,
     owners: &Owners,
+    shown: usize,
     wanted: impl Fn(&Entry) -> bool,
 ) -> (Vec<Entry>, usize, Vec<Entry>) {
     let lines = rows
@@ -270,7 +298,7 @@ fn ranked(
         if wanted(&entry) {
             found.push(entry.clone());
         }
-        if index < TOP as usize {
+        if index < shown {
             top.push(entry);
         }
     }
@@ -420,7 +448,9 @@ mod tests {
             .await
             .unwrap();
         }
-        let boards = read(&pool, &Search::default()).await.unwrap();
+        let boards = read(&pool, &Search::default(), &Shown::default())
+            .await
+            .unwrap();
         assert!(boards.found.is_none());
         let leaders: Vec<_> = boards
             .top
@@ -468,6 +498,12 @@ mod tests {
                 ),
             ]
         );
+        // `top` shows as many rows of each category as asked.
+        let first = read(&pool, &Search::default(), &Shown::new(1))
+            .await
+            .unwrap();
+        assert_eq!(first.top.len(), 1);
+        assert_eq!(first.top[0].profile_id, europe);
 
         // A search finds a row by its Mii, its Recharged player or any of
         // its profiles, with its rank.
@@ -475,7 +511,7 @@ mod tests {
             let pool = pool.clone();
             let search = Search::new(q);
             async move {
-                read(&pool, &search)
+                read(&pool, &search, &Shown::default())
                     .await
                     .unwrap()
                     .found
@@ -514,7 +550,9 @@ mod tests {
             .unwrap();
         }
 
-        let leaderboards = read(&pool, &Search::default()).await.unwrap();
+        let leaderboards = read(&pool, &Search::default(), &Shown::default())
+            .await
+            .unwrap();
 
         assert_eq!(
             (leaderboards.totals.entries, leaderboards.totals.players),

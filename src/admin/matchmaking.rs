@@ -15,6 +15,9 @@ use crate::{
     master::{Master, Session},
 };
 
+/// Events the page shows, the latest (a set's timeline reads further back).
+const SHOWN_EVENTS: usize = 100;
+
 /// DWC's `dwc_mtype` (`dwc_match.h`): a ranked search, a search among
 /// friends, hosting a friend battle, joining one.
 const ANYBODY: u8 = 0;
@@ -102,7 +105,7 @@ pub async fn read(
         .iter()
         .filter_map(|game| Some((game.address.clone(), game.profile_id?)))
         .collect();
-    let mut activity = activity.events();
+    let mut activity: Vec<Event> = activity.events().into_iter().take(SHOWN_EVENTS).collect();
     for event in &mut activity {
         if let What::Negotiation { games, .. } = &mut event.what {
             for party in games {
