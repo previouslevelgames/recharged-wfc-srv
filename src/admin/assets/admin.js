@@ -2686,11 +2686,11 @@ const wipe = {
 function playerCard(profile) {
   const player = profile.player;
   const tools = [
-    h('button', { class: 'button', type: 'button', onclick: () => playerTools.openLink(profile) }, 'Link…'),
+    h('button', { class: 'button', type: 'button', onclick: () => playerTools.openLink(profile) }, 'Link WFC profile…'),
   ];
   if (player) {
     tools.push(h('button', { class: 'button', type: 'button', onclick: () => playerTools.unlink(profile) }, 'Unlink'));
-    tools.push(h('button', { class: 'button', type: 'button', onclick: () => playerTools.openMerge(player) }, 'Merge another player into this one…'));
+    tools.push(h('button', { class: 'button', type: 'button', onclick: () => playerTools.openMerge(player) }, 'Keep this player and merge another…'));
   }
   const result = playerTools.result && h('p', { class: 'tile-sub', 'data-tone': playerTools.result[1] }, playerTools.result[0]);
   const body = player
@@ -2707,7 +2707,7 @@ function playerCard(profile) {
         result,
       ]
     : [h('p', { class: 'sub' }, 'No Recharged player has proved this profile theirs.'), result];
-  return card('Recharged player', 'The leaderboards add up the profiles of one player; one player per person', body, tools);
+  return card('Recharged player', 'Linked WFC profiles share one leaderboard row per season or day. The row uses the highest-scoring profile’s Mii name, not the Recharged player name.', body, tools);
 }
 
 /** Linking a profile to a player, unlinking it, and merging two players (in
@@ -2742,8 +2742,8 @@ const playerTools = {
   openLink(profile) {
     const input = this.playerInput();
     const kinds = [
-      { key: 'profile', label: 'Another WFC profile', field: 'WFC profile number', about: 'The other profile’s number is under its Mii name on its page. When neither plays for a Recharged player, a new one, named after this Mii, gets both.' },
-      { key: 'player', label: 'A player', field: 'Player number', about: 'The player’s number is in the Recharged player card of any of their profiles (player #…).' },
+      { key: 'profile', label: 'Combine two WFC profiles', field: 'Other WFC profile number', about: 'Find this number under the other profile’s Mii name. Both WFC profiles are kept and assigned to the same Recharged player. If either already has a player, that player is kept. If neither does, a player is created using this profile’s Mii name (or the other Mii name if this one is blank). If they belong to different players, cancel and use “Keep this player and merge another…” on the player you want to keep.' },
+      { key: 'player', label: 'Assign to a Recharged player', field: 'Recharged player number to assign this profile to', about: `Only WFC profile #${profile.profile_id} moves to the player entered below. Its previous Recharged player, if any, is not deleted, and their other profiles do not move. Find the destination player number in the Recharged player card (player #…).` },
     ];
     let kind = kinds[0];
     const field = h('span', null, kind.field);
@@ -2761,7 +2761,7 @@ const playerTools = {
         },
       }, choice.label),
     );
-    const submit = h('button', { class: 'button', type: 'submit' }, 'Link');
+    const submit = h('button', { class: 'button', type: 'submit' }, 'Link WFC profile');
     submit.addEventListener('click', async (event) => {
       event.preventDefault();
       const number = Number(input.value);
@@ -2770,23 +2770,19 @@ const playerTools = {
       try {
         if (kind.key === 'profile') {
           const paired = await send('PUT', path, { profile_id: number });
-          this.done(
-            paired.created
-              ? `Profiles ${profile.profile_id} and ${number} now play for a new player, ${paired.name} (#${paired.player_id}).`
-              : `Profiles ${profile.profile_id} and ${number} now play for ${paired.name} (#${paired.player_id}).`,
-            'good',
-          );
+          this.done(`WFC profiles #${profile.profile_id} and #${number} are both kept and linked to ${paired.created ? 'new' : 'existing'} Recharged player ${paired.name} (#${paired.player_id}). Their leaderboard rows are combined per season or day using the highest-scoring profile’s Mii name.`, 'good');
         } else {
           await send('PUT', path, { player_id: number });
-          this.done(`Profile ${profile.profile_id} now plays for player #${number}.`, 'good');
+          this.done(`WFC profile #${profile.profile_id} is now linked to Recharged player #${number}. No WFC profiles or Recharged players were deleted.`, 'good');
         }
       } catch (error) {
         this.done(error.message, 'critical');
       }
     });
     this.show(
-      `Link ${profile.mii_name || 'this profile'}`,
-      h('p', null, 'Its leaderboard rows then count for one player, together with the other’s.'),
+      `Link WFC profile #${profile.profile_id} (${profile.mii_name || 'Unnamed'})`,
+      h('p', null, 'No WFC profile is deleted. Profiles linked to the same Recharged player have their points, wins and losses added into one leaderboard row per season or day.'),
+      h('p', null, 'Leaderboard name: the highest-scoring profile’s Mii name is shown, regardless of which profile you start from. In the game, your own combined row keeps your own Mii. Linking does not let you choose the displayed name.'),
       h('div', { class: 'segmented', role: 'group', 'aria-label': 'Link with' }, buttons),
       about,
       h('label', { class: 'editor-field' }, field, input),
@@ -2815,7 +2811,7 @@ const playerTools = {
 
   openMerge(into) {
     const input = this.playerInput();
-    const next = h('button', { class: 'button', type: 'submit' }, 'Next');
+    const next = h('button', { class: 'button', type: 'submit' }, 'Review merge');
     next.addEventListener('click', async (event) => {
       event.preventDefault();
       const from = Number(input.value);
@@ -2828,9 +2824,11 @@ const playerTools = {
       }
     });
     this.show(
-      `Merge another player into ${into.name}`,
-      h('p', null, `Everything of the other player becomes ${into.name}’s: WFC profiles, sets, friends, chats; their launchers stay signed in, as ${into.name}. Then the other player is gone.`),
-      h('label', { class: 'editor-field' }, h('span', null, 'Number of the player to merge'), input),
+      `Keep ${into.name} (player #${into.player_id})`,
+      h('p', null, h('strong', null, 'Player kept: '), `${into.name} (#${into.player_id}). This Recharged player and their name remain.`),
+      h('p', null, 'Enter the other Recharged player to remove. Their WFC profiles, sets, friends and chats move to the player above; their launchers stay signed in as that player. No WFC profiles are deleted. You will review both players before confirming.'),
+      h('p', null, 'The combined leaderboard row uses the highest-scoring WFC profile’s Mii name, not necessarily the name of the Recharged player kept. In the game, your own combined row keeps your own Mii.'),
+      h('label', { class: 'editor-field' }, h('span', null, 'Recharged player number to remove'), input),
       h('div', { class: 'editor-actions' }, h('button', { class: 'button', type: 'button', onclick: () => this.dialog.close() }, 'Cancel'), next),
     );
     input.focus();
@@ -2839,7 +2837,7 @@ const playerTools = {
   confirmMerge(asked, from, into) {
     const { phrase, expires_at: expiresAt, impact, token } = asked;
     const input = h('input', { type: 'text', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
-    const confirm = h('button', { class: 'button destroy', type: 'submit', disabled: true }, 'Merge');
+    const confirm = h('button', { class: 'button destroy', type: 'submit', disabled: true }, `Remove player #${impact.from.player_id} and merge`);
     input.addEventListener('input', () => {
       confirm.disabled = input.value.trim() !== phrase;
     });
@@ -2848,24 +2846,24 @@ const playerTools = {
       confirm.disabled = true;
       try {
         await send('POST', '/admin/api/players/merge/confirm', { from, into: into.player_id, token, phrase: input.value.trim() });
-        this.done(`${impact.from.name} is merged into ${impact.into.name}.`, 'good');
+        this.done(`Kept ${impact.into.name} (player #${impact.into.player_id}). Removed ${impact.from.name} (player #${impact.from.player_id}) and moved their WFC profiles and data to the kept player. No WFC profiles were deleted. The leaderboard uses the highest-scoring profile’s Mii name.`, 'good');
       } catch (error) {
         this.done(error.message, 'critical');
       }
     });
     const kinds = (side) => (side.signs_in_with.length ? side.signs_in_with.join(', ') : 'no account');
     this.show(
-      `Merge ${impact.from.name} into ${impact.into.name}?`,
-      h('p', null,
-        h('strong', null, `${impact.from.name}`), ` (#${impact.from.player_id}, ${kinds(impact.from)}) goes into `,
-        h('strong', null, `${impact.into.name}`), ` (#${impact.into.player_id}, ${kinds(impact.into)}).`),
+      'Confirm which Recharged player stays',
+      h('p', null, h('strong', null, 'Keep: '), `${impact.into.name} (player #${impact.into.player_id}, ${kinds(impact.into)}). This player and their name remain.`),
+      h('p', null, h('strong', null, 'Remove: '), `${impact.from.name} (player #${impact.from.player_id}, ${kinds(impact.from)}). This Recharged player is deleted after their data moves to ${impact.into.name} (#${impact.into.player_id}).`),
+      h('p', null, h('strong', null, 'Leaderboard: '), 'WFC profiles are kept, with points, wins and losses combined per season or day. The row shows the highest-scoring profile’s Mii name, not necessarily the kept player’s name. In the game, your own combined row keeps your own Mii.'),
       h('ul', null,
-        h('li', null, plural(impact.profiles, 'WFC profile', 'WFC profiles'), ' and ', plural(impact.matches, 'set', 'sets'), ' move over'),
-        h('li', null, plural(impact.friends, 'friend', 'friends'), ' move over'),
-        impact.between ? h('li', null, plural(impact.between, 'set', 'sets'), ' between the two go (nobody plays themselves)') : null,
+        h('li', null, plural(impact.profiles, 'WFC profile', 'WFC profiles'), ' and ', plural(impact.matches, 'set', 'sets'), ` move to ${impact.into.name} (#${impact.into.player_id})`),
+        h('li', null, plural(impact.friends, 'friend', 'friends'), ` move to ${impact.into.name} (#${impact.into.player_id})`),
+        impact.between ? h('li', null, plural(impact.between, 'set', 'sets'), ' between these two players are deleted (a player cannot play themselves)') : null,
         h('li', null, impact.identities.length
-          ? `Signs in with ${impact.identities.join(', ')} from now on as ${impact.into.name}`
-          : `Its sign-in accounts go: ${impact.into.name} has one of each already`),
+          ? `${impact.from.name}’s ${impact.identities.join(', ')} sign-in accounts move to ${impact.into.name}. Any other sign-in accounts of the removed player are deleted.`
+          : `${impact.from.name}’s sign-in accounts, if any, are deleted; ${impact.into.name} already has an account of each kind.`),
       ),
       warningNote('This cannot be undone.'),
       h('label', { class: 'editor-field' }, h('span', null, 'Type ', h('code', null, phrase), ' to confirm'), input),
