@@ -19,6 +19,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use serde::Serialize;
+
 /// How long a game stays ready without saying it again.
 pub const READY_TTL: Duration = Duration::from_secs(30);
 
@@ -71,6 +73,32 @@ pub enum Pairing {
     OtherRelease,
     /// Another game of this player took its side: this one plays no part.
     Replaced,
+}
+
+/// A match's games as they stand, for diagnosing (`/admin`).
+#[derive(Debug, Serialize)]
+pub struct View {
+    /// `paired`, `waiting` or `other_release`.
+    pub pairing: &'static str,
+    /// The challenger's side, then the challenged's.
+    pub sides: [SideView; 2],
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct SideView {
+    pub ready: Option<GameView>,
+    /// Games another game of the same player replaced.
+    pub replaced: Vec<GameView>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GameView {
+    pub profile_id: i32,
+    pub game: String,
+    /// Seconds since it last said it is ready.
+    pub said_ready_secs_ago: f64,
+    /// Whether that was within [`READY_TTL`].
+    pub live: bool,
 }
 
 /// Whom a ranked search may find.
@@ -183,6 +211,35 @@ impl Pairings {
         Visible::Everyone
     }
 
+    /// How the games of `match_id` stand, for diagnosing.
+    pub fn view(&self, match_id: i64) -> View {
+        let now = Instant::now();
+        let matches = self.matches.lock().unwrap();
+        let game = |ready: &Ready| GameView {
+            profile_id: ready.profile_id,
+            game: ready.game.clone(),
+            said_ready_secs_ago: now.duration_since(ready.at).as_secs_f64(),
+            live: ready.live(now),
+        };
+        let Some(sides) = matches.get(&match_id) else {
+            return View {
+                pairing: "waiting",
+                sides: Default::default(),
+            };
+        };
+        View {
+            pairing: match pairing(&sides.ready, now) {
+                Pairing::Paired => "paired",
+                Pairing::OtherRelease => "other_release",
+                Pairing::Waiting | Pairing::Replaced => "waiting",
+            },
+            sides: [0, 1].map(|side| SideView {
+                ready: sides.ready[side].as_ref().map(game),
+                replaced: sides.replaced[side].iter().map(game).collect(),
+            }),
+        }
+    }
+
     /// Whether `profile_id`'s game is kept for a match.
     pub fn kept(&self, profile_id: i32) -> bool {
         self.visible_to(profile_id) != Visible::Everyone
@@ -265,8 +322,14 @@ mod tests {
         assert_eq!(pairings.ready(7, 0, 1, "R4QE"), Pairing::Replaced);
         assert_eq!(pairings.visible_to(2), Visible::Only(3));
         assert_eq!(pairings.ready(7, 0, 3, "R4QE"), Pairing::Paired);
+        let view = pairings.view(7);
+        assert_eq!(view.pairing, "paired");
+        assert_eq!(view.sides[0].ready.as_ref().unwrap().profile_id, 3);
+        assert_eq!(view.sides[0].replaced[0].profile_id, 1);
+        assert_eq!(view.sides[1].ready.as_ref().unwrap().profile_id, 2);
         pairings.end(7);
         assert_eq!(pairings.visible_to(1), Visible::Everyone);
+        assert_eq!(pairings.view(7).pairing, "waiting");
     }
 
     #[test]

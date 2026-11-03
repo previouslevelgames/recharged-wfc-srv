@@ -432,6 +432,83 @@ async fn admin_pages_are_locked_down() {
     assert_eq!(status, 403);
 }
 
+#[sqlx::test]
+async fn a_diagnostics_token_reads_the_pages_but_changes_nothing(pool: PgPool) {
+    const TOKEN: &str = "diagnostics-0123456789abcdefghijklmnop";
+    let (mut config, _google) = fake_google().await;
+    config.diagnostics_token = Some(TOKEN.into());
+    let set: i64 = sqlx::query_scalar(
+        "WITH players AS (
+             INSERT INTO players (display_name) VALUES ('Mario'), ('Bowser') RETURNING player_id)
+         INSERT INTO matches (kind, state, home, away, rule_set, rules, rules_hash)
+         SELECT 'test', 'accepted', min(player_id), max(player_id), 'Competitive', '{}', 'h'
+         FROM players
+         RETURNING match_id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let mut browser = Browser::new(recharged_wfc_srv::App::new(pool).router(Some(config), None));
+    let bearer = |uri: &str, token: &str| {
+        Request::get(uri).header(header::AUTHORIZATION, format!("Bearer {token}"))
+    };
+
+    // Without a sign-in, and with another token: nothing.
+    let timeline = format!("/admin/api/sets/{set}");
+    assert_eq!(browser.get(&timeline).await.0, 401);
+    let other = "diagnostics-0123456789abcdefghijklmnoq";
+    assert_eq!(browser.send(bearer(&timeline, other)).await.0, 401);
+
+    // With it: the pages' data, read as the diagnostics token.
+    for uri in [
+        "/admin/api/overview",
+        "/admin/api/matchmaking",
+        "/admin/api/competitive",
+        "/admin/api/logs",
+        timeline.as_str(),
+    ] {
+        let (status, _, body) = browser.send(bearer(uri, TOKEN)).await;
+        assert_eq!(status, 200, "{uri}");
+        let data: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(data["viewer"]["email"], "diagnostics", "{uri}");
+        assert!(data["error"].is_null(), "{body}");
+    }
+    let (_, _, body) = browser.send(bearer(&timeline, TOKEN)).await;
+    let content = serde_json::from_str::<serde_json::Value>(&body).unwrap()["content"].clone();
+    assert_eq!(content["set"]["id"], set, "{body}");
+    assert_eq!(content["set"]["state"], "accepted", "{body}");
+    assert_eq!(content["sides"][0]["name"], "Mario", "{body}");
+    assert_eq!(content["sides"][1]["name"], "Bowser", "{body}");
+    assert_eq!(content["pairing"]["pairing"], "waiting", "{body}");
+    let (_, _, body) = browser.send(bearer("/admin/api/sets/999999", TOKEN)).await;
+    let data: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert!(data["content"].is_null(), "{body}");
+
+    // The owners' page and every change stay a signed-in admin's.
+    assert_eq!(
+        browser
+            .send(bearer("/admin/api/maintenance", TOKEN))
+            .await
+            .0,
+        401
+    );
+    for (method, uri) in [
+        ("POST", "/admin/api/players/merge"),
+        ("POST", "/admin/api/maintenance/wipe-leaderboards"),
+        ("PUT", "/admin/api/maintenance/test-sign-in"),
+        ("POST", "/admin/api/rules"),
+    ] {
+        let request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(header::AUTHORIZATION, format!("Bearer {TOKEN}"))
+            .header(header::ORIGIN, PUBLIC_URL)
+            .header(header::CONTENT_TYPE, "application/json");
+        let (status, _, _) = browser.send_body(request, Body::from("{}")).await;
+        assert!(!status.is_success(), "{method} {uri}: {status}");
+    }
+}
+
 #[tokio::test]
 async fn admin_is_not_served_without_its_configuration() {
     let mut browser = Browser::new(recharged_wfc_srv::App::new(lazy_pool()).router(None, None));

@@ -89,6 +89,7 @@ impl App {
                 self.gpcm.clone(),
                 self.master.clone(),
                 self.activity.clone(),
+                self.pairings.clone(),
                 config,
                 test_sign_in,
             ));

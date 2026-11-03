@@ -1,0 +1,208 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT match_id, state, home, away, rule_set, random, rematch_of, winner,\n                created_at, updated_at, go_at, playing_at,\n                home_ready_at, away_ready_at, home_game_ready_at, away_game_ready_at\n         FROM matches WHERE match_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "match_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "match_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "state",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "home",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "home"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "away",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "away"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "rule_set",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "rule_set"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "random",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "random"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "rematch_of",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "rematch_of"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "winner",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "winner"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "created_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "updated_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "go_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "go_at"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "playing_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "playing_at"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "home_ready_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "home_ready_at"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "away_ready_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "away_ready_at"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "home_game_ready_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "home_game_ready_at"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "away_game_ready_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "away_game_ready_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "ab6304c8839d0362b3f8d553e488e1666602570970e01e21d7c77661b54c1f59"
+}

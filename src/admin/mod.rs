@@ -30,14 +30,15 @@ mod overview;
 mod page;
 mod players;
 mod session;
+mod sets;
 
 use std::{fmt::Display, future::Future, sync::Arc, time::Duration};
 
 use axum::{
     Json, Router,
-    extract::{Path, Query, State},
+    extract::{Path, Query, Request, State},
     http::{HeaderMap, HeaderValue, StatusCode, Uri, header},
-    middleware,
+    middleware::{self, Next},
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post, put},
 };
@@ -52,6 +53,7 @@ use crate::{
     gpcm::Gpcm,
     html::{escape, label_page},
     master::Master,
+    pairing::Pairings,
     profiles::rules::{self, Rules, SaveError},
 };
 pub use config::{Config, GoogleEndpoints, VARIABLES};
@@ -83,6 +85,8 @@ const OWNER_PAGES: [&str; 1] = ["/admin/maintenance"];
 const DETAILS: [&str; 2] = ["/admin/players", "/admin/matches"];
 
 const SESSION_COOKIE: &str = "wfc_admin";
+/// The viewer the pages name for the diagnostics token.
+const DIAGNOSTICS_READER: &str = "diagnostics";
 const LOGIN_COOKIE: &str = "wfc_admin_login";
 /// Time to choose an account on Google's page.
 const LOGIN_TTL: Duration = Duration::from_secs(10 * 60);
@@ -106,6 +110,8 @@ struct AdminState {
     /// page.
     master: Arc<Master>,
     activity: Arc<Activity>,
+    /// The games the profile service keeps for sets, for a set's timeline.
+    pairings: Arc<Pairings>,
     /// For Google's token endpoint.
     http: reqwest::Client,
     sessions: Sessions,
@@ -125,6 +131,7 @@ pub(crate) fn router(
     gpcm: Arc<Gpcm>,
     master: Arc<Master>,
     activity: Arc<Activity>,
+    pairings: Arc<Pairings>,
     config: Config,
     test_sign_in: Option<bool>,
 ) -> Router {
@@ -141,6 +148,7 @@ pub(crate) fn router(
         gpcm,
         master,
         activity,
+        pairings,
         http,
         sessions: Sessions::default(),
         confirmations: Confirmations::default(),
@@ -173,6 +181,7 @@ pub(crate) fn router(
         .route("/admin/api/competitive", get(api_competitive))
         .route("/admin/api/logs", get(api_logs))
         .route("/admin/api/logs/{day}", get(log_file))
+        .route("/admin/api/sets/{id}", get(api_set))
         .route("/admin/api/maintenance", get(api_maintenance))
         .route(
             "/admin/api/maintenance/wipe-leaderboards",
@@ -197,12 +206,34 @@ pub(crate) fn router(
         .route("/admin/admin.css", get(stylesheet))
         .route("/admin/admin.js", get(script))
         .layer(middleware::map_response(security_headers))
+        .layer(middleware::from_fn(note_bearer))
         .with_state(state)
 }
 
 impl AdminState {
     fn signed_in(&self, jar: &CookieJar) -> Option<Account> {
         self.sessions.get(jar.get(SESSION_COOKIE)?.value())
+    }
+
+    /// Who reads a page's data: the signed-in admin, or the diagnostics
+    /// token (`Authorization: Bearer`), which reads every page but the
+    /// owners' and changes nothing.
+    fn reader(&self, jar: &CookieJar, headers: &HeaderMap) -> Option<Account> {
+        self.signed_in(jar).or_else(|| {
+            let token = headers
+                .get(header::AUTHORIZATION)?
+                .to_str()
+                .ok()?
+                .strip_prefix("Bearer ")?;
+            self.config
+                .is_diagnostics_token(token.trim())
+                .then(|| Account {
+                    email: DIAGNOSTICS_READER.to_owned(),
+                    name: Some("Diagnostics token".to_owned()),
+                    picture: None,
+                    owner: false,
+                })
+        })
     }
 
     /// A cookie for `/admin` only, out of reach of scripts.
@@ -260,9 +291,10 @@ impl AdminState {
     async fn page_data<T: Serialize, E: Display>(
         &self,
         jar: &CookieJar,
+        headers: &HeaderMap,
         read: impl Future<Output = Result<T, E>>,
     ) -> Response {
-        let Some(viewer) = self.signed_in(jar) else {
+        let Some(viewer) = self.reader(jar, headers) else {
             return (
                 StatusCode::UNAUTHORIZED,
                 Json(serde_json::json!({"error": "signed out"})),
@@ -379,10 +411,15 @@ async fn logout(
     (jar, Redirect::to("/admin")).into_response()
 }
 
-async fn api_overview(State(state): State<Arc<AdminState>>, jar: CookieJar) -> Response {
+async fn api_overview(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    headers: HeaderMap,
+) -> Response {
     state
         .page_data(
             &jar,
+            &headers,
             overview::read(&state.pool, &state.gpcm, &state.master),
         )
         .await
@@ -391,10 +428,15 @@ async fn api_overview(State(state): State<Arc<AdminState>>, jar: CookieJar) -> R
 async fn api_players(
     State(state): State<Arc<AdminState>>,
     jar: CookieJar,
+    headers: HeaderMap,
     Query(search): Query<players::Search>,
 ) -> Response {
     state
-        .page_data(&jar, players::read(&state.pool, &state.gpcm, &search))
+        .page_data(
+            &jar,
+            &headers,
+            players::read(&state.pool, &state.gpcm, &search),
+        )
         .await
 }
 
@@ -402,77 +444,138 @@ async fn api_players(
 async fn api_player(
     State(state): State<Arc<AdminState>>,
     jar: CookieJar,
+    headers: HeaderMap,
     Path(id): Path<i32>,
 ) -> Response {
     state
-        .page_data(&jar, players::detail(&state.pool, &state.gpcm, id))
+        .page_data(
+            &jar,
+            &headers,
+            players::detail(&state.pool, &state.gpcm, id),
+        )
         .await
 }
 
-async fn api_matchmaking(State(state): State<Arc<AdminState>>, jar: CookieJar) -> Response {
+async fn api_matchmaking(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    headers: HeaderMap,
+) -> Response {
     state
         .page_data(
             &jar,
+            &headers,
             matchmaking::read(&state.pool, &state.master, &state.activity),
         )
         .await
 }
 
-async fn api_matches(State(state): State<Arc<AdminState>>, jar: CookieJar) -> Response {
-    state.page_data(&jar, matches::read(&state.pool)).await
+async fn api_matches(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    headers: HeaderMap,
+) -> Response {
+    state
+        .page_data(&jar, &headers, matches::read(&state.pool))
+        .await
 }
 
 /// A match's detail; `null` for none.
 async fn api_match(
     State(state): State<Arc<AdminState>>,
     jar: CookieJar,
+    headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> Response {
     state
-        .page_data(&jar, matches::detail(&state.pool, id))
+        .page_data(&jar, &headers, matches::detail(&state.pool, id))
         .await
 }
 
-async fn api_monitoring(State(state): State<Arc<AdminState>>, jar: CookieJar) -> Response {
+async fn api_monitoring(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    headers: HeaderMap,
+) -> Response {
     state
-        .page_data(&jar, monitoring::read(&state.pool, &state.gpcm))
+        .page_data(&jar, &headers, monitoring::read(&state.pool, &state.gpcm))
         .await
 }
 
-async fn api_database(State(state): State<Arc<AdminState>>, jar: CookieJar) -> Response {
-    state.page_data(&jar, database::read(&state.pool)).await
+async fn api_database(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    headers: HeaderMap,
+) -> Response {
+    state
+        .page_data(&jar, &headers, database::read(&state.pool))
+        .await
 }
 
 async fn api_leaderboards(
     State(state): State<Arc<AdminState>>,
     jar: CookieJar,
+    headers: HeaderMap,
     Query(search): Query<players::Search>,
 ) -> Response {
     state
-        .page_data(&jar, leaderboards::read(&state.pool, &search))
+        .page_data(&jar, &headers, leaderboards::read(&state.pool, &search))
         .await
 }
 
-async fn api_competitive(State(state): State<Arc<AdminState>>, jar: CookieJar) -> Response {
-    state.page_data(&jar, competitive::read(&state.pool)).await
+async fn api_competitive(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    headers: HeaderMap,
+) -> Response {
+    state
+        .page_data(&jar, &headers, competitive::read(&state.pool))
+        .await
 }
 
 async fn api_logs(
     State(state): State<Arc<AdminState>>,
     jar: CookieJar,
+    headers: HeaderMap,
     Query(filter): Query<logs::Filter>,
 ) -> Response {
     let dir = state.config.log_dir.clone();
-    state.page_data(&jar, logs::read(dir, filter)).await
+    state
+        .page_data(&jar, &headers, logs::read(dir, filter))
+        .await
+}
+
+/// A set's live state, for diagnosing; `null` for none.
+async fn api_set(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+) -> Response {
+    state
+        .page_data(
+            &jar,
+            &headers,
+            sets::timeline(
+                &state.pool,
+                &state.gpcm,
+                &state.master,
+                &state.activity,
+                &state.pairings,
+                id,
+            ),
+        )
+        .await
 }
 
 /// A day's whole log file, to save.
 async fn log_file(
     State(state): State<Arc<AdminState>>,
     jar: CookieJar,
+    headers: HeaderMap,
     Path(day): Path<String>,
 ) -> Response {
-    if state.signed_in(&jar).is_none() {
+    if state.reader(&jar, &headers).is_none() {
         return StatusCode::UNAUTHORIZED.into_response();
     }
     match logs::file(state.config.log_dir.clone(), day).await {
@@ -599,9 +702,11 @@ async fn api_maintenance(State(state): State<Arc<AdminState>>, jar: CookieJar) -
     if state.signed_in(&jar).is_some_and(|viewer| !viewer.owner) {
         return StatusCode::FORBIDDEN.into_response();
     }
+    // An owner's sign-in only: not the diagnostics token.
     state
         .page_data(
             &jar,
+            &HeaderMap::new(),
             maintenance::read(&state.pool, &state.gpcm, state.test_sign_in),
         )
         .await
@@ -885,6 +990,15 @@ async fn script() -> impl IntoResponse {
 
 /// Every `/admin` response: never cached, never framed, and only this
 /// server's own scripts.
+/// A request with a bearer token (the diagnostics token, or a wrong one)
+/// goes to the log with its path.
+async fn note_bearer(request: Request, next: Next) -> Response {
+    if request.headers().contains_key(header::AUTHORIZATION) {
+        info!(target: "admin", method = %request.method(), path = %request.uri().path(), "bearer token");
+    }
+    next.run(request).await
+}
+
 async fn security_headers(mut response: Response) -> Response {
     let headers = response.headers_mut();
     for (name, value) in [

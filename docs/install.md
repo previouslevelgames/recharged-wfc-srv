@@ -65,6 +65,7 @@ enter the **Key** and **Value** from the table, and set **Password Mask: Yes** f
 | `GOOGLE_CLIENT_SECRET` | for `/admin` | Client secret of the Google OAuth client. Set **Password Mask: Yes**. |
 | `ADMIN_GOOGLE_EMAILS` | for `/admin` | Google addresses allowed in, comma-separated, e.g. `you@gmail.com, teammate@gmail.com`. |
 | `OWNER_GOOGLE_EMAILS` | no | Owners, above admins: Google addresses, comma-separated, e.g. `you@gmail.com`. They sign in too, and only they see **Maintenance**. Unset, no one does. |
+| `ADMIN_DIAGNOSTICS_TOKEN` | no | A secret of at least 32 characters without spaces. Sent as `Authorization: Bearer <token>`, it reads the dashboard's data without a Google sign-in, for diagnosing from a script; see [Diagnosing a set](#diagnosing-a-set). It reads every page but **Maintenance** and changes nothing. Set **Password Mask: Yes**. Unset, there is none. |
 | `DISCORD_CLIENT_ID` | for profiles | Client ID of the Discord app players sign in with. See [profiles.md](profiles.md). |
 | `DISCORD_CLIENT_SECRET` | for profiles | Its client secret. Set **Password Mask: Yes**. |
 | `PROFILES_TEST_SIGN_IN` | no | `true` lets anyone sign in to a profile with a name alone, for tests with two games on one PC. Never on a public server. An owner's switch on **Maintenance** wins over it. |
@@ -206,6 +207,28 @@ Sessions last 12 hours and live in the server's memory: restarting or updating
 the container signs everyone out. To remove an admin, edit `ADMIN_GOOGLE_EMAILS`
 and **Apply**. Turn on 2-step verification for the admin Google accounts, because
 they are the only key to `/admin`.
+
+### Diagnosing a set
+
+`GET /admin/api/sets/<id>` shows a competitive set (docs/profiles.md) as the
+server sees it right now: the set's state and times, how the server keeps its
+games for RANKED (each side's ready game, and a game another game of the same
+player replaced), each player's last heartbeat, Ready to play! and game call,
+their WFC profiles with their logins and master-server sessions (searching,
+listed, last heartbeat), the reports, and the matchmaking events of those
+profiles since the set began: searches and how many games they found, match
+commands and whether they reached the other game, NAT negotiations and
+whether the relay carried them. The server keeps the last 1000 events.
+
+With `ADMIN_DIAGNOSTICS_TOKEN` set, a script reads it (and the other pages'
+`/admin/api/…` data) without signing in:
+
+```sh
+curl -H "Authorization: Bearer $TOKEN" https://wfc.example.com/admin/api/sets/22
+```
+
+Every request with a bearer token goes to the log with its path. To take the
+token away, change or remove the variable and **Apply**.
 
 ## Updates
 

@@ -7,7 +7,8 @@ use reqwest::Url;
 /// Every variable `/admin` needs. Set all of them, or none of the Google
 /// ones to run the server without `/admin`: `PUBLIC_URL` serves the profile
 /// service too. It also reads `LOG_DIR`, for the Logs page,
-/// `OWNER_GOOGLE_EMAILS`, for the owners' pages, and `SERVER_LABEL`.
+/// `OWNER_GOOGLE_EMAILS`, for the owners' pages, `SERVER_LABEL`, and
+/// `ADMIN_DIAGNOSTICS_TOKEN`, for reading the pages' data without signing in.
 pub const VARIABLES: [&str; 4] = [
     "PUBLIC_URL",
     "GOOGLE_CLIENT_ID",
@@ -34,7 +35,14 @@ pub struct Config {
     pub log_dir: Option<PathBuf>,
     /// `SERVER_LABEL`, which the pages show, e.g. `DEV`.
     pub label: Option<String>,
+    /// `ADMIN_DIAGNOSTICS_TOKEN`: sent as `Authorization: Bearer`, it reads
+    /// the pages' data (`GET /admin/api/…`) without a Google sign-in, for
+    /// diagnosing from scripts. It changes nothing.
+    pub diagnostics_token: Option<String>,
 }
+
+/// The shortest diagnostics token taken.
+const DIAGNOSTICS_TOKEN_MIN: usize = 32;
 
 /// Google's OpenID Connect endpoints. Tests point them at a fake.
 #[derive(Clone, Debug)]
@@ -89,6 +97,18 @@ impl Config {
                 "OWNER_GOOGLE_EMAILS: give comma-separated Google addresses, or leave it unset",
             )?;
         }
+        if let Some(token) = var("ADMIN_DIAGNOSTICS_TOKEN")
+            .map(|token| token.trim().to_owned())
+            .filter(|token| !token.is_empty())
+        {
+            if token.len() < DIAGNOSTICS_TOKEN_MIN || !token.bytes().all(|b| b.is_ascii_graphic()) {
+                return Err(format!(
+                    "ADMIN_DIAGNOSTICS_TOKEN: give at least {DIAGNOSTICS_TOKEN_MIN} letters, digits or \
+                     signs without spaces, or leave it unset"
+                ));
+            }
+            config.diagnostics_token = Some(token);
+        }
         Ok(Some(config))
     }
 
@@ -111,7 +131,22 @@ impl Config {
             google: GoogleEndpoints::default(),
             log_dir: None,
             label: None,
+            diagnostics_token: None,
         })
+    }
+
+    /// Whether `token` is the diagnostics token, compared in a time that
+    /// doesn't depend on where they differ.
+    pub fn is_diagnostics_token(&self, token: &str) -> bool {
+        let Some(expected) = &self.diagnostics_token else {
+            return false;
+        };
+        expected.len() == token.len()
+            && expected
+                .bytes()
+                .zip(token.bytes())
+                .fold(0u8, |differ, (a, b)| differ | (a ^ b))
+                == 0
     }
 
     /// Whether `email`, lowercase, may sign in: an admin's or an owner's.
@@ -150,6 +185,7 @@ impl fmt::Debug for Config {
             .field("google", &self.google)
             .field("log_dir", &self.log_dir)
             .field("label", &self.label)
+            .field("diagnostics_token", &self.diagnostics_token.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -245,6 +281,24 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(config.log_dir, Some("/var/log/wfc".into()));
+    }
+
+    #[test]
+    fn a_diagnostics_token_is_long_and_stays_out_of_logs() {
+        let token = "0123456789abcdefghijklmnopqrstuvwxyz";
+        let config = from(&[ALL.as_slice(), &[("ADMIN_DIAGNOSTICS_TOKEN", token)]].concat())
+            .unwrap()
+            .unwrap();
+        assert!(config.is_diagnostics_token(token));
+        assert!(!config.is_diagnostics_token("0123456789abcdefghijklmnopqrstuvwxyZ"));
+        assert!(!config.is_diagnostics_token(&token[1..]));
+        assert!(!format!("{config:?}").contains(token));
+        assert!(!from(&ALL).unwrap().unwrap().is_diagnostics_token(""));
+        for short in ["too-short", "0123456789abcdef 0123456789abcdef"] {
+            let error = from(&[ALL.as_slice(), &[("ADMIN_DIAGNOSTICS_TOKEN", short)]].concat())
+                .unwrap_err();
+            assert!(error.contains("ADMIN_DIAGNOSTICS_TOKEN"), "{error}");
+        }
     }
 
     #[test]
