@@ -517,9 +517,14 @@ async fn api_leaderboards(
     jar: CookieJar,
     headers: HeaderMap,
     Query(search): Query<players::Search>,
+    Query(shown): Query<leaderboards::Shown>,
 ) -> Response {
     state
-        .page_data(&jar, &headers, leaderboards::read(&state.pool, &search))
+        .page_data(
+            &jar,
+            &headers,
+            leaderboards::read(&state.pool, &search, &shown),
+        )
         .await
 }
 

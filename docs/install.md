@@ -220,7 +220,11 @@ profiles since the set began: searches and how many games they found, match
 commands and whether they reached the other game, NAT negotiations and
 whether the relay carried them. The server keeps the last 1000 events.
 
-With `ADMIN_DIAGNOSTICS_TOKEN` set, a script reads it (and the other pages'
+`GET /admin/api/leaderboards?top=1000` reads the whole RANKED boards (each
+Recharged player's WFC profiles one row, with their `profile_ids`; `top`
+defaults to 10), and `?q=<name>` every row of a player.
+
+With `ADMIN_DIAGNOSTICS_TOKEN` set, a script reads these (and the other pages'
 `/admin/api/…` data) without signing in:
 
 ```sh
