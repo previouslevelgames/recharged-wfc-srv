@@ -190,6 +190,15 @@ So **a put replaces the stored row**: the server keeps the last value per
 `(pid, category)`. Adding puts up would count every past game again on each
 match and could never reset.
 
+A Recharged set's games (docs/profiles.md, "Sets") meet in RANKED only to find
+each other, so their puts stay off the boards: a put of a profile whose game
+is kept for a set, or whose player's set is playing or ended less than 2
+minutes ago, is answered as stored but changes nothing. Retail RANKED, which a
+player chooses (the game's own menu, or Play RANKED in the Recharged Game
+Menu), counts as before; a FRIENDS battle never puts. The game reads its
+score back from the board when it goes online, so a set's points are gone
+from its menus then too.
+
 ### Seasons
 
 The game resets its scores itself; the server only stores what it puts.

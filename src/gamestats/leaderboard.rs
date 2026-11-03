@@ -24,6 +24,9 @@ const MAX_CATEGORY: u32 = 4;
 /// Reply to a put: the client only checks that it is not empty and is not an
 /// `error:`.
 const PUT_REPLY: [u8; 4] = [1, 0, 0, 0];
+/// A put this soon after its player's set ended is still the set's: the
+/// result's put follows the end of its match.
+const SET_ENDED_SECS: i32 = 120;
 /// Most rows in a TOPLIST or NEAR answer (`DWC_RNK_GET_MAX`).
 const GET_MAX: usize = 10;
 /// Friend slots in a FRIENDS query (`DWC_RNK_FRIENDS_MAX`).
@@ -74,6 +77,15 @@ pub async fn put(state: &GamestatsState, pid: i32, body: &[u8]) -> Result<Vec<u8
     }
     let userdata = &body[16..(16 + size)];
 
+    // A Recharged set's games meet in RANKED only to find each other: their
+    // results go to the set, not the boards (a FRIENDS battle uploads
+    // nothing). The game hears its put went through: a refused put would
+    // stop its later ones until it logs in again.
+    if in_a_set(state, pid).await? {
+        info!(target: "gamestats", pid, category, score, "a set's game: kept off the boards");
+        return Ok(PUT_REPLY.to_vec());
+    }
+
     state
         .leaderboard
         .store(category, pid, region, score, userdata)
@@ -81,6 +93,28 @@ pub async fn put(state: &GamestatsState, pid: i32, body: &[u8]) -> Result<Vec<u8
     let Submission { wins, losses, .. } = Submission::parse(userdata);
     info!(target: "gamestats", pid, category, score, wins, losses, "stored");
     Ok(PUT_REPLY.to_vec())
+}
+
+/// Whether `pid`'s game plays a Recharged set: kept for one in RANKED, or its
+/// player's set is playing or ended less than [`SET_ENDED_SECS`] ago (the
+/// result's put comes right after the match).
+async fn in_a_set(state: &GamestatsState, pid: i32) -> Result<bool, sqlx::Error> {
+    if state.pairings.kept(pid) {
+        return Ok(true);
+    }
+    sqlx::query_scalar!(
+        r#"SELECT EXISTS (
+               SELECT 1 FROM player_wfc_profiles p
+               JOIN matches m ON p.player_id IN (m.home, m.away)
+               WHERE p.profile_id = $1 AND m.playing_at IS NOT NULL
+                 AND (m.state = 'accepted'
+                      OR m.updated_at > now() - make_interval(secs => $2))
+           ) AS "in_a_set!""#,
+        pid,
+        f64::from(SET_ENDED_SECS),
+    )
+    .fetch_one(&state.leaderboard.pool)
+    .await
 }
 
 /// Answers a leaderboard query. Returns the response payload: `mode`, then
@@ -898,6 +932,72 @@ mod tests {
         let (_, total, rows) = read_list(&reply);
         assert_eq!((total, rows), (1, vec![(1, 7, 130)]));
         assert_eq!(reply[12 + 24..], [0xbb; 128]);
+    }
+
+    #[sqlx::test]
+    async fn a_sets_games_stay_off_the_boards(pool: PgPool) {
+        let state = GamestatsState::with_pool(pool.clone());
+        crate::accounts::log_in(&pool, 1).await.unwrap();
+        let mario =
+            crate::accounts::profile_login(&pool, 1, "R4QEabcdefg", Some("Mario"), "10.0.0.1")
+                .await
+                .unwrap()
+                .profile_id;
+        // Mario's player plays a set whose games met in RANKED.
+        let set: i64 = sqlx::query_scalar(
+            "WITH players AS (
+                 INSERT INTO players (display_name) VALUES ('Mario'), ('Bowser')
+                 RETURNING player_id),
+             bound AS (
+                 INSERT INTO player_wfc_profiles (profile_id, player_id)
+                 SELECT $1, min(player_id) FROM players)
+             INSERT INTO matches (kind, state, home, away, rule_set, rules, rules_hash, playing_at)
+             SELECT 'test', 'accepted', min(player_id), max(player_id), 'x', '{}', 'h', now()
+             FROM players
+             RETURNING match_id",
+        )
+        .bind(mario)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let score = async || -> Option<i32> {
+            sqlx::query_scalar("SELECT score FROM scores WHERE profile_id = $1 AND category = 1")
+                .bind(mario)
+                .fetch_optional(&pool)
+                .await
+                .unwrap()
+        };
+
+        // The game hears its put went through; the boards don't change.
+        assert_eq!(
+            put(&state, mario, &put_body(1, 100, 0xaa)).await.unwrap(),
+            PUT_REPLY
+        );
+        assert_eq!(score().await, None);
+        // Its result's put right after the set ended is still the set's.
+        sqlx::query(
+            "UPDATE matches SET state = 'finished', updated_at = now() WHERE match_id = $1",
+        )
+        .bind(set)
+        .execute(&pool)
+        .await
+        .unwrap();
+        put(&state, mario, &put_body(1, 110, 0xaa)).await.unwrap();
+        assert_eq!(score().await, None);
+        // Later, RANKED counts again.
+        sqlx::query(
+            "UPDATE matches SET updated_at = now() - interval '3 minutes' WHERE match_id = $1",
+        )
+        .bind(set)
+        .execute(&pool)
+        .await
+        .unwrap();
+        put(&state, mario, &put_body(1, 120, 0xbb)).await.unwrap();
+        assert_eq!(score().await, Some(120));
+        // A game kept for a set (ready for it in RANKED) is the set's too.
+        state.pairings.ready(99, 0, mario, "R4QE");
+        put(&state, mario, &put_body(1, 200, 0xcc)).await.unwrap();
+        assert_eq!(score().await, Some(120));
     }
 
     #[sqlx::test]

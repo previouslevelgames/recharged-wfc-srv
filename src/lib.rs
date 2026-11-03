@@ -79,7 +79,11 @@ impl App {
         let mut router = Router::new()
             .route("/status", get(status))
             .merge(nas::router(self.pool.clone(), self.tickets.clone()))
-            .merge(gamestats::router(self.pool.clone(), self.gpcm.clone()))
+            .merge(gamestats::router(
+                self.pool.clone(),
+                self.gpcm.clone(),
+                self.pairings.clone(),
+            ))
             .merge(reports::router(self.pool.clone(), self.gpcm.clone()));
         // The Maintenance page switches test sign-in while profiles run.
         let test_sign_in = profiles.as_ref().map(|config| config.test_sign_in);

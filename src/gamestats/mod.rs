@@ -39,7 +39,7 @@ use axum::{
 use serde::Deserialize;
 use tracing::{info, trace, warn};
 
-use crate::{GAME_NAME, gpcm::Gpcm};
+use crate::{GAME_NAME, gpcm::Gpcm, pairing::Pairings};
 use leaderboard::Leaderboard;
 use token::TokenStore;
 
@@ -59,14 +59,17 @@ pub struct GamestatsState {
     leaderboard: Leaderboard,
     /// Who is logged in where: the puts they may send.
     gpcm: Arc<Gpcm>,
+    /// The games kept for a Recharged set, whose puts stay off the boards.
+    pairings: Arc<Pairings>,
 }
 
 impl GamestatsState {
-    fn new(pool: sqlx::PgPool, gpcm: Arc<Gpcm>) -> Self {
+    fn new(pool: sqlx::PgPool, gpcm: Arc<Gpcm>, pairings: Arc<Pairings>) -> Self {
         Self {
             tokens: Arc::new(TokenStore::default()),
             leaderboard: Leaderboard::new(pool),
             gpcm,
+            pairings,
         }
     }
 }
@@ -76,7 +79,7 @@ impl GamestatsState {
     /// With a GPCM of its own, which nobody is logged in to yet.
     fn with_pool(pool: sqlx::PgPool) -> Self {
         let gpcm = Gpcm::new(pool.clone(), Arc::default(), Arc::default());
-        Self::new(pool, Arc::new(gpcm))
+        Self::new(pool, Arc::new(gpcm), Arc::default())
     }
 
     /// For tests that never touch the database: the pool connects on the first
@@ -90,10 +93,14 @@ impl GamestatsState {
 
 /// The routes. They need the caller's address: serve them with
 /// `into_make_service_with_connect_info::<SocketAddr>()`.
-pub fn router(pool: sqlx::Pool<sqlx::Postgres>, gpcm: Arc<Gpcm>) -> Router {
+pub fn router(
+    pool: sqlx::Pool<sqlx::Postgres>,
+    gpcm: Arc<Gpcm>,
+    pairings: Arc<Pairings>,
+) -> Router {
     Router::new()
         .route("/{game}/web/client/{endpoint}", get(handle))
-        .with_state(GamestatsState::new(pool, gpcm))
+        .with_state(GamestatsState::new(pool, gpcm, pairings))
 }
 
 #[derive(Clone, Copy, Debug)]

@@ -546,7 +546,9 @@ While a game is ready, RANKED in WFC Central works differently for it
 ([login.md](login.md), "Server browser"): its search lists only its
 opponent's game once that one is ready too (whatever region group the game
 puts it in), and nobody else's search lists either of them. A US and a
-European game are never paired: their releases can't play each other.
+European game are never paired: their releases can't play each other. A set's
+games don't count on the RANKED boards ([gamestats2.md](gamestats2.md),
+"`put2.asp`").
 
 ### Results
 
