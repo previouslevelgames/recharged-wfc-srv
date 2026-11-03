@@ -728,7 +728,7 @@ function renderOverview(data, now) {
 // --- Players -------------------------------------------------------------
 
 function presence(player, now) {
-  if (player.cpu_buddy) return [badge('accent', 'Server'), h('span', { class: 'sub' }, 'Accepts every request')];
+  if (player.cpu_buddy) return [badge('accent', 'Server'), h('span', { class: 'sub' }, 'Accepts every friend request; never plays')];
   if (!player.online) return badge(null, 'Offline');
   const [name, tone, about] = statusOf(player.online);
   // A status counts from when the game sent it, the login from its start.
