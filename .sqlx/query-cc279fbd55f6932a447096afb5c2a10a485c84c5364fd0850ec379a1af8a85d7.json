@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS (\n               SELECT 1 FROM player_wfc_profiles p\n               JOIN matches m ON p.player_id IN (m.home, m.away)\n               WHERE p.profile_id = $1 AND m.playing_at IS NOT NULL\n                 AND (m.state = 'accepted'\n                      OR m.updated_at > now() - make_interval(secs => $2))\n           ) AS \"in_a_set!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "in_a_set!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "cc279fbd55f6932a447096afb5c2a10a485c84c5364fd0850ec379a1af8a85d7"
+}
