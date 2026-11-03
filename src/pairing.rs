@@ -7,6 +7,11 @@
 //!
 //! Readiness lives in memory and lasts [`READY_TTL`]: the port says it again
 //! while the game is online, so a game that went away stops being kept.
+//!
+//! A player has one game in a match: when another of their games (another
+//! WFC profile) says it is ready while the first still is, the newer one
+//! takes the side. The one it replaced stays kept, seeing nobody and seen by
+//! nobody, and is told so each time it says it is ready, until it stops.
 
 use std::{
     collections::HashMap,
@@ -20,7 +25,25 @@ pub const READY_TTL: Duration = Duration::from_secs(30);
 /// The ready games of each match, by match.
 #[derive(Default)]
 pub struct Pairings {
-    matches: Mutex<HashMap<i64, [Option<Ready>; 2]>>,
+    matches: Mutex<HashMap<i64, Sides>>,
+}
+
+/// A match's ready game of each side, and the games of each side's player
+/// that another of their games replaced.
+#[derive(Default)]
+struct Sides {
+    ready: [Option<Ready>; 2],
+    replaced: [Vec<Ready>; 2],
+}
+
+impl Sides {
+    fn live(&self, now: Instant) -> bool {
+        self.ready
+            .iter()
+            .flatten()
+            .chain(self.replaced.iter().flatten())
+            .any(|ready| ready.live(now))
+    }
 }
 
 #[derive(Clone)]
@@ -46,6 +69,8 @@ pub enum Pairing {
     Paired,
     /// Both are, but of different releases.
     OtherRelease,
+    /// Another game of this player took its side: this one plays no part.
+    Replaced,
 }
 
 /// Whom a ranked search may find.
@@ -65,11 +90,11 @@ impl Pairings {
     pub fn ready(&self, match_id: i64, side: usize, profile_id: i32, game: &str) -> Pairing {
         let now = Instant::now();
         let mut matches = self.matches.lock().unwrap();
-        matches.retain(|_, sides| sides.iter().flatten().any(|ready| ready.live(now)));
+        matches.retain(|_, sides| sides.live(now));
         // A profile is kept for one match at a time.
         for (other, sides) in matches.iter_mut() {
             if *other != match_id {
-                for slot in sides.iter_mut() {
+                for slot in sides.ready.iter_mut() {
                     if slot
                         .as_ref()
                         .is_some_and(|ready| ready.profile_id == profile_id)
@@ -77,15 +102,33 @@ impl Pairings {
                         *slot = None;
                     }
                 }
+                for replaced in sides.replaced.iter_mut() {
+                    replaced.retain(|ready| ready.profile_id != profile_id);
+                }
             }
         }
         let sides = matches.entry(match_id).or_default();
-        sides[side] = Some(Ready {
+        let ready = Ready {
             profile_id,
             game: game.to_owned(),
             at: now,
-        });
-        pairing(sides, now)
+        };
+        sides.replaced[side].retain(|ready| ready.live(now));
+        if let Some(replaced) = sides.replaced[side]
+            .iter_mut()
+            .find(|replaced| replaced.profile_id == profile_id)
+        {
+            *replaced = ready;
+            return Pairing::Replaced;
+        }
+        if let Some(current) = sides.ready[side]
+            .take()
+            .filter(|current| current.profile_id != profile_id && current.live(now))
+        {
+            sides.replaced[side].push(current);
+        }
+        sides.ready[side] = Some(ready);
+        pairing(&sides.ready, now)
     }
 
     /// The player of side `side` took back Ready to play! for `match_id`:
@@ -93,8 +136,8 @@ impl Pairings {
     pub fn unready(&self, match_id: i64, side: usize) {
         let mut matches = self.matches.lock().unwrap();
         if let Some(sides) = matches.get_mut(&match_id) {
-            sides[side] = None;
-            if sides.iter().all(Option::is_none) {
+            sides.ready[side] = None;
+            if sides.ready.iter().all(Option::is_none) && sides.replaced.iter().all(Vec::is_empty) {
                 matches.remove(&match_id);
             }
         }
@@ -111,7 +154,7 @@ impl Pairings {
         let matches = self.matches.lock().unwrap();
         matches
             .get(&match_id)
-            .map_or(Pairing::Waiting, |sides| pairing(sides, now))
+            .map_or(Pairing::Waiting, |sides| pairing(&sides.ready, now))
     }
 
     /// Whom a ranked search by `profile_id` may find.
@@ -120,14 +163,20 @@ impl Pairings {
         let matches = self.matches.lock().unwrap();
         for sides in matches.values() {
             for side in 0..2 {
-                if sides[side]
+                if sides.ready[side]
                     .as_ref()
                     .is_some_and(|ready| ready.profile_id == profile_id && ready.live(now))
                 {
-                    return match (&sides[1 - side], pairing(sides, now)) {
+                    return match (&sides.ready[1 - side], pairing(&sides.ready, now)) {
                         (Some(other), Pairing::Paired) => Visible::Only(other.profile_id),
                         _ => Visible::Nobody,
                     };
+                }
+                if sides.replaced[side]
+                    .iter()
+                    .any(|ready| ready.profile_id == profile_id && ready.live(now))
+                {
+                    return Visible::Nobody;
                 }
             }
         }
@@ -198,6 +247,26 @@ mod tests {
         assert_eq!(pairings.ready(7, 1, 2, "R4QP"), Pairing::OtherRelease);
         assert_eq!(pairings.visible_to(1), Visible::Nobody);
         assert_eq!(pairings.visible_to(2), Visible::Nobody);
+    }
+
+    #[test]
+    fn a_players_newer_game_takes_the_side() {
+        let pairings = Pairings::default();
+        // Mario's first game (profile 1) is ready, then his second (3).
+        assert_eq!(pairings.ready(7, 0, 1, "R4QE"), Pairing::Waiting);
+        assert_eq!(pairings.ready(7, 1, 2, "R4QE"), Pairing::Paired);
+        assert_eq!(pairings.ready(7, 0, 3, "R4QE"), Pairing::Paired);
+        assert_eq!(pairings.visible_to(2), Visible::Only(3));
+        assert_eq!(pairings.visible_to(3), Visible::Only(2));
+        // The first sees nobody, nobody else's search finds it, and it can't
+        // take the side back.
+        assert_eq!(pairings.visible_to(1), Visible::Nobody);
+        assert!(pairings.kept(1));
+        assert_eq!(pairings.ready(7, 0, 1, "R4QE"), Pairing::Replaced);
+        assert_eq!(pairings.visible_to(2), Visible::Only(3));
+        assert_eq!(pairings.ready(7, 0, 3, "R4QE"), Pairing::Paired);
+        pairings.end(7);
+        assert_eq!(pairings.visible_to(1), Visible::Everyone);
     }
 
     #[test]

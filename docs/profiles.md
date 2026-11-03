@@ -532,8 +532,12 @@ Once the match is accepted, the port says every 10 seconds that its game is
 ready: logged in to WFC as `profile_id`, one of the player's profiles, and
 applying the rules with `rules_hash`. Readiness lasts 30 seconds without being
 said again, so a game that went away stops being kept. The answer is
-`{"paired", "other_release"}`: `paired` once both games are ready, and the
-set's stage is then `playing`. The games go on saying it while they play the
+`{"paired", "other_release", "replaced"}`: `paired` once both games are ready,
+and the set's stage is then `playing`. A player has one game in a set: when
+another of their games (another WFC profile) says it is ready while the first
+still is, the newer one takes the set, and the one it replaced is answered
+`replaced` and leaves it; until it stops saying it is ready, its search lists
+nobody and nobody's lists it. The games go on saying it while they play the
 set; `matches.home_game_ready_at` and `away_game_ready_at` keep the last time
 each did, even when the answer was a 409 (such as a WFC login the server lost
 in a restart, while the match goes on).
