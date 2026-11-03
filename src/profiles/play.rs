@@ -18,6 +18,7 @@ use tracing::info;
 use super::{
     ProfilesState, chat, database_error, friends, json_error,
     matches::{self, Game, Match, Refusal},
+    mii_sign_in::ClientAddress,
     miis,
     players::{self, Player},
     rules::{self, RuleSet, Rules},
@@ -374,11 +375,15 @@ pub(super) async fn current(
 pub(super) async fn players(
     State(state): State<Arc<ProfilesState>>,
     headers: HeaderMap,
+    ClientAddress(address): ClientAddress,
 ) -> Response {
     let player = match state.signed_in(&headers).await {
         Ok(player) => player,
         Err(response) => return response,
     };
+    if let Err(response) = state.observe_country(player.id, address).await {
+        return response;
+    }
     if let Err(response) = state.sweep().await {
         return response;
     }

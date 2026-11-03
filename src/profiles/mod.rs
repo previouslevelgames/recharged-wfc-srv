@@ -18,6 +18,7 @@
 
 mod chat;
 mod config;
+mod countries;
 mod discord;
 #[cfg(test)]
 mod flow_tests;
@@ -56,6 +57,7 @@ use crate::{
 
 pub use config::{Config, DiscordClient, DiscordEndpoints, VARIABLES};
 use discord::SignInError;
+use mii_sign_in::ClientAddress;
 use players::{Identity, LinkRefusal, Player};
 use sign_in::{Link, Outcome, Poll, SIGN_IN_TTL, SignIns};
 
@@ -92,6 +94,8 @@ struct ProfilesState {
     gpcm: Arc<Gpcm>,
     /// Matches' games kept for RANKED, which the server browser reads.
     pairings: Arc<Pairings>,
+    /// The country of an address, for players' flags.
+    countries: countries::Countries,
     /// [`PAGE`] with the server's label.
     page: String,
 }
@@ -108,6 +112,11 @@ pub(crate) fn router(
         .expect("the TLS backend initializes");
     let discord = config.discord.is_some();
     let page = label_page(PAGE, config.label.as_deref());
+    let countries = config
+        .countries
+        .as_deref()
+        .map(countries::Countries::open)
+        .unwrap_or_default();
     let state = Arc::new(ProfilesState {
         config,
         pool,
@@ -117,6 +126,7 @@ pub(crate) fn router(
         known_asks: mii_sign_in::PerAddress::known(),
         gpcm,
         pairings,
+        countries,
         page,
     });
     let mut router = Router::new()
@@ -129,6 +139,7 @@ pub(crate) fn router(
         .route("/api/v1/sign-in/{id}", get(poll_sign_in))
         .route("/api/v1/sign-out", post(sign_out))
         .route("/api/v1/me", get(me))
+        .route("/api/v1/me/country", put(choose_country))
         .route("/api/v1/me/available", put(play::set_available))
         .route("/api/v1/rules", get(play::rule_sets))
         .route("/api/v1/wfc", post(play::bind))
@@ -191,6 +202,21 @@ fn database_error(error: sqlx::Error) -> Response {
 }
 
 impl ProfilesState {
+    /// `player_id`'s launcher or game asked from `address`: their country
+    /// follows it (none for an address the database doesn't know).
+    async fn observe_country(
+        &self,
+        player_id: i64,
+        address: std::net::IpAddr,
+    ) -> Result<(), Response> {
+        let Some(country) = self.countries.of(address) else {
+            return Ok(());
+        };
+        players::observe_country(&self.pool, player_id, &country)
+            .await
+            .map_err(database_error)
+    }
+
     /// Whether players may sign in with a name alone: the owner's switch on
     /// the Maintenance page, else `PROFILES_TEST_SIGN_IN`. Off when the
     /// database cannot say.
@@ -538,11 +564,70 @@ async fn sign_out(State(state): State<Arc<ProfilesState>>, headers: HeaderMap) -
 
 /// The player, with the WFC profiles proven theirs and their Discord
 /// account id.
-async fn me(State(state): State<Arc<ProfilesState>>, headers: HeaderMap) -> Response {
+/// What a player chooses for their flag.
+#[derive(Deserialize)]
+struct CountryChoice {
+    country: String,
+}
+
+/// The player chooses their flag: `auto` (the country they connect from),
+/// `none`, or a country's two letters. Answers like `/api/v1/me`'s fields.
+async fn choose_country(
+    State(state): State<Arc<ProfilesState>>,
+    headers: HeaderMap,
+    Json(choice): Json<CountryChoice>,
+) -> Response {
     let player = match state.signed_in(&headers).await {
         Ok(player) => player,
         Err(response) => return response,
     };
+    match players::choose_country(&state.pool, player.id, &choice.country).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return json_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "a country is auto, none or two capital letters",
+            );
+        }
+        Err(error) => return database_error(error),
+    }
+    let shown = match players::player(&state.pool, player.id).await {
+        Ok(player) => player.and_then(|player| player.country),
+        Err(error) => return database_error(error),
+    };
+    match players::country_choice(&state.pool, player.id).await {
+        Ok((detected, choice)) => Json(json!({
+            "country": shown,
+            "country_detected": detected,
+            "country_choice": choice,
+        }))
+        .into_response(),
+        Err(error) => database_error(error),
+    }
+}
+
+async fn me(
+    State(state): State<Arc<ProfilesState>>,
+    headers: HeaderMap,
+    ClientAddress(address): ClientAddress,
+) -> Response {
+    let player = match state.signed_in(&headers).await {
+        Ok(player) => player,
+        Err(response) => return response,
+    };
+    if let Err(response) = state.observe_country(player.id, address).await {
+        return response;
+    }
+    let player = match players::player(&state.pool, player.id).await {
+        Ok(Some(player)) => player,
+        Ok(None) => return json_error(StatusCode::UNAUTHORIZED, "signed out"),
+        Err(error) => return database_error(error),
+    };
+    let (country_detected, country_choice) =
+        match players::country_choice(&state.pool, player.id).await {
+            Ok(countries) => countries,
+            Err(error) => return database_error(error),
+        };
     let discord_id = match players::discord_id(&state.pool, player.id).await {
         Ok(discord_id) => discord_id,
         Err(error) => return database_error(error),
@@ -557,6 +642,8 @@ async fn me(State(state): State<Arc<ProfilesState>>, headers: HeaderMap) -> Resp
             me["wfc"] = json!(wfc);
             me["discord_id"] = json!(discord_id);
             me["available"] = json!(available);
+            me["country_detected"] = json!(country_detected);
+            me["country_choice"] = json!(country_choice);
             Json(me).into_response()
         }
         Err(error) => database_error(error),

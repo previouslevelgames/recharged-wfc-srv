@@ -222,18 +222,37 @@ of `GET /api/v1/players` and a match's opponent:
 
 ```json
 {"id": 7, "name": "Nelly", "avatar_url": null, "discord": null, "test": false,
- "account": "mii", "friend_code": "0868-9934-5920"}
+ "account": "mii", "friend_code": "0868-9934-5920", "country": "CH"}
 ```
 
 `account` is what the player signs in with: `discord`, `test` (a test name),
 or `mii` (neither, see "Playing without Discord"). `friend_code` is the
 friend code of the WFC profile that identifies the player (a Mii player's
 first proven profile; it stays after Discord is connected), `null` without
-one. Both from 1.2.3.
+one. Both from 1.2.3. `country` is the flag beside the name (see
+"Countries"), `null` for none; from 1.2.11.
 `player_sessions` holds the sessions, `player_wfc_profiles` the friend codes
 proven theirs, `rule_sets` the rules, `matches` and `match_reports` the
 matches and what each game reported. The series every Recharged build reports
 online are separate ([reports.md](reports.md)).
+
+## Countries
+
+A player's flag: the country their launcher or game connects from, as two
+capital letters of ISO 3166-1, found in DB-IP's free "IP to Country Lite"
+database (CC BY 4.0, <https://db-ip.com>), which the server image carries
+(`GEOIP_COUNTRY_DB` names another; without one, nobody has a flag). The
+server looks it up at `GET /api/v1/me` and `GET /api/v1/players`, the lists
+launchers and games read every few seconds, and keeps only the letters
+(`players.country`), never the address.
+
+The player chooses (`players.country_choice`): `auto` shows that country (the
+default), `none` no flag, or two letters another one (for a VPN, or a
+country of their heart). `PUT /api/v1/me/country` with `{"country": "auto"}`
+(or `"none"`, or the letters) answers `{"country", "country_detected",
+"country_choice"}`: the flag others see, the country found, and the choice;
+422 for another value. `GET /api/v1/me` has `country_detected` and
+`country_choice` too.
 
 ## Available for random games
 

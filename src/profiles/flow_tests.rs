@@ -1686,3 +1686,72 @@ async fn an_address_makes_a_few_mii_players_an_hour(pool: PgPool) {
         StatusCode::OK
     );
 }
+
+#[sqlx::test]
+async fn a_player_chooses_the_flag_beside_their_name(pool: PgPool) {
+    let world = World::new(pool.clone());
+    let mario = world.sign_in("Mario").await;
+    let bowser = world.sign_in("Bowser").await;
+    // Mario's launcher connected from Switzerland.
+    sqlx::query("UPDATE players SET country = 'CH' WHERE display_name = 'Mario'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (_, me) = world.send("GET", "/api/v1/me", &mario, Value::Null).await;
+    assert_eq!(
+        (
+            &me["country"],
+            &me["country_detected"],
+            &me["country_choice"]
+        ),
+        (&json!("CH"), &json!("CH"), &json!("auto"))
+    );
+    let mario_in = |lists: &Value| {
+        lists["online"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|player| player["name"] == "Mario")
+            .unwrap()["country"]
+            .clone()
+    };
+    let (_, lists) = world
+        .send("GET", "/api/v1/players", &bowser, Value::Null)
+        .await;
+    assert_eq!(mario_in(&lists), "CH");
+
+    // He hides it, then shows another, then his own again.
+    let choose = async |country: &str| {
+        world
+            .send(
+                "PUT",
+                "/api/v1/me/country",
+                &mario,
+                json!({ "country": country }),
+            )
+            .await
+    };
+    let (status, chosen) = choose("none").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        (&chosen["country"], &chosen["country_detected"]),
+        (&Value::Null, &json!("CH"))
+    );
+    let (_, lists) = world
+        .send("GET", "/api/v1/players", &bowser, Value::Null)
+        .await;
+    assert_eq!(mario_in(&lists), Value::Null);
+    assert_eq!(choose("IT").await.1["country"], "IT");
+    let (_, lists) = world
+        .send("GET", "/api/v1/players", &bowser, Value::Null)
+        .await;
+    assert_eq!(mario_in(&lists), "IT");
+    for bad in ["it", "ITA", ""] {
+        assert_eq!(
+            choose(bad).await.0,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{bad}"
+        );
+    }
+    assert_eq!(choose("auto").await.1["country"], "CH");
+}

@@ -33,9 +33,19 @@ migrate: db
     sqlx migrate run
 
 # Run the server outside Docker against the development database. It applies
-# the migrations itself on start.
+# the migrations itself on start. Players' flags need `just countries`.
 run: db
-    RUST_LOG="${RUST_LOG:-info,raw=trace}" cargo run --locked
+    RUST_LOG="${RUST_LOG:-info,raw=trace}" GEOIP_COUNTRY_DB="${GEOIP_COUNTRY_DB:-target/dbip-country-lite.mmdb}" cargo run --locked
+
+# DB-IP's free country database (CC BY 4.0, https://db-ip.com) for players'
+# flags, this month's (or last month's, early in a month), to target/.
+countries:
+    mkdir -p target
+    for month in "$(date -u +%Y-%m)" "$(date -u -d '-1 month' +%Y-%m)"; do \
+        curl -fsSL "https://download.db-ip.com/free/dbip-country-lite-$month.mmdb.gz" \
+            | gunzip > target/dbip-country-lite.mmdb.part \
+            && mv target/dbip-country-lite.mmdb.part target/dbip-country-lite.mmdb && exit 0; \
+    done; exit 1
 
 # Refresh .sqlx/ after changing a query or the schema: CI and the Docker build
 # check the query macros against it, without a database.
