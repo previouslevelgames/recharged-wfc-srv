@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT players.player_id, players.display_name,\n                  discord.username AS \"discord?\", discord.avatar_url AS \"avatar_url?\",\n                  test.username AS \"test?\",\n                  coalesce(players.heartbeat_at > now() - make_interval(secs => $2), false)\n                      AS \"online!\",\n                  players.activity, players.match_kind,\n                  EXISTS (SELECT 1 FROM matches\n                          WHERE (state = 'challenged'\n                                 OR state = 'accepted' AND (go_at IS NOT NULL OR playing_at IS NOT NULL))\n                            AND (home = players.player_id OR away = players.player_id))\n                      AS \"busy!\", players.game,\n                  extract(epoch FROM players.heartbeat_at)::bigint AS last_online,\n                  EXISTS (SELECT 1 FROM friends\n                          WHERE friends.player_id = $3 AND friends.friend_id = players.player_id)\n                      AS \"friend!\",\n                  EXISTS (SELECT 1 FROM friends\n                          WHERE friends.player_id = players.player_id AND friends.friend_id = $3)\n                      AS \"keeps_you!\",\n                  (SELECT count(*) FROM chat_messages\n                   WHERE chat_messages.sender = players.player_id AND chat_messages.recipient = $3\n                     AND chat_messages.read_at IS NULL) AS \"unread!\",\n                  discord.external_id AS \"discord_id?\", wfc.username AS \"friend_code?\"\n           FROM players\n           LEFT JOIN player_identities discord\n                  ON discord.player_id = players.player_id AND discord.provider = 'discord'\n           LEFT JOIN player_identities test\n                  ON test.player_id = players.player_id AND test.provider = 'test'\n           LEFT JOIN player_identities wfc\n                  ON wfc.player_id = players.player_id AND wfc.provider = 'wfc'\n           WHERE players.player_id = ANY($1)",
+  "query": "SELECT players.player_id, players.display_name,\n                  discord.username AS \"discord?\", discord.avatar_url AS \"avatar_url?\",\n                  test.username AS \"test?\",\n                  coalesce(players.heartbeat_at > now() - make_interval(secs => $2), false)\n                      AS \"online!\",\n                  players.activity, players.match_kind,\n                  EXISTS (SELECT 1 FROM matches\n                          WHERE (state = 'challenged'\n                                 OR state = 'accepted' AND (go_at IS NOT NULL OR playing_at IS NOT NULL))\n                            AND (home = players.player_id OR away = players.player_id))\n                      AS \"busy!\", players.game,\n                  extract(epoch FROM players.heartbeat_at)::bigint AS last_online,\n                  EXISTS (SELECT 1 FROM friends\n                          WHERE friends.player_id = $3 AND friends.friend_id = players.player_id)\n                      AS \"friend!\",\n                  EXISTS (SELECT 1 FROM friends\n                          WHERE friends.player_id = players.player_id AND friends.friend_id = $3)\n                      AS \"keeps_you!\",\n                  (SELECT count(*) FROM chat_messages\n                   WHERE chat_messages.sender = players.player_id AND chat_messages.recipient = $3\n                     AND chat_messages.read_at IS NULL) AS \"unread!\",\n                  discord.external_id AS \"discord_id?\", wfc.username AS \"friend_code?\",\n                  CASE players.country_choice WHEN 'auto' THEN players.country WHEN 'none' THEN NULL\n                       ELSE players.country_choice END AS country\n           FROM players\n           LEFT JOIN player_identities discord\n                  ON discord.player_id = players.player_id AND discord.provider = 'discord'\n           LEFT JOIN player_identities test\n                  ON test.player_id = players.player_id AND test.provider = 'test'\n           LEFT JOIN player_identities wfc\n                  ON wfc.player_id = players.player_id AND wfc.provider = 'wfc'\n           WHERE players.player_id = ANY($1)",
   "describe": {
     "columns": [
       {
@@ -148,6 +148,12 @@
             "name": "username"
           }
         }
+      },
+      {
+        "ordinal": 16,
+        "name": "country",
+        "type_info": "Text",
+        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -173,8 +179,9 @@
       null,
       null,
       true,
-      true
+      true,
+      null
     ]
   },
-  "hash": "c6029c6ad0bb624e59c54a9f1ad17fb4087a2a62f23164353de007386cc3e152"
+  "hash": "ecf27368f0f42f29fbb1e047259905c06e28feadd2652b29e1ff8c7b931c3ea2"
 }
