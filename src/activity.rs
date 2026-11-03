@@ -1,16 +1,18 @@
 //! What happened in matchmaking lately, for `/admin`: the ranked searches,
 //! the match commands games send each other (reservations and their answers,
-//! through the server browser or GPCM) and the NAT negotiations. In memory
-//! only, the last [`KEPT`] events; a search repeated every few seconds, or the
-//! same command again, is one event with a count.
+//! through the server browser or GPCM, and whether the server browser's
+//! reached the game) and the NAT negotiations. In memory only, the last
+//! [`KEPT`] events; a search repeated every few seconds, or the same command
+//! again, is one event with a count.
 
 use std::{collections::VecDeque, net::SocketAddr, sync::Mutex, time::Duration};
 
 use serde::Serialize;
 use time::OffsetDateTime;
 
-/// Events kept, the latest.
-const KEPT: usize = 50;
+/// Events kept, the latest: enough for a set's whole search on a busy server
+/// (a set's timeline picks its players' from them).
+const KEPT: usize = 1000;
 /// The same search or command again within this long is the same event.
 const REPEAT: Duration = Duration::from_secs(30);
 
@@ -49,6 +51,10 @@ pub enum What {
         command: u8,
         via: Via,
         count: u32,
+        /// Through the server browser: how many the game acknowledged, and
+        /// how many it never did (the master server gave up resending).
+        delivered: u32,
+        undelivered: u32,
     },
     /// A NAT negotiation, by its cookie.
     Negotiation {
@@ -128,6 +134,7 @@ impl Activity {
                     command: was,
                     via: was_via,
                     count,
+                    ..
                 } if (*was_from, *was_to, *was, *was_via) == (from, to, command, via) => {
                     *count += 1;
                     true
@@ -140,8 +147,36 @@ impl Activity {
                 command,
                 via,
                 count: 1,
+                delivered: 0,
+                undelivered: 0,
             },
         );
+    }
+
+    /// A server-browser command reached its game (`acked`) or never did: its
+    /// latest event counts it. Neither moves the event nor makes it recent.
+    pub fn delivered(&self, from: Option<i32>, to: Option<i32>, command: u8, acked: bool) {
+        let mut events = self.events.lock().unwrap();
+        let latest = events
+            .iter_mut()
+            .rev()
+            .find_map(|event| match &mut event.what {
+                What::Command {
+                    from: was_from,
+                    to: was_to,
+                    command: was,
+                    via: Via::ServerBrowser,
+                    delivered,
+                    undelivered,
+                    ..
+                } if (*was_from, *was_to, *was) == (from, to, command) => {
+                    Some(if acked { delivered } else { undelivered })
+                }
+                _ => None,
+            });
+        if let Some(counter) = latest {
+            *counter += 1;
+        }
     }
 
     /// A game's socket in the negotiation `cookie`, which starts it.
@@ -304,6 +339,42 @@ mod tests {
                 (0x01, 1, Via::ServerBrowser)
             ]
         );
+    }
+
+    #[test]
+    fn a_command_counts_whether_it_reached_its_game() {
+        let activity = Activity::default();
+        activity.command(Some(1), Some(2), 0x06, Via::ServerBrowser);
+        activity.command(Some(2), Some(1), 0x02, Via::ServerBrowser);
+        activity.delivered(Some(1), Some(2), 0x06, true);
+        activity.command(Some(1), Some(2), 0x06, Via::ServerBrowser);
+        activity.delivered(Some(1), Some(2), 0x06, false);
+        // Another command than any event's: nothing to count it in.
+        activity.delivered(Some(3), Some(4), 0x01, true);
+
+        let events = activity.events();
+        let [latest, other] = &events[..] else {
+            panic!("two events: {events:?}");
+        };
+        assert!(matches!(
+            latest.what,
+            What::Command {
+                command: 0x06,
+                count: 2,
+                delivered: 1,
+                undelivered: 1,
+                ..
+            }
+        ));
+        assert!(matches!(
+            other.what,
+            What::Command {
+                command: 0x02,
+                delivered: 0,
+                undelivered: 0,
+                ..
+            }
+        ));
     }
 
     #[test]

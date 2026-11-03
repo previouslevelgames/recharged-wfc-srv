@@ -118,7 +118,7 @@ async fn connection(
 
 fn answer(
     master: &Arc<Master>,
-    activity: &Activity,
+    activity: &Arc<Activity>,
     pairings: &Pairings,
     request: &[u8],
     peer: SocketAddr,
@@ -158,7 +158,8 @@ fn answer(
 /// `SEND_MESSAGE_REQUEST`: a message, such as DWC's `SBCM` match commands
 /// and NAT negotiation's cookie, for the game of the session at the public
 /// address given. The master server delivers it; the client hears nothing.
-fn send_message(master: &Arc<Master>, activity: &Activity, request: &[u8], peer: SocketAddr) {
+/// Whether a match command reached its game goes to the activity.
+fn send_message(master: &Arc<Master>, activity: &Arc<Activity>, request: &[u8], peer: SocketAddr) {
     let (Some(ip), Some(port), Some(message)) = (
         request.get(3..7),
         request.get(7..9),
@@ -179,15 +180,24 @@ fn send_message(master: &Arc<Master>, activity: &Activity, request: &[u8], peer:
         _ => "other",
     };
     info!(target: "serverbrowser", %peer, %to, kind, "message");
-    if let Some((command, from)) = match_command(message) {
+    let command = match_command(message).map(|(command, from)| {
         let to_profile = master
             .session(to)
             .and_then(|session| session.field("dwc_pid")?.parse().ok());
         activity.command(from, to_profile, command, Via::ServerBrowser);
-    }
-    let master = master.clone();
+        (from, to_profile, command)
+    });
+    let (master, activity) = (master.clone(), activity.clone());
     let message = message.to_vec();
-    tokio::spawn(async move { master.send_client_message(to, &message).await });
+    tokio::spawn(async move {
+        let acked = master.send_client_message(to, &message).await;
+        if let Some((from, to_profile, command)) = command {
+            activity.delivered(from, to_profile, command, acked);
+            if !acked {
+                info!(target: "serverbrowser", %to, command, "match command not acknowledged");
+            }
+        }
+    });
 }
 
 /// A DWC match command's command byte and sender's profile.

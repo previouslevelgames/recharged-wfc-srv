@@ -7,6 +7,11 @@
 //!
 //! Readiness lives in memory and lasts [`READY_TTL`]: the port says it again
 //! while the game is online, so a game that went away stops being kept.
+//!
+//! A player has one game in a match: when another of their games (another
+//! WFC profile) says it is ready while the first still is, the newer one
+//! takes the side. The one it replaced stays kept, seeing nobody and seen by
+//! nobody, and is told so each time it says it is ready, until it stops.
 
 use std::{
     collections::HashMap,
@@ -14,13 +19,33 @@ use std::{
     time::{Duration, Instant},
 };
 
+use serde::Serialize;
+
 /// How long a game stays ready without saying it again.
 pub const READY_TTL: Duration = Duration::from_secs(30);
 
 /// The ready games of each match, by match.
 #[derive(Default)]
 pub struct Pairings {
-    matches: Mutex<HashMap<i64, [Option<Ready>; 2]>>,
+    matches: Mutex<HashMap<i64, Sides>>,
+}
+
+/// A match's ready game of each side, and the games of each side's player
+/// that another of their games replaced.
+#[derive(Default)]
+struct Sides {
+    ready: [Option<Ready>; 2],
+    replaced: [Vec<Ready>; 2],
+}
+
+impl Sides {
+    fn live(&self, now: Instant) -> bool {
+        self.ready
+            .iter()
+            .flatten()
+            .chain(self.replaced.iter().flatten())
+            .any(|ready| ready.live(now))
+    }
 }
 
 #[derive(Clone)]
@@ -46,6 +71,34 @@ pub enum Pairing {
     Paired,
     /// Both are, but of different releases.
     OtherRelease,
+    /// Another game of this player took its side: this one plays no part.
+    Replaced,
+}
+
+/// A match's games as they stand, for diagnosing (`/admin`).
+#[derive(Debug, Serialize)]
+pub struct View {
+    /// `paired`, `waiting` or `other_release`.
+    pub pairing: &'static str,
+    /// The challenger's side, then the challenged's.
+    pub sides: [SideView; 2],
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct SideView {
+    pub ready: Option<GameView>,
+    /// Games another game of the same player replaced.
+    pub replaced: Vec<GameView>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct GameView {
+    pub profile_id: i32,
+    pub game: String,
+    /// Seconds since it last said it is ready.
+    pub said_ready_secs_ago: f64,
+    /// Whether that was within [`READY_TTL`].
+    pub live: bool,
 }
 
 /// Whom a ranked search may find.
@@ -65,11 +118,11 @@ impl Pairings {
     pub fn ready(&self, match_id: i64, side: usize, profile_id: i32, game: &str) -> Pairing {
         let now = Instant::now();
         let mut matches = self.matches.lock().unwrap();
-        matches.retain(|_, sides| sides.iter().flatten().any(|ready| ready.live(now)));
+        matches.retain(|_, sides| sides.live(now));
         // A profile is kept for one match at a time.
         for (other, sides) in matches.iter_mut() {
             if *other != match_id {
-                for slot in sides.iter_mut() {
+                for slot in sides.ready.iter_mut() {
                     if slot
                         .as_ref()
                         .is_some_and(|ready| ready.profile_id == profile_id)
@@ -77,15 +130,33 @@ impl Pairings {
                         *slot = None;
                     }
                 }
+                for replaced in sides.replaced.iter_mut() {
+                    replaced.retain(|ready| ready.profile_id != profile_id);
+                }
             }
         }
         let sides = matches.entry(match_id).or_default();
-        sides[side] = Some(Ready {
+        let ready = Ready {
             profile_id,
             game: game.to_owned(),
             at: now,
-        });
-        pairing(sides, now)
+        };
+        sides.replaced[side].retain(|ready| ready.live(now));
+        if let Some(replaced) = sides.replaced[side]
+            .iter_mut()
+            .find(|replaced| replaced.profile_id == profile_id)
+        {
+            *replaced = ready;
+            return Pairing::Replaced;
+        }
+        if let Some(current) = sides.ready[side]
+            .take()
+            .filter(|current| current.profile_id != profile_id && current.live(now))
+        {
+            sides.replaced[side].push(current);
+        }
+        sides.ready[side] = Some(ready);
+        pairing(&sides.ready, now)
     }
 
     /// The player of side `side` took back Ready to play! for `match_id`:
@@ -93,8 +164,8 @@ impl Pairings {
     pub fn unready(&self, match_id: i64, side: usize) {
         let mut matches = self.matches.lock().unwrap();
         if let Some(sides) = matches.get_mut(&match_id) {
-            sides[side] = None;
-            if sides.iter().all(Option::is_none) {
+            sides.ready[side] = None;
+            if sides.ready.iter().all(Option::is_none) && sides.replaced.iter().all(Vec::is_empty) {
                 matches.remove(&match_id);
             }
         }
@@ -111,7 +182,7 @@ impl Pairings {
         let matches = self.matches.lock().unwrap();
         matches
             .get(&match_id)
-            .map_or(Pairing::Waiting, |sides| pairing(sides, now))
+            .map_or(Pairing::Waiting, |sides| pairing(&sides.ready, now))
     }
 
     /// Whom a ranked search by `profile_id` may find.
@@ -120,18 +191,53 @@ impl Pairings {
         let matches = self.matches.lock().unwrap();
         for sides in matches.values() {
             for side in 0..2 {
-                if sides[side]
+                if sides.ready[side]
                     .as_ref()
                     .is_some_and(|ready| ready.profile_id == profile_id && ready.live(now))
                 {
-                    return match (&sides[1 - side], pairing(sides, now)) {
+                    return match (&sides.ready[1 - side], pairing(&sides.ready, now)) {
                         (Some(other), Pairing::Paired) => Visible::Only(other.profile_id),
                         _ => Visible::Nobody,
                     };
                 }
+                if sides.replaced[side]
+                    .iter()
+                    .any(|ready| ready.profile_id == profile_id && ready.live(now))
+                {
+                    return Visible::Nobody;
+                }
             }
         }
         Visible::Everyone
+    }
+
+    /// How the games of `match_id` stand, for diagnosing.
+    pub fn view(&self, match_id: i64) -> View {
+        let now = Instant::now();
+        let matches = self.matches.lock().unwrap();
+        let game = |ready: &Ready| GameView {
+            profile_id: ready.profile_id,
+            game: ready.game.clone(),
+            said_ready_secs_ago: now.duration_since(ready.at).as_secs_f64(),
+            live: ready.live(now),
+        };
+        let Some(sides) = matches.get(&match_id) else {
+            return View {
+                pairing: "waiting",
+                sides: Default::default(),
+            };
+        };
+        View {
+            pairing: match pairing(&sides.ready, now) {
+                Pairing::Paired => "paired",
+                Pairing::OtherRelease => "other_release",
+                Pairing::Waiting | Pairing::Replaced => "waiting",
+            },
+            sides: [0, 1].map(|side| SideView {
+                ready: sides.ready[side].as_ref().map(game),
+                replaced: sides.replaced[side].iter().map(game).collect(),
+            }),
+        }
     }
 
     /// Whether `profile_id`'s game is kept for a match.
@@ -198,6 +304,32 @@ mod tests {
         assert_eq!(pairings.ready(7, 1, 2, "R4QP"), Pairing::OtherRelease);
         assert_eq!(pairings.visible_to(1), Visible::Nobody);
         assert_eq!(pairings.visible_to(2), Visible::Nobody);
+    }
+
+    #[test]
+    fn a_players_newer_game_takes_the_side() {
+        let pairings = Pairings::default();
+        // Mario's first game (profile 1) is ready, then his second (3).
+        assert_eq!(pairings.ready(7, 0, 1, "R4QE"), Pairing::Waiting);
+        assert_eq!(pairings.ready(7, 1, 2, "R4QE"), Pairing::Paired);
+        assert_eq!(pairings.ready(7, 0, 3, "R4QE"), Pairing::Paired);
+        assert_eq!(pairings.visible_to(2), Visible::Only(3));
+        assert_eq!(pairings.visible_to(3), Visible::Only(2));
+        // The first sees nobody, nobody else's search finds it, and it can't
+        // take the side back.
+        assert_eq!(pairings.visible_to(1), Visible::Nobody);
+        assert!(pairings.kept(1));
+        assert_eq!(pairings.ready(7, 0, 1, "R4QE"), Pairing::Replaced);
+        assert_eq!(pairings.visible_to(2), Visible::Only(3));
+        assert_eq!(pairings.ready(7, 0, 3, "R4QE"), Pairing::Paired);
+        let view = pairings.view(7);
+        assert_eq!(view.pairing, "paired");
+        assert_eq!(view.sides[0].ready.as_ref().unwrap().profile_id, 3);
+        assert_eq!(view.sides[0].replaced[0].profile_id, 1);
+        assert_eq!(view.sides[1].ready.as_ref().unwrap().profile_id, 2);
+        pairings.end(7);
+        assert_eq!(pairings.visible_to(1), Visible::Everyone);
+        assert_eq!(pairings.view(7).pairing, "waiting");
     }
 
     #[test]
