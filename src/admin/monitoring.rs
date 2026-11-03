@@ -669,9 +669,22 @@ mod tests {
         // Each span's most; the sample of now (the player, nobody in WFC) last.
         assert_eq!(&points[..2], [(0, 7, 4, 2), (span, 2, 0, 0)]);
         assert_eq!(points.last().map(|point| (point.1, point.3)), Some((0, 1)));
-        // The day's peak: the most logged in to WFC that day.
-        let today = monitoring.by_day[0].peak_online;
-        assert!(today.is_some_and(|peak| peak >= 2), "{today:?}");
+        // The day's peak: the most logged in to WFC that day (the day of the
+        // samples: just after midnight UTC, yesterday).
+        let sampled = OffsetDateTime::from_unix_timestamp(base)
+            .unwrap()
+            .date()
+            .to_string();
+        let day = monitoring
+            .by_day
+            .iter()
+            .find(|day| day.day == sampled)
+            .unwrap();
+        assert!(
+            day.peak_online.is_some_and(|peak| peak >= 7),
+            "{:?}",
+            day.peak_online
+        );
         let old = OffsetDateTime::from_unix_timestamp(base - 3 * 24 * 3600)
             .unwrap()
             .date()

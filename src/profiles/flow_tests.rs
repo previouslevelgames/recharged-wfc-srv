@@ -570,6 +570,18 @@ async fn a_set_pairs_only_players_on_one_version(pool: PgPool) {
         .await;
     assert_eq!(status, StatusCode::OK);
 
+    // The lists say which game he plays.
+    let (_, lists) = world
+        .send_with(
+            "GET",
+            "/api/v1/players",
+            &mario,
+            &as_game("R4QE"),
+            Value::Null,
+        )
+        .await;
+    assert_eq!(lists["online"][0]["game"], "R4QP", "{lists}");
+
     // A challenge: refused, saying why.
     let (status, body) = world
         .send_with(
