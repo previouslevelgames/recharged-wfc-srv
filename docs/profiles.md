@@ -530,14 +530,15 @@ still work:
   open can be challenged.
 - A playing set with a game that stopped saying it is ready (below) 60
   seconds ago, and that neither player reported, was broken off: it ends
-  without a result (`dissolved`), even while both have Recharged open. A
-  set with one report waits for the other's, 5 minutes at most, or until
-  the other player closed Recharged, or (when the report's last game broke
-  off) until the other's game has not said it is ready for 60 seconds: then
-  the one report settles it (see "Results"), or it ends without a result
-  when nothing in it counts. A game that closes during its set's match
-  reports the series with that game broken off, so the set is settled at
-  once.
+  without a result (`dissolved`), even while both have Recharged open. A set
+  with one report waits for the other's, 5 minutes at most, or until the
+  other player closed Recharged, or (when the report's last game broke off)
+  until the other's game has not said it is ready for 25 seconds: then the
+  one report settles it (see "Results"), or it ends without a result when
+  nothing in it counts. The 60 seconds outlast a game's call that failed
+  while its match goes on; after a report of a game that broke off, that
+  match is over. A game that closes during its set's match reports the
+  series with that game broken off, so the set is settled at once.
 - A game saying it is ready (below) counts as its player's Ready to play!,
   for launchers without the button.
 - `rematch`: the first player to ask challenges the other with the ended
@@ -595,5 +596,5 @@ saw the same games (a broken-off game's `played` may differ a little), no
 result (`dissolved`) when nothing counts, and `disputed` when they saw
 different games. A player reports once. The view then shows the player's own
 report as `games`. When the other player closed Recharged, their game went
-quiet for 60 seconds after a report whose last game broke off, or 5 minutes
+quiet for 25 seconds after a report whose last game broke off, or 5 minutes
 pass without their report, the one report settles the set the same way.
