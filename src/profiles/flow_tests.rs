@@ -1319,6 +1319,133 @@ async fn a_match_in_the_game_shows_and_keeps_challenges_away(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn the_lists_show_a_players_screens_search_and_set(pool: PgPool) {
+    let world = World::new(pool);
+    let mario = world.sign_in("Mario").await;
+    let luigi = world.sign_in("Luigi").await;
+    let luigi_for_mario = || async {
+        let (_, lists) = world
+            .send("GET", "/api/v1/players", &mario, Value::Null)
+            .await;
+        lists["online"][0].clone()
+    };
+    let luigi_says = |headers: &'static [(&'static str, &'static str)]| {
+        world.send_with(
+            "GET",
+            "/api/v1/matches/current",
+            &luigi,
+            headers,
+            Value::Null,
+        )
+    };
+    let shown = luigi_for_mario().await;
+    assert_eq!(
+        (&shown["screen"], &shown["searching"], &shown["set"]),
+        (&Value::Null, &json!(false), &Value::Null)
+    );
+
+    // Luigi's game says its screens; one this server doesn't know is none,
+    // and the launcher shows none of the game's.
+    luigi_says(&[
+        ("recharged-activity", "game"),
+        ("recharged-screen", "domination"),
+    ])
+    .await;
+    assert_eq!(luigi_for_mario().await["screen"], "domination");
+    luigi_says(&[
+        ("recharged-activity", "game"),
+        ("recharged-screen", "cup_team"),
+    ])
+    .await;
+    assert_eq!(luigi_for_mario().await["screen"], "cup_team");
+    luigi_says(&[("recharged-activity", "game"), ("recharged-screen", "golf")]).await;
+    assert_eq!(luigi_for_mario().await["screen"], Value::Null);
+    luigi_says(&[("recharged-screen", "draft")]).await;
+    assert_eq!(luigi_for_mario().await["screen"], Value::Null);
+
+    // Mario challenges Luigi: each list shows the set from that player's side.
+    let (status, challenge) = world
+        .send(
+            "POST",
+            "/api/v1/matches",
+            &mario,
+            json!({"opponent": "luigi", "rule_set": 1}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{challenge}");
+    let id = challenge["id"].as_i64().unwrap();
+    let set = luigi_for_mario().await["set"].clone();
+    assert_eq!(
+        (&set["stage"], &set["challenger"], &set["opponent"]),
+        (&json!("invited"), &json!(false), &json!("Mario"))
+    );
+    assert_eq!(set["games"], challenge["rules"]["games"]);
+    assert_eq!(set["game"], Value::Null);
+    let (_, lists) = world
+        .send("GET", "/api/v1/players", &luigi, Value::Null)
+        .await;
+    let set = &lists["online"][0]["set"];
+    assert_eq!(
+        (&set["stage"], &set["challenger"], &set["opponent"]),
+        (&json!("invited"), &json!(true), &json!("Luigi"))
+    );
+
+    // The accept makes the set go; Luigi's game says which game of the
+    // series it plays (a game the series can't have is none).
+    let (status, _) = world
+        .send(
+            "POST",
+            &format!("/api/v1/matches/{id}/accept"),
+            &luigi,
+            Value::Null,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(luigi_for_mario().await["set"]["stage"], "go");
+    luigi_says(&[("recharged-activity", "match"), ("recharged-set-game", "2")]).await;
+    assert_eq!(luigi_for_mario().await["set"]["game"], 2);
+    luigi_says(&[("recharged-activity", "game"), ("recharged-set-game", "9")]).await;
+    assert_eq!(luigi_for_mario().await["set"]["game"], Value::Null);
+
+    // Ready to play! taken back: the set waits for it again.
+    let (status, _) = world
+        .send(
+            "POST",
+            &format!("/api/v1/matches/{id}/ready-to-play"),
+            &luigi,
+            json!({"ready": false}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(luigi_for_mario().await["set"]["stage"], "open");
+
+    // A search for a random opponent shows too.
+    let peach = world.sign_in("Peach").await;
+    let rules = json!({"tweaks": [], "limit": "time", "time": 120, "goals": 5, "games": 1,
+                       "stadium": "random"});
+    let (status, body) = world
+        .send(
+            "POST",
+            "/api/v1/search",
+            &peach,
+            json!({"rules": rules, "name": "Mine", "game": "R4QE"}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (_, lists) = world
+        .send("GET", "/api/v1/players", &mario, Value::Null)
+        .await;
+    let peach_listed = lists["online"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|player| player["name"] == "Peach")
+        .unwrap();
+    assert_eq!(peach_listed["searching"], true);
+    assert_eq!(luigi_for_mario().await["searching"], false);
+}
+
+#[sqlx::test]
 async fn friends_are_added_by_hand_and_follow_the_player(pool: PgPool) {
     let world = World::new(pool);
     let mario = world.sign_in("Mario").await;

@@ -246,7 +246,7 @@ impl ProfilesState {
         players::heartbeat(
             &self.pool,
             player_id,
-            players::Activity::from_headers(headers),
+            players::Doing::from_headers(headers),
             players::game_from_headers(headers).as_deref(),
         )
         .await

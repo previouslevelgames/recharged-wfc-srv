@@ -25,7 +25,7 @@ use tracing::info;
 use super::{
     ProfilesState, database_error, json_error,
     play::WfcLogin,
-    players::{self, Activity},
+    players::{self, Doing},
     signed_in,
 };
 
@@ -225,7 +225,7 @@ pub(super) async fn sign_in_wfc(
     if let Err(error) = players::heartbeat(
         &state.pool,
         player_id,
-        Activity::from_headers(&headers),
+        Doing::from_headers(&headers),
         players::game_from_headers(&headers).as_deref(),
     )
     .await
