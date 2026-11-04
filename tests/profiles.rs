@@ -108,9 +108,18 @@ async fn the_launcher_signs_in_with_discord(pool: PgPool) {
     assert_eq!(me["discord_id"], "80351110224678912");
     // Not available for random games until the player says so.
     assert_eq!(me["available"], false);
-    me.as_object_mut().unwrap().remove("wfc");
-    me.as_object_mut().unwrap().remove("discord_id");
-    me.as_object_mut().unwrap().remove("available");
+    // A flag from where they connect (no country database here).
+    assert_eq!(me["country_detected"], Value::Null);
+    assert_eq!(me["country_choice"], "auto");
+    for extra in [
+        "wfc",
+        "discord_id",
+        "available",
+        "country_detected",
+        "country_choice",
+    ] {
+        me.as_object_mut().unwrap().remove(extra);
+    }
     assert_eq!(me, signed_in["player"]);
 
     // Signing in again with the same account: the same player.

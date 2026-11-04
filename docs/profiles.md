@@ -222,18 +222,37 @@ of `GET /api/v1/players` and a match's opponent:
 
 ```json
 {"id": 7, "name": "Nelly", "avatar_url": null, "discord": null, "test": false,
- "account": "mii", "friend_code": "0868-9934-5920"}
+ "account": "mii", "friend_code": "0868-9934-5920", "country": "CH"}
 ```
 
 `account` is what the player signs in with: `discord`, `test` (a test name),
 or `mii` (neither, see "Playing without Discord"). `friend_code` is the
 friend code of the WFC profile that identifies the player (a Mii player's
 first proven profile; it stays after Discord is connected), `null` without
-one. Both from 1.2.3.
+one. Both from 1.2.3. `country` is the flag beside the name (see
+"Countries"), `null` for none; from 1.2.11.
 `player_sessions` holds the sessions, `player_wfc_profiles` the friend codes
 proven theirs, `rule_sets` the rules, `matches` and `match_reports` the
 matches and what each game reported. The series every Recharged build reports
 online are separate ([reports.md](reports.md)).
+
+## Countries
+
+A player's flag: the country their launcher or game connects from, as two
+capital letters of ISO 3166-1, found in DB-IP's free "IP to Country Lite"
+database (CC BY 4.0, <https://db-ip.com>), which the server image carries
+(`GEOIP_COUNTRY_DB` names another; without one, nobody has a flag). The
+server looks it up at `GET /api/v1/me` and `GET /api/v1/players`, the lists
+launchers and games read every few seconds, and keeps only the letters
+(`players.country`), never the address.
+
+The player chooses (`players.country_choice`): `auto` shows that country (the
+default), `none` no flag, or two letters another one (for a VPN, or a
+country of their heart). `PUT /api/v1/me/country` with `{"country": "auto"}`
+(or `"none"`, or the letters) answers `{"country", "country_detected",
+"country_choice"}`: the flag others see, the country found, and the choice;
+422 for another value. `GET /api/v1/me` has `country_detected` and
+`country_choice` too.
 
 ## Available for random games
 
@@ -511,14 +530,15 @@ still work:
   open can be challenged.
 - A playing set with a game that stopped saying it is ready (below) 60
   seconds ago, and that neither player reported, was broken off: it ends
-  without a result (`dissolved`), even while both have Recharged open. A
-  set with one report waits for the other's, 5 minutes at most, or until
-  the other player closed Recharged, or (when the report's last game broke
-  off) until the other's game has not said it is ready for 60 seconds: then
-  the one report settles it (see "Results"), or it ends without a result
-  when nothing in it counts. A game that closes during its set's match
-  reports the series with that game broken off, so the set is settled at
-  once.
+  without a result (`dissolved`), even while both have Recharged open. A set
+  with one report waits for the other's, 5 minutes at most, or until the
+  other player closed Recharged, or (when the report's last game broke off)
+  until the other's game has not said it is ready for 25 seconds: then the
+  one report settles it (see "Results"), or it ends without a result when
+  nothing in it counts. The 60 seconds outlast a game's call that failed
+  while its match goes on; after a report of a game that broke off, that
+  match is over. A game that closes during its set's match reports the
+  series with that game broken off, so the set is settled at once.
 - A game saying it is ready (below) counts as its player's Ready to play!,
   for launchers without the button.
 - `rematch`: the first player to ask challenges the other with the ended
@@ -576,5 +596,5 @@ saw the same games (a broken-off game's `played` may differ a little), no
 result (`dissolved`) when nothing counts, and `disputed` when they saw
 different games. A player reports once. The view then shows the player's own
 report as `games`. When the other player closed Recharged, their game went
-quiet for 60 seconds after a report whose last game broke off, or 5 minutes
+quiet for 25 seconds after a report whose last game broke off, or 5 minutes
 pass without their report, the one report settles the set the same way.

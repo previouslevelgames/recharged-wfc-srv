@@ -1,12 +1,12 @@
 //! The profile service's settings, from the environment.
 
-use std::{env, fmt, net::IpAddr};
+use std::{env, fmt, net::IpAddr, path::PathBuf};
 
 use reqwest::Url;
 
 /// Every variable the profile service reads. `PUBLIC_URL` is shared with
 /// `/admin`; Discord's client, test sign-in, or both turn the service on. It
-/// also reads `SERVER_LABEL`.
+/// also reads `SERVER_LABEL` and `GEOIP_COUNTRY_DB`.
 pub const VARIABLES: [&str; 4] = [
     "PUBLIC_URL",
     "DISCORD_CLIENT_ID",
@@ -29,6 +29,9 @@ pub struct Config {
     pub test_sign_in: bool,
     /// `SERVER_LABEL`, which the sign-in pages show, e.g. `DEV`.
     pub label: Option<String>,
+    /// `GEOIP_COUNTRY_DB`: the country database for players' flags (by
+    /// default the image's); none, no flags.
+    pub countries: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -100,6 +103,14 @@ impl Config {
             .ok_or("profiles need PUBLIC_URL, the address launchers and browsers use")?;
         let mut config = Self::new(&public_url, discord, test_sign_in)?;
         config.label = crate::html::server_label(&var)?;
+        config.countries = Some(
+            var("GEOIP_COUNTRY_DB")
+                .filter(|path| !path.trim().is_empty())
+                .map_or_else(
+                    || PathBuf::from(super::countries::DEFAULT_DATABASE),
+                    PathBuf::from,
+                ),
+        );
         Ok(Some(config))
     }
 
@@ -113,6 +124,7 @@ impl Config {
             discord,
             test_sign_in,
             label: None,
+            countries: None,
         })
     }
 
@@ -134,6 +146,7 @@ impl fmt::Debug for Config {
             )
             .field("test_sign_in", &self.test_sign_in)
             .field("label", &self.label)
+            .field("countries", &self.countries)
             .finish()
     }
 }

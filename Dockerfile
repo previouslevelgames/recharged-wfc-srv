@@ -18,6 +18,16 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl tini \
     && rm -rf /var/lib/apt/lists/*
 
+# Players' flags: DB-IP's free country database (CC BY 4.0, https://db-ip.com),
+# this month's or last month's. Without it the server runs without flags.
+RUN mkdir -p /usr/local/share/recharged-wfc-srv \
+    && cd /usr/local/share/recharged-wfc-srv \
+    && for month in "$(date -u +%Y-%m)" "$(date -u -d '-1 month' +%Y-%m)"; do \
+        curl -fsSL --retry 3 "https://download.db-ip.com/free/dbip-country-lite-$month.mmdb.gz" \
+            | gunzip > dbip-country-lite.mmdb.part \
+            && mv dbip-country-lite.mmdb.part dbip-country-lite.mmdb && break; \
+    done; rm -f dbip-country-lite.mmdb.part; ls -l /usr/local/share/recharged-wfc-srv
+
 COPY --from=build /app/target/release/recharged-wfc-srv /usr/local/bin/recharged-wfc-srv
 COPY --chmod=755 docker/entrypoint.sh /usr/local/bin/start-server
 

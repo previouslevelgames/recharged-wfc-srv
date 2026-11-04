@@ -41,6 +41,9 @@ pub struct Player {
     /// The friend code of the WFC profile that identifies them: a Mii
     /// player's first proven profile, once there is one.
     pub friend_code: Option<String>,
+    /// The country whose flag shows beside their name, two letters
+    /// (docs/profiles.md, "Countries"); none when unknown or hidden.
+    pub country: Option<String>,
 }
 
 /// The account of a player with or without a Discord and a test identity.
@@ -280,7 +283,9 @@ pub async fn player(pool: &PgPool, player_id: i64) -> Result<Option<Player>, sql
     let row = sqlx::query!(
         r#"SELECT players.player_id, players.display_name,
                   discord.username AS "discord?", discord.avatar_url AS "avatar_url?",
-                  test.username AS "test?", wfc.username AS "friend_code?"
+                  test.username AS "test?", wfc.username AS "friend_code?",
+                  CASE players.country_choice WHEN 'auto' THEN players.country WHEN 'none' THEN NULL
+                       ELSE players.country_choice END AS country
            FROM players
            LEFT JOIN player_identities discord
                   ON discord.player_id = players.player_id AND discord.provider = 'discord'
@@ -301,6 +306,7 @@ pub async fn player(pool: &PgPool, player_id: i64) -> Result<Option<Player>, sql
         discord: row.discord,
         test: row.test.is_some(),
         friend_code: row.friend_code,
+        country: row.country,
     }))
 }
 
@@ -445,6 +451,59 @@ pub async fn heartbeat(
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// `player_id`'s launcher or game connects from `country`: their flag
+/// follows it unless they chose another (or none).
+pub async fn observe_country(
+    pool: &PgPool,
+    player_id: i64,
+    country: &str,
+) -> Result<(), sqlx::Error> {
+    sqlx::query!(
+        "UPDATE players SET country = $2
+         WHERE player_id = $1 AND country IS DISTINCT FROM $2",
+        player_id,
+        country,
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// `player_id`'s country as their address gives it, and their choice:
+/// `auto`, `none` or two letters.
+pub async fn country_choice(
+    pool: &PgPool,
+    player_id: i64,
+) -> Result<(Option<String>, String), sqlx::Error> {
+    let row = sqlx::query!(
+        "SELECT country, country_choice FROM players WHERE player_id = $1",
+        player_id,
+    )
+    .fetch_one(pool)
+    .await?;
+    Ok((row.country, row.country_choice))
+}
+
+/// `player_id` chooses their flag: `auto` (their address's country), `none`
+/// or a country's two letters. False for another value.
+pub async fn choose_country(
+    pool: &PgPool,
+    player_id: i64,
+    choice: &str,
+) -> Result<bool, sqlx::Error> {
+    if !matches!(choice, "auto" | "none") && !super::countries::is_country(choice) {
+        return Ok(false);
+    }
+    sqlx::query!(
+        "UPDATE players SET country_choice = $2 WHERE player_id = $1",
+        player_id,
+        choice,
+    )
+    .execute(pool)
+    .await?;
+    Ok(true)
 }
 
 /// The game a request's launcher or game plays (its `Recharged-Game`
@@ -671,7 +730,9 @@ pub(super) async fn listed(
                   (SELECT count(*) FROM chat_messages
                    WHERE chat_messages.sender = players.player_id AND chat_messages.recipient = $3
                      AND chat_messages.read_at IS NULL) AS "unread!",
-                  discord.external_id AS "discord_id?", wfc.username AS "friend_code?"
+                  discord.external_id AS "discord_id?", wfc.username AS "friend_code?",
+                  CASE players.country_choice WHEN 'auto' THEN players.country WHEN 'none' THEN NULL
+                       ELSE players.country_choice END AS country
            FROM players
            LEFT JOIN player_identities discord
                   ON discord.player_id = players.player_id AND discord.provider = 'discord'
@@ -697,6 +758,7 @@ pub(super) async fn listed(
                 discord: row.discord,
                 test: row.test.is_some(),
                 friend_code: row.friend_code,
+                country: row.country,
             },
             online: row.online,
             busy: row.busy,
