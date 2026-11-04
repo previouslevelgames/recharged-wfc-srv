@@ -196,6 +196,21 @@ Challenge) or `training` (a Strikers 101 lesson). `players.match_kind`
 keeps it with the activity; the lists show it as `match` (`null` outside a
 match, for kinds this server doesn't know and from games that don't say).
 
+Games from Recharged 1.2.0 (builds since 2026-11-04) also say which screens
+they show in a `Recharged-Screen` header: `starting` (the title screen and
+before), `menus` (the main menu, the options, the Hall of Fame and the rest),
+`domination` (Domination's captains, sidekicks, stadium and rules), `cup`
+(Road to the Striker Cup's Cup Central), `cup_team` (the Cup's captain and
+sidekicks), `challenges` (choosing a Striker Challenge), `lessons` (choosing
+a Strikers 101 lesson), `results` (after a match), `online` (the game's online
+menus), `ranked` (its RANKED menu, which looks for a match), `room` (a friend
+match's invitations and room) or `draft` (an online match's captains and
+sidekicks). In a match they say none. In a set, a `Recharged-Set-Game` header
+says the game of its series the game plays, or last played between two (1 to
+7). `players.screen` and `players.set_game` keep both with the activity (the
+launcher says neither); the lists show them as `screen` and in `set` (`null`
+for screens this server doesn't know and from games that don't say).
+
 Launchers and games from Recharged 1.2.0 (builds since 2026-11-02) say which
 game they play in a `Recharged-Game` header: the first four characters of its
 id (`R4QE`, `R4QP`, `R4QJ`, `R4QK`). `players.game` keeps the last one said (a
@@ -463,7 +478,7 @@ terrain and Thunder Island walls; 3 minutes before 1.2.7).
 
 | Route | |
 |---|---|
-| `GET /api/v1/players` | `{"online": [...], "recent": [...], "friends": [...]}`: who has Recharged open (by name, at most 100), the last 10 players played a set with, and the player's friends (see "Friends"). Each is a player as in a sign-in, with `online`, `busy` (has a set to play), `activity` (while online: `launcher`, `game` or `match`, see "Activity"), `match` (in a match: its kind, see "Activity"), `game` (while online: the game their Recharged plays, `R4QE` and so on, see "Activity"), `last_online` (their last heartbeat in Unix seconds, `null` before the first) and `friend` (the player keeps them as one). `busy` counts a challenge waiting for an answer and a set that goes or plays, not a stopped one. |
+| `GET /api/v1/players` | `{"online": [...], "recent": [...], "friends": [...]}`: who has Recharged open (by name, at most 100), the last 10 players played a set with, and the player's friends (see "Friends"). Each is a player as in a sign-in, with `online`, `busy` (has a set to play), `activity` (while online: `launcher`, `game` or `match`, see "Activity"), `match` (in a match: its kind, see "Activity"), `game` (while online: the game their Recharged plays, `R4QE` and so on, see "Activity"), `last_online` (their last heartbeat in Unix seconds, `null` before the first), `friend` (the player keeps them as one), and from 1.2.12 `screen` (while online: the screens their game shows, see "Activity"), `searching` (while online: they search for a random opponent) and `set` (while online: their set to play, or playing, else `null`: `{"stage", "challenger", "opponent", "games", "game"}`, its stage as in "Sets", whether they sent the challenge, the opponent's name, the games of its series, and the game their game plays or last played, `null` when it doesn't say). `busy` counts a challenge waiting for an answer and a set that goes or plays, not a stopped one. |
 | `POST /api/v1/matches` | `{"opponent": "<Discord username>", "rule_set": <id>}`, or `"opponent_id": <player id>` instead of the name (a Mii player only by id): a challenge, 201. Instead of a rule set, `"rules": {…}` (see "Rules") and `"name"`, the preset they come from (1 to 48 characters; `Custom` without one): the match's `rule_set` then is that name; 400 for rules the game doesn't have. 404 for nobody of that name, 409 when either already has a match to play, or the opponent doesn't have Recharged open or is playing a match (see "Activity"). |
 | `GET /api/v1/matches/current` | `{"match": …, "search": …, "poll_interval": 2, "server_time": <unix seconds>}`: the match still to be played, or the last one that ended within the hour, or `null`; the player's search (see "Random opponents"); `poll_interval` is how soon to ask again (2 while the set waits for its players or the player searches, 10 while they play, 5 otherwise) |
 | `POST /api/v1/search`, `DELETE /api/v1/search` | Search for a random opponent, and stop (see "Random opponents") |

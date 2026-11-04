@@ -1,0 +1,270 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT players.player_id, players.display_name,\n                  discord.username AS \"discord?\", discord.avatar_url AS \"avatar_url?\",\n                  test.username AS \"test?\",\n                  coalesce(players.heartbeat_at > now() - make_interval(secs => $2), false)\n                      AS \"online!\",\n                  players.activity, players.match_kind,\n                  EXISTS (SELECT 1 FROM matches\n                          WHERE (state = 'challenged'\n                                 OR state = 'accepted' AND (go_at IS NOT NULL OR playing_at IS NOT NULL))\n                            AND (home = players.player_id OR away = players.player_id))\n                      AS \"busy!\", players.game,\n                  extract(epoch FROM players.heartbeat_at)::bigint AS last_online,\n                  EXISTS (SELECT 1 FROM friends\n                          WHERE friends.player_id = $3 AND friends.friend_id = players.player_id)\n                      AS \"friend!\",\n                  EXISTS (SELECT 1 FROM friends\n                          WHERE friends.player_id = players.player_id AND friends.friend_id = $3)\n                      AS \"keeps_you!\",\n                  (SELECT count(*) FROM chat_messages\n                   WHERE chat_messages.sender = players.player_id AND chat_messages.recipient = $3\n                     AND chat_messages.read_at IS NULL) AS \"unread!\",\n                  discord.external_id AS \"discord_id?\", wfc.username AS \"friend_code?\",\n                  CASE players.country_choice WHEN 'auto' THEN players.country WHEN 'none' THEN NULL\n                       ELSE players.country_choice END AS country,\n                  players.screen, players.set_game,\n                  EXISTS (SELECT 1 FROM searches WHERE searches.player_id = players.player_id)\n                      AS \"searching!\",\n                  player_set.state AS \"set_state?\", player_set.went AS \"set_went?\",\n                  player_set.met AS \"set_met?\", player_set.challenger AS \"set_challenger?\",\n                  player_set.opponent AS \"set_opponent?\", player_set.games AS \"set_games?\"\n           FROM players\n           LEFT JOIN player_identities discord\n                  ON discord.player_id = players.player_id AND discord.provider = 'discord'\n           LEFT JOIN player_identities test\n                  ON test.player_id = players.player_id AND test.provider = 'test'\n           LEFT JOIN player_identities wfc\n                  ON wfc.player_id = players.player_id AND wfc.provider = 'wfc'\n           -- Their set still to be played: one that keeps them busy first.\n           LEFT JOIN LATERAL (\n               SELECT m.state, m.go_at IS NOT NULL AS went, m.playing_at IS NOT NULL AS met,\n                      m.home = players.player_id AS challenger,\n                      opponent.display_name AS opponent,\n                      (m.rules::jsonb ->> 'games')::smallint AS games\n               FROM matches m\n               JOIN players opponent\n                 ON opponent.player_id = CASE WHEN m.home = players.player_id THEN m.away\n                                              ELSE m.home END\n               WHERE (m.home = players.player_id OR m.away = players.player_id)\n                 AND m.state IN ('challenged', 'accepted')\n               ORDER BY (m.state = 'challenged' OR m.go_at IS NOT NULL OR m.playing_at IS NOT NULL) DESC,\n                        m.created_at DESC\n               LIMIT 1\n           ) player_set ON true\n           WHERE players.player_id = ANY($1)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "player_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "player_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "display_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "discord?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "player_identities",
+            "name": "username"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "avatar_url?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "player_identities",
+            "name": "avatar_url"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "test?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "player_identities",
+            "name": "username"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "online!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "activity",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "activity"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "match_kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "match_kind"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "busy!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 9,
+        "name": "game",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "game"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "last_online",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 11,
+        "name": "friend!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 12,
+        "name": "keeps_you!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 13,
+        "name": "unread!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 14,
+        "name": "discord_id?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "player_identities",
+            "name": "external_id"
+          }
+        }
+      },
+      {
+        "ordinal": 15,
+        "name": "friend_code?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "player_identities",
+            "name": "username"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "country",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 17,
+        "name": "screen",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "screen"
+          }
+        }
+      },
+      {
+        "ordinal": 18,
+        "name": "set_game",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "set_game"
+          }
+        }
+      },
+      {
+        "ordinal": 19,
+        "name": "searching!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 20,
+        "name": "set_state?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "ordinal": 21,
+        "name": "set_went?",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 22,
+        "name": "set_met?",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 23,
+        "name": "set_challenger?",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 24,
+        "name": "set_opponent?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "ordinal": 25,
+        "name": "set_games?",
+        "type_info": "Int2",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8Array",
+        "Float8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true,
+      null,
+      true,
+      true,
+      null,
+      true,
+      null,
+      null,
+      null,
+      null,
+      true,
+      true,
+      null,
+      true,
+      true,
+      null,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "7117fa87d265ec07613c9bdc1aa8aff43314ba247a57a749e8363247ab82820d"
+}
