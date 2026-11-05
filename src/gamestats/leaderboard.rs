@@ -77,6 +77,13 @@ pub async fn put(state: &GamestatsState, pid: i32, body: &[u8]) -> Result<Vec<u8
     }
     let userdata = &body[16..(16 + size)];
 
+    // An admin deleted this profile's scores while its game was logged in:
+    // the game still holds its old totals. Its next login finds no row of its
+    // own and starts again from 0.
+    if state.gpcm.off_boards(pid) {
+        info!(target: "gamestats", pid, category, score, "scores deleted: kept off the boards until the next login");
+        return Ok(PUT_REPLY.to_vec());
+    }
     // A Recharged set's games meet in RANKED only to find each other: their
     // results go to the set, not the boards (a FRIENDS battle uploads
     // nothing). The game hears its put went through: a refused put would
@@ -998,6 +1005,46 @@ mod tests {
         state.pairings.ready(99, 0, mario, "R4QE");
         put(&state, mario, &put_body(1, 200, 0xcc)).await.unwrap();
         assert_eq!(score().await, Some(120));
+    }
+
+    #[sqlx::test]
+    async fn a_login_whose_scores_were_deleted_puts_nothing(pool: PgPool) {
+        let state = GamestatsState::with_pool(pool.clone());
+        let address = std::net::IpAddr::from([10, 0, 0, 1]);
+        state.gpcm.fake_login(7, address);
+        let score = async || -> Option<i32> {
+            sqlx::query_scalar("SELECT score FROM scores WHERE profile_id = 7 AND category = 0")
+                .fetch_optional(&pool)
+                .await
+                .unwrap()
+        };
+        put(&state, 7, &put_body(0, 50, 0xaa)).await.unwrap();
+        assert_eq!(score().await, Some(50));
+
+        // An admin deletes its scores; profile 8 is not logged in.
+        assert_eq!(state.gpcm.keep_off_boards(&[7, 8]), [7]);
+        assert_eq!(state.gpcm.keep_off_boards(&[7]), Vec::<i32>::new());
+        sqlx::query("DELETE FROM scores")
+            .execute(&pool)
+            .await
+            .unwrap();
+        // The game hears its put went through; its old total stays off.
+        assert_eq!(
+            put(&state, 7, &put_body(0, 60, 0xbb)).await.unwrap(),
+            PUT_REPLY
+        );
+        assert_eq!(score().await, None);
+
+        // Its next login starts again from 0, and counts.
+        state.gpcm.fake_login(7, address);
+        put(&state, 7, &put_body(0, 0, 0)).await.unwrap();
+        assert_eq!(score().await, Some(0));
+
+        // A delete that failed puts it back on the boards.
+        state.gpcm.keep_off_boards(&[7]);
+        state.gpcm.back_on_boards(&[7]);
+        put(&state, 7, &put_body(0, 3, 0)).await.unwrap();
+        assert_eq!(score().await, Some(3));
     }
 
     #[sqlx::test]

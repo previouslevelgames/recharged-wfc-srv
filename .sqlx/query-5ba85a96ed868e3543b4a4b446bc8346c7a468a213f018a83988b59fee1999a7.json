@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM friend_profiles WHERE profile_id = ANY($1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5ba85a96ed868e3543b4a4b446bc8346c7a468a213f018a83988b59fee1999a7"
+}

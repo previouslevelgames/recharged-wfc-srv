@@ -112,6 +112,9 @@ struct Session {
     /// SAKE, which this game does not have; the port shows it to the profile
     /// service to prove which login is its own (docs/profiles.md).
     login_ticket: String,
+    /// An admin deleted the profile's scores during this login: the game
+    /// still holds its old totals, so its puts stay off the boards.
+    off_boards: bool,
 }
 
 /// Whom a game's matchmaking is with, by its DWC status: anybody (3), or
@@ -173,6 +176,7 @@ impl Session {
             matchmaking: None,
             room_players: None,
             login_ticket,
+            off_boards: false,
         }
     }
 
@@ -248,6 +252,42 @@ impl Gpcm {
         sessions
             .get(&profile_id)
             .is_some_and(|session| session.login_ticket == login_ticket)
+    }
+
+    /// Keeps the puts of these profiles' logins off the boards from now on:
+    /// an admin deletes their scores, and a game puts its whole running total,
+    /// so its next match would put the old one back. Its next login reads no
+    /// row of its own and starts again from 0 (docs/gamestats2.md,
+    /// "Seasons"). Returns the profiles it flagged now.
+    pub fn keep_off_boards(&self, profiles: &[i32]) -> Vec<i32> {
+        let mut sessions = self.sessions.lock().unwrap();
+        profiles
+            .iter()
+            .copied()
+            .filter(|profile_id| {
+                sessions
+                    .get_mut(profile_id)
+                    .is_some_and(|session| !std::mem::replace(&mut session.off_boards, true))
+            })
+            .collect()
+    }
+
+    /// Undoes [`Self::keep_off_boards`] for `profiles` (a delete that failed).
+    pub fn back_on_boards(&self, profiles: &[i32]) {
+        let mut sessions = self.sessions.lock().unwrap();
+        for profile_id in profiles {
+            if let Some(session) = sessions.get_mut(profile_id) {
+                session.off_boards = false;
+            }
+        }
+    }
+
+    /// Whether `profile_id`'s login keeps its puts off the boards.
+    pub fn off_boards(&self, profile_id: i32) -> bool {
+        let sessions = self.sessions.lock().unwrap();
+        sessions
+            .get(&profile_id)
+            .is_some_and(|session| session.off_boards)
     }
 
     pub async fn serve(self: Arc<Self>, listener: TcpListener) -> std::io::Result<()> {

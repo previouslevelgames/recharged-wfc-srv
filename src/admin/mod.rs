@@ -18,6 +18,7 @@
 mod competitive;
 mod config;
 mod database;
+mod deletion;
 mod google;
 mod leaderboards;
 mod logs;
@@ -198,6 +199,8 @@ pub(crate) fn router(
         .route("/admin/api/wfc-profiles/{id}/player", put(link_profile))
         .route("/admin/api/players/merge", post(arm_merge_players))
         .route("/admin/api/players/merge/confirm", post(merge_players))
+        .route("/admin/api/players/delete", post(arm_delete_player))
+        .route("/admin/api/players/delete/confirm", post(delete_player))
         .route("/admin/api/rules", post(create_rule_set))
         .route(
             "/admin/api/rules/{id}",
@@ -768,16 +771,7 @@ async fn wipe_leaderboards(
     );
     if let Err(refusal) = confirmed {
         warn!(target: "admin", email = %owner.email, ?refusal, "leaderboard wipe refused");
-        return match refusal {
-            Refusal::Expired => error(
-                StatusCode::CONFLICT,
-                "this confirmation expired: start again",
-            ),
-            Refusal::Phrase => error(
-                StatusCode::BAD_REQUEST,
-                &format!("type \"{}\" to confirm: start again", operation.phrase()),
-            ),
-        };
+        return refused(operation, refusal);
     }
     match maintenance::wipe_leaderboards(&state.pool).await {
         Ok(wiped) => {
@@ -904,16 +898,7 @@ async fn merge_players(
         &confirmation.token,
         &confirmation.phrase,
     ) {
-        return match refusal {
-            Refusal::Expired => error(
-                StatusCode::CONFLICT,
-                "this confirmation expired: start again",
-            ),
-            Refusal::Phrase => error(
-                StatusCode::BAD_REQUEST,
-                &format!("type \"{}\" to confirm: start again", operation.phrase()),
-            ),
-        };
+        return refused(operation, refusal);
     }
     match merge::merge(&state.pool, confirmation.from, confirmation.into).await {
         Ok(Ok(merged)) => {
@@ -926,6 +911,101 @@ async fn merge_players(
             warn!(target: "admin", error = %failure, "database error");
             error(StatusCode::INTERNAL_SERVER_ERROR, "the database failed")
         }
+    }
+}
+
+/// A delete's WFC profile: the player it plays for goes.
+#[derive(Deserialize)]
+struct DeleteForm {
+    profile_id: i32,
+}
+
+/// The first ask: what the delete would remove, the phrase to type and the
+/// token for the second ask; or why it can't be.
+async fn arm_delete_player(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Json(form): Json<DeleteForm>,
+) -> Response {
+    let owner = match state.owner(&jar, &headers) {
+        Ok(owner) => owner,
+        Err(status) => return status.into_response(),
+    };
+    match deletion::plan(&state.pool, &state.gpcm, form.profile_id).await {
+        Ok(Ok(plan)) => {
+            let operation = Operation::DeletePlayer {
+                profile_id: form.profile_id,
+            };
+            info!(target: "admin", email = %owner.email, profile_id = form.profile_id,
+                  "player deletion asked");
+            Json(state.confirmations.arm(operation, &owner.email, plan)).into_response()
+        }
+        Ok(Err(refusal)) => error(StatusCode::CONFLICT, refusal),
+        Err(failure) => {
+            warn!(target: "admin", error = %failure, "database error");
+            error(StatusCode::INTERNAL_SERVER_ERROR, "the database failed")
+        }
+    }
+}
+
+/// The second ask: the profile again, the first ask's token and the phrase.
+#[derive(Deserialize)]
+struct DeleteConfirmation {
+    profile_id: i32,
+    token: String,
+    phrase: String,
+}
+
+async fn delete_player(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Json(confirmation): Json<DeleteConfirmation>,
+) -> Response {
+    let owner = match state.owner(&jar, &headers) {
+        Ok(owner) => owner,
+        Err(status) => return status.into_response(),
+    };
+    let operation = Operation::DeletePlayer {
+        profile_id: confirmation.profile_id,
+    };
+    if let Err(refusal) = state.confirmations.confirm(
+        operation,
+        &owner.email,
+        &confirmation.token,
+        &confirmation.phrase,
+    ) {
+        return refused(operation, refusal);
+    }
+    match deletion::delete(&state.pool, &state.gpcm, confirmation.profile_id).await {
+        Ok(Ok(deleted)) => {
+            warn!(target: "admin", email = %owner.email, profile_id = confirmation.profile_id,
+                  player_id = ?deleted.player.as_ref().map(|player| player.player_id),
+                  profiles = deleted.profiles.len(), scores = deleted.scores,
+                  past_scores = deleted.past_scores, online_matches = deleted.online_matches,
+                  sets = deleted.sets, "player deleted");
+            Json(deleted).into_response()
+        }
+        Ok(Err(refusal)) => error(StatusCode::CONFLICT, refusal),
+        Err(failure) => {
+            warn!(target: "admin", error = %failure, "database error");
+            error(StatusCode::INTERNAL_SERVER_ERROR, "the database failed")
+        }
+    }
+}
+
+/// The answer to a second ask that was refused.
+fn refused(operation: Operation, refusal: Refusal) -> Response {
+    match refusal {
+        Refusal::Expired => error(
+            StatusCode::CONFLICT,
+            "this confirmation expired: start again",
+        ),
+        Refusal::Phrase => error(
+            StatusCode::BAD_REQUEST,
+            &format!("type \"{}\" to confirm: start again", operation.phrase()),
+        ),
     }
 }
 

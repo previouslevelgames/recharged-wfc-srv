@@ -442,6 +442,28 @@ profile's page (owners only):
   two go, and `from` is gone. Refused while either has a set to play, and for
   two players who both sign in with Discord.
 
+### Deleting a player
+
+**Delete player…** on a profile's page (owners only), in two asks as the
+leaderboard wipe (`POST /admin/api/players/delete` with `{"profile_id"}`
+answers what goes, the phrase and a token; `.../delete/confirm` with the
+profile, the token and the phrase deletes), removes the Recharged player the
+profile plays for and every row their WFC profiles have on the boards: the
+`scores` of every category and the `past_scores` of ended seasons and days.
+With them go the online matches the profiles reported (both sides), the Mii
+friends of the profiles (the player's own and other players'), and the
+player's sign-ins, sessions (their launchers are signed out), friends,
+chats, search and sets (for their opponents too). A profile no player plays
+for loses only its own rows. Refused while the player has a set to play or a
+profile an online match in progress, and for the CPU buddy.
+
+The WFC profiles stay: DWC logs in only to the profile number its save holds
+and refuses any other (`DWCi_GPConnectCallback`), so a deleted profile would
+lock that Mii out of online play. The console keeps playing and starts again
+from 0, and signing in from a launcher again makes a new player. A game
+logged in during the delete still holds its totals: its puts stay off the
+boards until it logs in again (docs/gamestats2.md, "What `score` means").
+
 ## Rules
 
 A match is played by rules: one of the server's rule sets, which its admins
