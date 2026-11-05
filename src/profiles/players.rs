@@ -358,15 +358,117 @@ impl Activity {
             Self::Match => "match",
         }
     }
+}
 
-    /// The `Recharged-Activity` and `Recharged-Match` headers of a request.
-    pub fn from_headers(headers: &axum::http::HeaderMap) -> (Self, Option<MatchKind>) {
+/// What a player's Recharged is doing, as a request's headers say
+/// (docs/profiles.md, "Activity").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Doing {
+    pub activity: Activity,
+    /// In a match: its kind, when the game says.
+    pub kind: Option<MatchKind>,
+    /// In the game: the screens it shows, when it says.
+    pub screen: Option<Screen>,
+    /// In a set: the game of its series the player's game plays, or last
+    /// played between two, when it says.
+    pub set_game: Option<i16>,
+}
+
+impl Doing {
+    /// The `Recharged-Activity`, `Recharged-Match`, `Recharged-Screen` and
+    /// `Recharged-Set-Game` headers of a request.
+    pub fn from_headers(headers: &axum::http::HeaderMap) -> Self {
         let header = |name| headers.get(name).and_then(|value| value.to_str().ok());
-        let activity = Self::from_header(header("recharged-activity"));
-        let kind = (activity == Self::Match)
+        let activity = Activity::from_header(header("recharged-activity"));
+        let kind = (activity == Activity::Match)
             .then(|| MatchKind::from_header(header("recharged-match")))
             .flatten();
-        (activity, kind)
+        // The launcher shows none of the game's screens.
+        let in_game = activity != Activity::Launcher;
+        let screen = in_game
+            .then(|| Screen::from_header(header("recharged-screen")))
+            .flatten();
+        let set_game = in_game
+            .then(|| header("recharged-set-game")?.trim().parse::<i16>().ok())
+            .flatten()
+            .filter(|game| (1..=7).contains(game));
+        Self {
+            activity,
+            kind,
+            screen,
+            set_game,
+        }
+    }
+}
+
+/// Which of the game's screens a player's game shows (docs/profiles.md,
+/// "Activity"), from its `Recharged-Screen` header; older games don't say.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Screen {
+    /// The title screen and what comes before it.
+    Starting,
+    /// The main menu, the options, the Hall of Fame and the rest.
+    Menus,
+    /// Domination's captains, sidekicks, stadium and rules.
+    Domination,
+    /// Road to the Striker Cup's Cup Central.
+    Cup,
+    /// The Cup's captain and sidekicks.
+    CupTeam,
+    /// Choosing a Striker Challenge.
+    Challenges,
+    /// Choosing a Strikers 101 lesson.
+    Lessons,
+    /// A match's results.
+    Results,
+    /// The game's online menus.
+    Online,
+    /// The game's RANKED menu, which looks for a match.
+    Ranked,
+    /// A friend match's invitations and room.
+    Room,
+    /// An online match's captains and sidekicks (the draft).
+    Draft,
+}
+
+impl Screen {
+    const ALL: [Self; 12] = [
+        Self::Starting,
+        Self::Menus,
+        Self::Domination,
+        Self::Cup,
+        Self::CupTeam,
+        Self::Challenges,
+        Self::Lessons,
+        Self::Results,
+        Self::Online,
+        Self::Ranked,
+        Self::Room,
+        Self::Draft,
+    ];
+
+    /// None for no header and anything this server doesn't know.
+    pub fn from_header(value: Option<&str>) -> Option<Self> {
+        let value = value?.trim();
+        Self::ALL.into_iter().find(|screen| screen.name() == value)
+    }
+
+    /// As the header, `players.screen` and the lists have it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Starting => "starting",
+            Self::Menus => "menus",
+            Self::Domination => "domination",
+            Self::Cup => "cup",
+            Self::CupTeam => "cup_team",
+            Self::Challenges => "challenges",
+            Self::Lessons => "lessons",
+            Self::Results => "results",
+            Self::Online => "online",
+            Self::Ranked => "ranked",
+            Self::Room => "room",
+            Self::Draft => "draft",
+        }
     }
 }
 
@@ -426,27 +528,36 @@ impl MatchKind {
 }
 
 /// `player_id`'s launcher or game made a request: they have Recharged open,
-/// doing `activity`, in a match of `kind`, playing `game` when it says
-/// (written at most every few seconds, and at once when any changes; a
-/// request that doesn't say keeps the game known).
+/// doing what `doing` says, playing `game` when it says (written at most
+/// every few seconds, and at once when any changes; a request that doesn't
+/// say keeps the game known).
 pub async fn heartbeat(
     pool: &PgPool,
     player_id: i64,
-    (activity, kind): (Activity, Option<MatchKind>),
+    doing: Doing,
     game: Option<&str>,
 ) -> Result<(), sqlx::Error> {
+    let Doing {
+        activity,
+        kind,
+        screen,
+        set_game,
+    } = doing;
     let kind = (activity == Activity::Match).then_some(kind).flatten();
     sqlx::query!(
         "UPDATE players SET heartbeat_at = now(), activity = $2, match_kind = $3,
-                            game = coalesce($4, game)
+                            game = coalesce($4, game), screen = $5, set_game = $6
          WHERE player_id = $1
            AND (heartbeat_at IS NULL OR heartbeat_at < now() - interval '5 seconds'
                 OR activity IS DISTINCT FROM $2 OR match_kind IS DISTINCT FROM $3
-                OR ($4::TEXT IS NOT NULL AND game IS DISTINCT FROM $4))",
+                OR ($4::TEXT IS NOT NULL AND game IS DISTINCT FROM $4)
+                OR screen IS DISTINCT FROM $5 OR set_game IS DISTINCT FROM $6)",
         player_id,
         activity.column(),
         kind.map(MatchKind::name),
         game,
+        screen.map(Screen::name),
+        set_game,
     )
     .execute(pool)
     .await?;
@@ -592,6 +703,30 @@ pub struct Listed {
     /// While online: the game their Recharged plays (`R4QE`, `R4QP`, ...),
     /// when it says; sets pair only players of one.
     pub game: Option<String>,
+    /// While online: the screens their game shows (see [`Screen`]), when it
+    /// says.
+    pub screen: Option<&'static str>,
+    /// While online: they search for a random opponent.
+    pub searching: bool,
+    /// While online: their set to play, or playing.
+    pub set: Option<ListedSet>,
+}
+
+/// A listed player's set still to be played, or playing (docs/profiles.md,
+/// "Players").
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ListedSet {
+    /// As a match's stage: `invited`, `open`, `go` or `playing`.
+    pub stage: &'static str,
+    /// They sent the challenge (else they got it).
+    pub challenger: bool,
+    /// Their opponent's name.
+    pub opponent: String,
+    /// The games of its series.
+    pub games: i16,
+    /// The game of the series their game plays, or last played between two,
+    /// when it says.
+    pub game: Option<i16>,
 }
 
 /// Who has Recharged open, but `player_id`, by name.
@@ -732,7 +867,13 @@ pub(super) async fn listed(
                      AND chat_messages.read_at IS NULL) AS "unread!",
                   discord.external_id AS "discord_id?", wfc.username AS "friend_code?",
                   CASE players.country_choice WHEN 'auto' THEN players.country WHEN 'none' THEN NULL
-                       ELSE players.country_choice END AS country
+                       ELSE players.country_choice END AS country,
+                  players.screen, players.set_game,
+                  EXISTS (SELECT 1 FROM searches WHERE searches.player_id = players.player_id)
+                      AS "searching!",
+                  player_set.state AS "set_state?", player_set.went AS "set_went?",
+                  player_set.met AS "set_met?", player_set.challenger AS "set_challenger?",
+                  player_set.opponent AS "set_opponent?", player_set.games AS "set_games?"
            FROM players
            LEFT JOIN player_identities discord
                   ON discord.player_id = players.player_id AND discord.provider = 'discord'
@@ -740,6 +881,22 @@ pub(super) async fn listed(
                   ON test.player_id = players.player_id AND test.provider = 'test'
            LEFT JOIN player_identities wfc
                   ON wfc.player_id = players.player_id AND wfc.provider = 'wfc'
+           -- Their set still to be played: one that keeps them busy first.
+           LEFT JOIN LATERAL (
+               SELECT m.state, m.go_at IS NOT NULL AS went, m.playing_at IS NOT NULL AS met,
+                      m.home = players.player_id AS challenger,
+                      opponent.display_name AS opponent,
+                      (m.rules::jsonb ->> 'games')::smallint AS games
+               FROM matches m
+               JOIN players opponent
+                 ON opponent.player_id = CASE WHEN m.home = players.player_id THEN m.away
+                                              ELSE m.home END
+               WHERE (m.home = players.player_id OR m.away = players.player_id)
+                 AND m.state IN ('challenged', 'accepted')
+               ORDER BY (m.state = 'challenged' OR m.go_at IS NOT NULL OR m.playing_at IS NOT NULL) DESC,
+                        m.created_at DESC
+               LIMIT 1
+           ) player_set ON true
            WHERE players.player_id = ANY($1)"#,
         ids,
         f64::from(super::matches::HEARTBEAT_TIMEOUT_SECS),
@@ -778,6 +935,24 @@ pub(super) async fn listed(
                 .then_some(row.discord_id)
                 .flatten(),
             game: row.online.then_some(row.game).flatten(),
+            screen: row
+                .online
+                .then(|| Screen::from_header(row.screen.as_deref()))
+                .flatten()
+                .map(Screen::name),
+            searching: row.online && row.searching,
+            set: row.set_state.filter(|_| row.online).map(|state| ListedSet {
+                stage: match state.as_str() {
+                    "challenged" => "invited",
+                    _ if row.set_met == Some(true) => "playing",
+                    _ if row.set_went == Some(true) => "go",
+                    _ => "open",
+                },
+                challenger: row.set_challenger.unwrap_or(false),
+                opponent: row.set_opponent.unwrap_or_default(),
+                games: row.set_games.unwrap_or(1),
+                game: row.set_game,
+            }),
         })
         .collect();
     listed.sort_by_key(|entry| ids.iter().position(|id| *id == entry.player.id));
