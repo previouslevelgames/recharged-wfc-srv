@@ -444,8 +444,8 @@ profile's page (owners only):
 
 ### Deleting a player
 
-**Delete player…** on a profile's page (owners only), in two asks as the
-leaderboard wipe (`POST /admin/api/players/delete` with `{"profile_id"}`
+**Delete player…** on a profile's page (any admin, not only owners), in two
+asks as the leaderboard wipe (`POST /admin/api/players/delete` with `{"profile_id"}`
 answers what goes, the phrase and a token; `.../delete/confirm` with the
 profile, the token and the phrase deletes), removes the Recharged player the
 profile plays for and every row their WFC profiles have on the boards: the
