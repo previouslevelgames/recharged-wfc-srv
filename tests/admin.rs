@@ -212,6 +212,91 @@ async fn only_an_owner_wipes_the_leaderboards_and_only_when_asked_twice(pool: Pg
 }
 
 #[sqlx::test]
+async fn an_admin_deletes_a_player_and_only_when_asked_twice(pool: PgPool) {
+    const ASK: &str = "/admin/api/players/delete";
+    const CONFIRM: &str = "/admin/api/players/delete/confirm";
+    let mut conn = pool.acquire().await.unwrap();
+    sqlx::raw_sql(
+        "INSERT INTO accounts (user_id) VALUES (5);
+         INSERT INTO profiles (profile_id, user_id, gsbrcd, unique_nick, ingamesn)
+             VALUES (1000000005, 5, 'R4QEaaaaaaa', '5R4QEaaaaaaa', 'Cheater');
+         INSERT INTO players (display_name) VALUES ('Cheater');
+         INSERT INTO player_wfc_profiles (profile_id, player_id)
+             SELECT 1000000005, player_id FROM players;
+         INSERT INTO scores (profile_id, category, region, score, userdata)
+             VALUES (1000000005, 0, 2, 999999, ''), (1000000005, 1, 2, 999999, '');",
+    )
+    .execute(&mut *conn)
+    .await
+    .unwrap();
+    drop(conn);
+    let count = |sql: &'static str| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(sql)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+    let (config, google) = fake_google().await;
+    let app = recharged_wfc_srv::App::new(pool.clone()).router(Some(config), None);
+    let ask = Some(serde_json::json!({ "profile_id": 1000000005 }));
+    let confirm = |token: &str, phrase: &str| {
+        Some(serde_json::json!({ "profile_id": 1000000005, "token": token, "phrase": phrase }))
+    };
+
+    // An admin who is not an owner may, never from another site.
+    let mut admin = Browser::new(app.clone());
+    sign_in(&mut admin, &google, "second@example.com").await;
+    let elsewhere = Request::post(ASK)
+        .header(header::ORIGIN, "https://elsewhere.example")
+        .header(header::CONTENT_TYPE, "application/json");
+    let body = Body::from(r#"{"profile_id": 1000000005}"#);
+    assert_eq!(admin.send_body(elsewhere, body).await.0, 403);
+    let (status, answer) = admin
+        .post_json(ASK, Some(serde_json::json!({ "profile_id": 7 })))
+        .await;
+    assert_eq!(status, 409, "{answer}");
+    let (status, asked) = admin.post_json(ASK, ask.clone()).await;
+    assert_eq!(status, 200, "{asked}");
+    assert_eq!(asked["phrase"], "delete this player");
+    assert_eq!(asked["impact"]["player"]["name"], "Cheater", "{asked}");
+    assert_eq!(asked["impact"]["scores"], 2, "{asked}");
+    let token = asked["token"].as_str().unwrap();
+    let (status, _) = admin.post_json(CONFIRM, confirm(token, "delete")).await;
+    assert_eq!(status, 400);
+    // A confirmation is its own admin's: the owner can't use it.
+    let (_, asked) = admin.post_json(ASK, ask.clone()).await;
+    let token = asked["token"].as_str().unwrap();
+    let mut owner = Browser::new(app);
+    sign_in(&mut owner, &google, "owner@example.com").await;
+    let (status, _) = owner
+        .post_json(CONFIRM, confirm(token, "delete this player"))
+        .await;
+    assert_eq!(status, 409);
+    assert_eq!(
+        count("SELECT count(*) FROM players").await,
+        1,
+        "nothing deleted yet"
+    );
+
+    let (_, asked) = admin.post_json(ASK, ask).await;
+    let token = asked["token"].as_str().unwrap();
+    let (status, deleted) = admin
+        .post_json(CONFIRM, confirm(token, "delete this player"))
+        .await;
+    assert_eq!(status, 200, "{deleted}");
+    assert_eq!(deleted["scores"], 2, "{deleted}");
+    assert_eq!(count("SELECT count(*) FROM players").await, 0);
+    assert_eq!(count("SELECT count(*) FROM scores").await, 0);
+    assert_eq!(
+        count("SELECT count(*) FROM profiles WHERE profile_id = 1000000005").await,
+        1
+    );
+}
+
+#[sqlx::test]
 async fn only_an_owner_switches_test_sign_in_and_profiles_follow_at_once(pool: PgPool) {
     const SWITCH: &str = "/admin/api/maintenance/test-sign-in";
     let (config, google) = fake_google().await;
@@ -494,6 +579,7 @@ async fn a_diagnostics_token_reads_the_pages_but_changes_nothing(pool: PgPool) {
     );
     for (method, uri) in [
         ("POST", "/admin/api/players/merge"),
+        ("POST", "/admin/api/players/delete"),
         ("POST", "/admin/api/maintenance/wipe-leaderboards"),
         ("PUT", "/admin/api/maintenance/test-sign-in"),
         ("POST", "/admin/api/rules"),

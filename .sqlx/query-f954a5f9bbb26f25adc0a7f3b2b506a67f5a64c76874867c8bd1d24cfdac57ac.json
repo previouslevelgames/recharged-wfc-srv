@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT player_wfc_profiles.player_id AS \"player_id?\"\n           FROM profiles LEFT JOIN player_wfc_profiles USING (profile_id)\n           WHERE profiles.profile_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "player_id?",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "player_wfc_profiles",
+            "name": "player_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "f954a5f9bbb26f25adc0a7f3b2b506a67f5a64c76874867c8bd1d24cfdac57ac"
+}

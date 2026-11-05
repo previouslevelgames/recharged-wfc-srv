@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS (SELECT 1 FROM online_match_sides JOIN online_matches USING (match_id)\n                          WHERE online_match_sides.profile_id = ANY($1)\n                            AND online_matches.state = 'in_progress') AS \"playing!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "playing!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4Array"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "ba482caa82fcff026fb1623f94a9821db2b3e180630841ebf81b8fd430184cc7"
+}
