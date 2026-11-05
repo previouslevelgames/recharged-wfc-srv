@@ -928,8 +928,10 @@ async fn arm_delete_player(
     headers: HeaderMap,
     Json(form): Json<DeleteForm>,
 ) -> Response {
-    let owner = match state.owner(&jar, &headers) {
-        Ok(owner) => owner,
+    // Any admin, not only an owner: a player on the boards who must go
+    // shouldn't wait for one.
+    let admin = match state.editor(&jar, &headers) {
+        Ok(admin) => admin,
         Err(status) => return status.into_response(),
     };
     match deletion::plan(&state.pool, &state.gpcm, form.profile_id).await {
@@ -937,9 +939,9 @@ async fn arm_delete_player(
             let operation = Operation::DeletePlayer {
                 profile_id: form.profile_id,
             };
-            info!(target: "admin", email = %owner.email, profile_id = form.profile_id,
+            info!(target: "admin", email = %admin.email, profile_id = form.profile_id,
                   "player deletion asked");
-            Json(state.confirmations.arm(operation, &owner.email, plan)).into_response()
+            Json(state.confirmations.arm(operation, &admin.email, plan)).into_response()
         }
         Ok(Err(refusal)) => error(StatusCode::CONFLICT, refusal),
         Err(failure) => {
@@ -963,8 +965,10 @@ async fn delete_player(
     headers: HeaderMap,
     Json(confirmation): Json<DeleteConfirmation>,
 ) -> Response {
-    let owner = match state.owner(&jar, &headers) {
-        Ok(owner) => owner,
+    // Any admin, not only an owner: a player on the boards who must go
+    // shouldn't wait for one.
+    let admin = match state.editor(&jar, &headers) {
+        Ok(admin) => admin,
         Err(status) => return status.into_response(),
     };
     let operation = Operation::DeletePlayer {
@@ -972,7 +976,7 @@ async fn delete_player(
     };
     if let Err(refusal) = state.confirmations.confirm(
         operation,
-        &owner.email,
+        &admin.email,
         &confirmation.token,
         &confirmation.phrase,
     ) {
@@ -980,7 +984,7 @@ async fn delete_player(
     }
     match deletion::delete(&state.pool, &state.gpcm, confirmation.profile_id).await {
         Ok(Ok(deleted)) => {
-            warn!(target: "admin", email = %owner.email, profile_id = confirmation.profile_id,
+            warn!(target: "admin", email = %admin.email, profile_id = confirmation.profile_id,
                   player_id = ?deleted.player.as_ref().map(|player| player.player_id),
                   profiles = deleted.profiles.len(), scores = deleted.scores,
                   past_scores = deleted.past_scores, online_matches = deleted.online_matches,

@@ -212,7 +212,7 @@ async fn only_an_owner_wipes_the_leaderboards_and_only_when_asked_twice(pool: Pg
 }
 
 #[sqlx::test]
-async fn only_an_owner_deletes_a_player_and_only_when_asked_twice(pool: PgPool) {
+async fn an_admin_deletes_a_player_and_only_when_asked_twice(pool: PgPool) {
     const ASK: &str = "/admin/api/players/delete";
     const CONFIRM: &str = "/admin/api/players/delete/confirm";
     let mut conn = pool.acquire().await.unwrap();
@@ -246,34 +246,44 @@ async fn only_an_owner_deletes_a_player_and_only_when_asked_twice(pool: PgPool) 
         Some(serde_json::json!({ "profile_id": 1000000005, "token": token, "phrase": phrase }))
     };
 
-    // An admin, not an owner, can't.
+    // An admin who is not an owner may, never from another site.
     let mut admin = Browser::new(app.clone());
     sign_in(&mut admin, &google, "second@example.com").await;
-    assert_eq!(admin.post_json(ASK, ask.clone()).await.0, 403);
-
-    let mut owner = Browser::new(app);
-    sign_in(&mut owner, &google, "owner@example.com").await;
-    let (status, answer) = owner
+    let elsewhere = Request::post(ASK)
+        .header(header::ORIGIN, "https://elsewhere.example")
+        .header(header::CONTENT_TYPE, "application/json");
+    let body = Body::from(r#"{"profile_id": 1000000005}"#);
+    assert_eq!(admin.send_body(elsewhere, body).await.0, 403);
+    let (status, answer) = admin
         .post_json(ASK, Some(serde_json::json!({ "profile_id": 7 })))
         .await;
     assert_eq!(status, 409, "{answer}");
-    let (status, asked) = owner.post_json(ASK, ask.clone()).await;
+    let (status, asked) = admin.post_json(ASK, ask.clone()).await;
     assert_eq!(status, 200, "{asked}");
     assert_eq!(asked["phrase"], "delete this player");
     assert_eq!(asked["impact"]["player"]["name"], "Cheater", "{asked}");
     assert_eq!(asked["impact"]["scores"], 2, "{asked}");
     let token = asked["token"].as_str().unwrap();
-    let (status, _) = owner.post_json(CONFIRM, confirm(token, "delete")).await;
+    let (status, _) = admin.post_json(CONFIRM, confirm(token, "delete")).await;
     assert_eq!(status, 400);
+    // A confirmation is its own admin's: the owner can't use it.
+    let (_, asked) = admin.post_json(ASK, ask.clone()).await;
+    let token = asked["token"].as_str().unwrap();
+    let mut owner = Browser::new(app);
+    sign_in(&mut owner, &google, "owner@example.com").await;
+    let (status, _) = owner
+        .post_json(CONFIRM, confirm(token, "delete this player"))
+        .await;
+    assert_eq!(status, 409);
     assert_eq!(
         count("SELECT count(*) FROM players").await,
         1,
         "nothing deleted yet"
     );
 
-    let (_, asked) = owner.post_json(ASK, ask).await;
+    let (_, asked) = admin.post_json(ASK, ask).await;
     let token = asked["token"].as_str().unwrap();
-    let (status, deleted) = owner
+    let (status, deleted) = admin
         .post_json(CONFIRM, confirm(token, "delete this player"))
         .await;
     assert_eq!(status, 200, "{deleted}");
