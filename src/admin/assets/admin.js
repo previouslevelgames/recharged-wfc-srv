@@ -2692,6 +2692,7 @@ function playerCard(profile) {
     tools.push(h('button', { class: 'button', type: 'button', onclick: () => playerTools.unlink(profile) }, 'Unlink'));
     tools.push(h('button', { class: 'button', type: 'button', onclick: () => playerTools.openMerge(player) }, 'Keep this player and merge another…'));
   }
+  tools.push(h('button', { class: 'button destroy', type: 'button', onclick: () => playerTools.askDelete(profile) }, 'Delete player…'));
   const result = playerTools.result && h('p', { class: 'tile-sub', 'data-tone': playerTools.result[1] }, playerTools.result[0]);
   const body = player
     ? [
@@ -2710,9 +2711,9 @@ function playerCard(profile) {
   return card('Recharged player', 'Linked WFC profiles share one leaderboard row per season or day. The row uses the highest-scoring profile’s Mii name, not the Recharged player name.', body, tools);
 }
 
-/** Linking a profile to a player, unlinking it, and merging two players (in
- * two asks, as the leaderboard wipe). The dialogs stay out of the polled
- * page, so typing survives each refresh. */
+/** Linking a profile to a player, unlinking it, merging two players and
+ * deleting one (the last two in two asks, as the leaderboard wipe). The
+ * dialogs stay out of the polled page, so typing survives each refresh. */
 const playerTools = {
   dialog: null,
   result: null, // [text, tone] of the last action.
@@ -2865,6 +2866,64 @@ const playerTools = {
           ? `${impact.from.name}’s ${impact.identities.join(', ')} sign-in accounts move to ${impact.into.name}. Any other sign-in accounts of the removed player are deleted.`
           : `${impact.from.name}’s sign-in accounts, if any, are deleted; ${impact.into.name} already has an account of each kind.`),
       ),
+      warningNote('This cannot be undone.'),
+      h('label', { class: 'editor-field' }, h('span', null, 'Type ', h('code', null, phrase), ' to confirm'), input),
+      h('p', { class: 'confirm-expires' }, `This confirmation expires at ${clock.format(new Date(expiresAt))}.`),
+      h('div', { class: 'editor-actions' }, h('button', { class: 'button', type: 'button', onclick: () => this.dialog.close() }, 'Cancel'), confirm),
+    );
+    input.focus();
+  },
+
+  /** The first ask: what deleting the profile's player would remove. */
+  async askDelete(profile) {
+    try {
+      const asked = await send('POST', '/admin/api/players/delete', { profile_id: profile.profile_id });
+      this.confirmDelete(asked, profile);
+    } catch (error) {
+      this.done(error.message, 'critical');
+    }
+  },
+
+  confirmDelete(asked, profile) {
+    const { phrase, expires_at: expiresAt, impact, token } = asked;
+    const player = impact.player;
+    const input = h('input', { type: 'text', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
+    const confirm = h('button', { class: 'button destroy', type: 'submit', disabled: true }, player ? `Delete player #${player.player_id}` : 'Delete its data');
+    input.addEventListener('input', () => {
+      confirm.disabled = input.value.trim() !== phrase;
+    });
+    confirm.addEventListener('click', async (event) => {
+      event.preventDefault();
+      confirm.disabled = true;
+      try {
+        const deleted = await send('POST', '/admin/api/players/delete/confirm', { profile_id: profile.profile_id, token, phrase: input.value.trim() });
+        const rows = `${plural(deleted.scores, 'board row', 'board rows')}, ${plural(deleted.past_scores, 'past-season row', 'past-season rows')} and ${plural(deleted.online_matches, 'online match', 'online matches')}`;
+        this.done(deleted.player
+          ? `Deleted Recharged player ${deleted.player.name} (#${deleted.player.player_id}) with ${plural(deleted.sets, 'set', 'sets')}, and ${rows} of their WFC profiles. The WFC profiles stay.`
+          : `Deleted ${rows} of WFC profile #${profile.profile_id}. The profile stays.`, 'good');
+      } catch (error) {
+        this.done(error.message, 'critical');
+      }
+    });
+    const profiles = impact.profiles.map((p) => `${p.mii_name || 'Unnamed'} (#${p.profile_id}, ${p.release})`).join(', ');
+    const kinds = player && (player.signs_in_with.length ? player.signs_in_with.join(', ') : 'no account');
+    this.show(
+      player ? `Delete ${player.name} (player #${player.player_id})?` : `Delete the data of ${profile.mii_name || 'this profile'}?`,
+      player
+        ? h('p', null, h('strong', null, 'Recharged player: '), `${player.name} (#${player.player_id}, ${kinds}) is deleted with their sign-ins and launcher sessions (their launchers are signed out), friends, chats and search.`)
+        : h('p', null, 'No Recharged player plays this profile: only its own data goes.'),
+      h('p', null, h('strong', null, player ? 'Their WFC profiles: ' : 'WFC profile: '), profiles),
+      h('ul', null,
+        h('li', null, plural(impact.scores, 'row', 'rows'), ' on every board and ', plural(impact.past_scores, 'row', 'rows'), ' of past seasons and days'),
+        h('li', null, plural(impact.online_matches, 'online match', 'online matches'), ' they reported, also gone from their opponents’ records'),
+        player ? h('li', null, plural(impact.sets, 'set', 'sets'), ', also gone from their opponents’ history') : null,
+        player ? h('li', null, plural(impact.friends, 'friend entry', 'friend entries'), ' (both ways)') : null,
+        h('li', null, plural(impact.mii_friends, 'Mii friend entry', 'Mii friend entries'), ' of these profiles'),
+      ),
+      h('p', null, 'The WFC profiles stay: the game logs in only to the profile number its save holds, so the console keeps playing online and starts again from 0 on the boards. Signing in from the launcher again makes a new Recharged player.'),
+      impact.online
+        ? warningNote(`${plural(impact.online, 'of these profiles is', 'of these profiles are')} logged in now. `, 'A game keeps its totals until it logs in again: the server keeps its results off the boards until then.')
+        : null,
       warningNote('This cannot be undone.'),
       h('label', { class: 'editor-field' }, h('span', null, 'Type ', h('code', null, phrase), ' to confirm'), input),
       h('p', { class: 'confirm-expires' }, `This confirmation expires at ${clock.format(new Date(expiresAt))}.`),

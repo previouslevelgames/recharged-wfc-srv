@@ -199,6 +199,11 @@ Menu), counts as before; a FRIENDS battle never puts. The game reads its
 score back from the board when it goes online, so a set's points are gone
 from its menus then too.
 
+When an admin deletes a player's rows (docs/profiles.md, "Deleting a
+player"), a game logged in at the time still holds its old totals and would
+put them back after its next match: its puts are answered as stored and
+change nothing until it logs in again, finds no row and starts from 0.
+
 ### Seasons
 
 The game resets its scores itself; the server only stores what it puts.

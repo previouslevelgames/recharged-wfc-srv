@@ -1,0 +1,59 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT\n             (SELECT count(*) FROM scores WHERE profile_id = ANY($1)) AS \"scores!\",\n             (SELECT count(*) FROM past_scores WHERE profile_id = ANY($1)) AS \"past_scores!\",\n             (SELECT count(DISTINCT match_id) FROM online_match_sides\n              WHERE profile_id = ANY($1)) AS \"online_matches!\",\n             (SELECT count(*) FROM matches WHERE home = $2 OR away = $2) AS \"sets!\",\n             (SELECT count(*) FROM friends WHERE player_id = $2 OR friend_id = $2) AS \"friends!\",\n             (SELECT count(*) FROM friend_profiles\n              WHERE profile_id = ANY($1) OR player_id = $2) AS \"mii_friends!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "scores!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "past_scores!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "online_matches!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "sets!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "friends!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "mii_friends!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4Array",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "bc289562ecaad81c64a6b7344688e852a2ad86161397129db281613b0e234c5e"
+}

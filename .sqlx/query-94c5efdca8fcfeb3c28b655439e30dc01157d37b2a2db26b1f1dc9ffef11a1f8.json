@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT profile_id, ingamesn, gsbrcd FROM profiles\n         WHERE profile_id = $1\n            OR profile_id IN (SELECT profile_id FROM player_wfc_profiles WHERE player_id = $2)\n         ORDER BY profile_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "profile_id",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "profiles",
+            "name": "profile_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "ingamesn",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "profiles",
+            "name": "ingamesn"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "gsbrcd",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "profiles",
+            "name": "gsbrcd"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "94c5efdca8fcfeb3c28b655439e30dc01157d37b2a2db26b1f1dc9ffef11a1f8"
+}

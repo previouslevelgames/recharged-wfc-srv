@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM online_matches WHERE match_id IN\n             (SELECT match_id FROM online_match_sides WHERE profile_id = ANY($1))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "74f8bebc61ee7e2be26c459bb3a7cccb64b0fc3fb7db2f70de4f5f7ce36d4f68"
+}
