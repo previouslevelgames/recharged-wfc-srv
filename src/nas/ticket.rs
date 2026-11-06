@@ -2,7 +2,10 @@
 //! server keeps nothing. A token can be used more than once within [`TTL`]:
 //! on a profile's first login, DWC logs in to GPCM twice with it.
 
-use std::time::Duration;
+use std::{
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    time::Duration,
+};
 
 use hmac::{Hmac, KeyInit, Mac};
 use sha2::Sha256;
@@ -27,6 +30,10 @@ pub struct Ticket {
     pub challenge: String,
     /// The Mii name.
     pub ingamesn: Option<String>,
+    /// Where the NAS login came from. The game's HTTP (NAS, gamestats2, the
+    /// reports) can leave a player's network by another address than its
+    /// GPCM connection, so the login's requests count from either.
+    pub address: IpAddr,
 }
 
 #[derive(Debug, PartialEq)]
@@ -72,6 +79,12 @@ impl Tickets {
             bytes.push(text.len() as u8);
             bytes.extend(text.as_bytes());
         }
+        let address = match ticket.address {
+            IpAddr::V4(v4) => v4.octets().to_vec(),
+            IpAddr::V6(v6) => v6.octets().to_vec(),
+        };
+        bytes.push(address.len() as u8);
+        bytes.extend(address);
         let tag = self.mac(&bytes).finalize().into_bytes();
         bytes.extend(&tag[..TAG_LEN]);
         format!("{PREFIX}{}", base64::encode(bytes))
@@ -94,17 +107,24 @@ impl Tickets {
         let issued = i64::from_le_bytes(payload[0..8].try_into().unwrap());
         let user_id = i64::from_le_bytes(payload[8..16].try_into().unwrap());
         let mut rest = &payload[16..];
-        let mut text = || {
+        let mut field = || {
             let (len, tail) = rest.split_first().unwrap();
-            let (text, tail) = tail.split_at(*len as usize);
+            let (field, tail) = tail.split_at(*len as usize);
             rest = tail;
-            String::from_utf8(text.to_vec()).unwrap()
+            field
+        };
+        let mut text = || String::from_utf8(field().to_vec()).unwrap();
+        let (challenge, gsbrcd, ingamesn) = (text(), text(), text());
+        let address = match field() {
+            &[a, b, c, d] => IpAddr::V4(Ipv4Addr::new(a, b, c, d)),
+            octets => IpAddr::V6(Ipv6Addr::from(<[u8; 16]>::try_from(octets).unwrap())),
         };
         let ticket = Ticket {
             user_id,
-            challenge: text(),
-            gsbrcd: text(),
-            ingamesn: Some(text()).filter(|name| !name.is_empty()),
+            challenge,
+            gsbrcd,
+            ingamesn: Some(ingamesn).filter(|name| !name.is_empty()),
+            address,
         };
         if now - issued > TTL.as_secs() as i64 {
             return Err(TicketError::Expired);
@@ -131,6 +151,7 @@ mod tests {
             gsbrcd: "R4QEabcdefg".into(),
             challenge: "ABCDEFGH".into(),
             ingamesn: Some("Gold€nP2☆☆".into()),
+            address: IpAddr::from([12, 75, 115, 108]),
         }
     }
 
@@ -146,6 +167,25 @@ mod tests {
             tickets.redeem_at(&token, NOW + 601),
             Err(TicketError::Expired)
         );
+    }
+
+    #[test]
+    fn the_longest_token_fits_dwc() {
+        // NAS takes a gsbrcd of up to 16 bytes and a name of up to 64.
+        let longest = Ticket {
+            gsbrcd: "R4QEabcdefghijkl".into(),
+            ingamesn: Some("☆".repeat(21) + "a"),
+            address: IpAddr::from([0x2001, 0xdb8, 0, 0, 0, 0, 0, 1]),
+            ..ticket()
+        };
+        let tickets = Tickets::default();
+        let token = tickets.issue_at(&longest, NOW);
+        assert!(
+            token.len() <= 255,
+            "DWC keeps 255 characters: {}",
+            token.len()
+        );
+        assert_eq!(tickets.redeem_at(&token, NOW), Ok(longest));
     }
 
     #[test]

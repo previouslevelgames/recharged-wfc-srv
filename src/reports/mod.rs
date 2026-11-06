@@ -11,7 +11,10 @@ pub(crate) mod outcome;
 pub(crate) mod report;
 mod store;
 
-use std::{net::SocketAddr, sync::Arc};
+use std::{
+    net::{IpAddr, SocketAddr},
+    sync::Arc,
+};
 
 use axum::{
     Json, Router,
@@ -74,7 +77,7 @@ async fn receive(
             // Counted for a game logged in from here only: a stranger could
             // name any profile.
             if let Some(profile_id) = profile_id(&body)
-                && state.gpcm.logged_in_from(profile_id) == Some(peer.ip())
+                && logged_in_at(&state.gpcm, profile_id, peer.ip())
             {
                 state
                     .count_refusal(profile_id, "invalid", &problem, peer)
@@ -85,12 +88,13 @@ async fn receive(
     };
 
     // As for gamestats2's puts (docs/gamestats2.md, "Trust"): a profile id
-    // is easy to learn, the login's address is not.
-    let logged_in_from = state.gpcm.logged_in_from(report.profile_id);
-    if logged_in_from != Some(peer.ip()) {
+    // is easy to learn, the login's addresses are not.
+    let login = state.gpcm.login_addresses(report.profile_id);
+    if !login.is_some_and(|login| login.contains(peer.ip())) {
+        let logged_in_from = login.map(|login| login.to_string());
         warn!(target: "reports", profile_id = report.profile_id, %peer, ?logged_in_from, "report from elsewhere");
-        let problem = match logged_in_from {
-            Some(address) => format!("logged in from {address}"),
+        let problem = match login {
+            Some(login) => format!("logged in from {login}"),
             None => "not logged in".to_owned(),
         };
         state
@@ -148,7 +152,7 @@ async fn receive_error(
     // Only a profile logged in from where the error came is kept.
     let profile_id = error
         .profile_id
-        .filter(|&id| state.gpcm.logged_in_from(id) == Some(peer.ip()));
+        .filter(|&id| logged_in_at(&state.gpcm, id, peer.ip()));
     let address = peer.ip().to_string();
     match errors::store(&state.pool, &error, profile_id, &address).await {
         Ok(()) => {
@@ -173,6 +177,12 @@ impl ReportsState {
             warn!(target: "reports", %error, "database error");
         }
     }
+}
+
+/// Whether `profile_id` is logged in and `address` is one of its login's.
+fn logged_in_at(gpcm: &Gpcm, profile_id: i32, address: IpAddr) -> bool {
+    gpcm.login_addresses(profile_id)
+        .is_some_and(|login| login.contains(address))
 }
 
 /// The profile a body that is not a report names, if it names one.
@@ -377,6 +387,47 @@ mod tests {
                 (86420, Some("matchmaking"), None, "198.51.100.7"),
             ]
         );
+    }
+
+    /// A network that sends the game's HTTP out by another address than its
+    /// GPCM connection: reports and errors come from where its NAS login did.
+    #[sqlx::test]
+    async fn a_report_counts_from_where_its_nas_login_came_from(pool: PgPool) {
+        const GPCM: [u8; 4] = [12, 75, 123, 129];
+        const NAS: [u8; 4] = [12, 75, 115, 108];
+        let server = Server::new(pool.clone());
+        let anosch = server.log_in(1, "Anosch", GPCM).await;
+        server
+            .gpcm
+            .fake_login_via(anosch, IpAddr::from(GPCM), IpAddr::from(NAS));
+        let mut body = start();
+        body["profile_id"] = json!(anosch);
+
+        assert_eq!(
+            server.report(SAM_HOME, &body).await.0,
+            StatusCode::FORBIDDEN
+        );
+        let (status, answer) = server.report(NAS, &body).await;
+        assert_eq!(status, StatusCode::OK, "{answer}");
+
+        let error = json!({"release": "R4QE", "code": 86420, "profile_id": anosch});
+        let answer = server
+            .post_to("/api/v1/wfc/errors", NAS, error.to_string())
+            .await;
+        assert_eq!(answer, (StatusCode::OK, json!({})));
+        let kept: Option<i32> = sqlx::query_scalar("SELECT profile_id FROM client_errors")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(kept, Some(anosch));
+
+        let refusal: String =
+            sqlx::query_scalar("SELECT problem FROM report_refusals WHERE profile_id = $1")
+                .bind(anosch)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(refusal, "logged in from 12.75.123.129 (NAS 12.75.115.108)");
     }
 
     #[sqlx::test]

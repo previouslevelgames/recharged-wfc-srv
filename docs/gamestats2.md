@@ -396,10 +396,16 @@ the userdata. The keys that make a request "valid" are in every binary. See
   valid;
 - score, wins and losses within the game's clamps.
 
-A put also has to come from the address the pid is logged in to GPCM from
-(`error:pid not logged in from this address` otherwise): the game sends its
-puts while it is logged in, and a pid is easy to learn, from a friend code or
-the server browser. Gets stay open: the leaderboards are public.
+A put also has to come from the pid's login (`error:pid not logged in from
+this address` otherwise): from the address its GPCM connection came from, or
+from the address of the NAS login whose token GPCM accepted. The game sends
+its puts while it is logged in, and a pid is easy to learn, from a friend
+code or the server browser. Most games use one address for both; some
+networks (a carrier's NAT, a provider's web proxy) send the game's HTTP, NAS
+and gamestats2 alike, out by another address than its GPCM connection. The
+NAS address is signed into the token ([login.md](login.md#nas-post-ac)), so
+only the login's own game brings it. Gets stay open: the leaderboards are
+public.
 
 Real trust comes later: work scores out from the match results both players'
 games report ([reports.md](reports.md)). Until then a modified game can still

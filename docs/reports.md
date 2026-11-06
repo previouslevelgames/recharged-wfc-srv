@@ -15,7 +15,7 @@ from what both saw. `/admin` shows the matches and each player's record
 already reaches for NAS and gamestats2 (TCP 80; `PORT` in the container). The
 port sends it to the address in its `[online] server`, so the route answers
 for any host name, e.g. `Host: 2.31.48.136`. A game behind NAT reports from
-the public address it logged in to GPCM from.
+the public address of its login ([Trust](#trust)).
 
 ```json
 {
@@ -99,8 +99,8 @@ closed without a logout: the game was closed or crashed), `lost` (it broke
 off) or `replaced` (another login of the profile took over). A connection
 that goes silent is not noticed until TCP gives up on it. Refused reports are
 counted by profile with the last problem and address (`report_refusals`):
-those from another address than the profile's login, and invalid ones from
-its login's address. A match that shows no reports from a Recharged side is
+those from another address than the profile's login's, and invalid ones from
+its login's addresses. A match that shows no reports from a Recharged side is
 often explained there.
 
 ## Errors
@@ -122,8 +122,8 @@ game showed its player.
 | `profile_id` | optional: the WFC profile, when the game has one |
 
 Errors come before a login, or without one, so anyone may send them: the
-server keeps the profile only when it is logged in from the address the error
-came from, takes 30 errors per address every 10 minutes (then answers 429),
+server keeps the profile only when the error came from its login's address
+([Trust](#trust)), takes 30 errors per address every 10 minutes (then answers 429),
 and keeps 30 days of them (`client_errors`).
 
 | Status | Body | |
@@ -137,8 +137,11 @@ A server from before 1.0.8 answers 404: the game drops the error.
 ## Trust
 
 As for gamestats2's puts ([gamestats2.md](gamestats2.md#trust)), a report
-counts only from the address its `profile_id` is logged in to GPCM from: the
-game reports while it is online, and a profile id is easy to learn. The rest
+counts only from its `profile_id`'s login: the address its GPCM connection
+came from, or the address of the NAS login whose token GPCM accepted (some
+networks send the game's HTTP out by another address than its GPCM
+connection). The game reports while it is online, and a profile id is easy
+to learn. The rest
 is the game's word. A result two games agree on is what the server keeps; a
 game they saw differently stays disputed.
 

@@ -192,8 +192,9 @@ async fn process(
 
     let payload = match op {
         Op::Put => {
-            let logged_in_from = state.gpcm.logged_in_from(pid);
-            if logged_in_from != Some(peer) {
+            let login = state.gpcm.login_addresses(pid);
+            if !login.is_some_and(|login| login.contains(peer)) {
+                let logged_in_from = login.map(|login| login.to_string());
                 warn!(target: "gamestats", pid, %peer, ?logged_in_from, "put from elsewhere");
                 return Err(GamestatsError::NotLoggedIn);
             }
@@ -218,7 +219,8 @@ pub enum GamestatsError {
     BadHash,
     /// The pid inside `data` differs from the one in the query.
     PidMismatch,
-    /// A put for a pid that is not logged in to GPCM from the same address.
+    /// A put for a pid that is not logged in from this address: neither its
+    /// GPCM connection's nor its NAS login's.
     NotLoggedIn,
     /// `data` Base64 is malformed or invalid,
     BadData,

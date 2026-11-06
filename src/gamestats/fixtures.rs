@@ -146,6 +146,35 @@ async fn a_put_counts_only_from_where_its_pid_is_logged_in(pool: sqlx::PgPool) {
     assert_eq!(season_top(&state).await, [(1, P4, 28)]);
 }
 
+/// A network that sends the game's HTTP out by another address than its
+/// GPCM connection: the put comes from where the NAS login came from.
+#[sqlx::test]
+async fn a_put_counts_from_where_its_nas_login_came_from(pool: sqlx::PgPool) {
+    let state = GamestatsState::with_pool(pool);
+    let (gpcm, nas, elsewhere) = (
+        IpAddr::from([12, 75, 123, 129]),
+        IpAddr::from([12, 75, 115, 108]),
+        IpAddr::from([12, 75, 115, 109]),
+    );
+    let put = |from: IpAddr| {
+        let params = Params {
+            pid: Some(P4.to_string()),
+            hash: Some(token_hash(&state.tokens.issue(P4))),
+            data: Some(PUT_P4_SEASON.to_owned()),
+        };
+        process(&state, Op::Put, from, Ok(Query(params)))
+    };
+
+    state.gpcm.fake_login_via(P4, gpcm, nas);
+    assert!(matches!(
+        put(elsewhere).await,
+        Err(GamestatsError::NotLoggedIn)
+    ));
+    assert!(put(nas).await.is_ok());
+    assert!(put(gpcm).await.is_ok());
+    assert_eq!(season_top(&state).await, [(1, P4, 28)]);
+}
+
 /// `(order, pid, score)` of each row of the season's top list.
 async fn season_top(state: &GamestatsState) -> Vec<(u32, i32, i32)> {
     let (pid, body) = decode_data(GET_P3_SEASON_TOP).unwrap();

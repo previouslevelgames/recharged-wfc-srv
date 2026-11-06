@@ -10,11 +10,11 @@
 mod base64;
 mod ticket;
 
-use std::{collections::BTreeMap, collections::HashMap, sync::Arc};
+use std::{collections::BTreeMap, collections::HashMap, net::SocketAddr, sync::Arc};
 
 use axum::{
     Form, Router,
-    extract::State,
+    extract::{ConnectInfo, State},
     http::{StatusCode, header},
     response::{IntoResponse, Response},
     routing::post,
@@ -36,6 +36,8 @@ struct NasState {
     tickets: Arc<Tickets>,
 }
 
+/// The routes. A login keeps the caller's address in its token: serve them
+/// with `into_make_service_with_connect_info::<SocketAddr>()`.
 pub fn router(pool: PgPool, tickets: Arc<Tickets>) -> Router {
     Router::new()
         .route("/ac", post(account))
@@ -52,6 +54,7 @@ mod returncd {
 
 async fn account(
     State(state): State<NasState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Form(form): Form<Vec<(String, String)>>,
 ) -> Response {
     let fields = decode(form);
@@ -62,7 +65,7 @@ async fn account(
 
     let reply = match action.as_deref() {
         Some("acctcreate") => register(&state).await,
-        Some("login") => login(&state, &fields).await,
+        Some("login") => login(&state, &fields, peer).await,
         // `svcloc` and the rest: the game never asks for them.
         _ => {
             warn!(target: "nas", ?action, "unsupported action");
@@ -101,7 +104,11 @@ async fn register(state: &NasState) -> Result<Reply, sqlx::Error> {
 }
 
 /// `login`: a token and a challenge for GPCM.
-async fn login(state: &NasState, fields: &HashMap<String, Vec<u8>>) -> Result<Reply, sqlx::Error> {
+async fn login(
+    state: &NasState,
+    fields: &HashMap<String, Vec<u8>>,
+    peer: SocketAddr,
+) -> Result<Reply, sqlx::Error> {
     let Some(login) = LoginFields::parse(fields) else {
         warn!(target: "nas", fields = ?fields.keys().collect::<Vec<_>>(), "bad login");
         return Ok(Reply::new(returncd::BAD_REQUEST));
@@ -114,8 +121,9 @@ async fn login(state: &NasState, fields: &HashMap<String, Vec<u8>>) -> Result<Re
             .map(|_| char::from(rand::random_range(b'A'..=b'Z')))
             .collect(),
         ingamesn: login.ingamesn,
+        address: peer.ip(),
     };
-    info!(target: "nas", user_id = ticket.user_id, gsbrcd = %ticket.gsbrcd, ingamesn = ?ticket.ingamesn, "logged in");
+    info!(target: "nas", user_id = ticket.user_id, gsbrcd = %ticket.gsbrcd, ingamesn = ?ticket.ingamesn, peer = %peer.ip(), "logged in");
     Ok(Reply::new(returncd::LOGGED_IN)
         .with("challenge", ticket.challenge.clone())
         .with("locator", LOCATOR.into())
