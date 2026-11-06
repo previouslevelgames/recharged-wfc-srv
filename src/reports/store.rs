@@ -106,7 +106,7 @@ pub async fn record(pool: &PgPool, report: &Report, body: &str) -> Result<Record
         }
     }
     // Sidekicks a later report knows, when the earlier ones did not; the
-    // build the last report named.
+    // build and the operating system the last report named.
     let sidekicks = report.sidekicks.map(|names| {
         names
             .iter()
@@ -118,13 +118,15 @@ pub async fn record(pool: &PgPool, report: &Report, body: &str) -> Result<Record
          SET last_report_at = now(),
              home_sidekicks = CASE WHEN cardinality($3::text[]) > 0 THEN $3 ELSE home_sidekicks END,
              away_sidekicks = CASE WHEN cardinality($4::text[]) > 0 THEN $4 ELSE away_sidekicks END,
-             build = coalesce($5, build)
+             build = coalesce($5, build),
+             os = coalesce($6, os)
          WHERE match_id = $1 AND side = $2",
         match_id,
         side.as_str(),
         &sidekicks.home,
         &sidekicks.away,
         report.build,
+        report.os,
     )
     .execute(&mut *tx)
     .await?;
@@ -368,7 +370,7 @@ pub async fn sides(
 ) -> Result<HashMap<i64, Teams<Option<Reporter>>>, sqlx::Error> {
     let rows = sqlx::query!(
         "SELECT match_id, side, profile_id, series, mii, opponent_mii, home_captain,
-                away_captain, home_sidekicks, away_sidekicks, reason, cause, build, left_at,
+                away_captain, home_sidekicks, away_sidekicks, reason, cause, build, os, left_at,
                 left_how, opened_at, last_report_at, ended_at
          FROM online_match_sides
          WHERE match_id = ANY($1)",
@@ -437,6 +439,7 @@ pub async fn sides(
             reason: row.reason,
             cause: row.cause,
             build: row.build,
+            os: row.os,
             left_at: row.left_at,
             left_how: row.left_how,
             opened_at: row.opened_at,
@@ -558,6 +561,7 @@ mod tests {
         let pair = Pair::new(&pool).await;
         let mut start = pair.anosch();
         start["build"] = json!("1.4.2 (abc1234)");
+        start["os"] = json!("macOS 26.3.1, arm64");
         let opened = send(&pool, &start).await;
         let mut desync = game(pair.anosch(), 1, 0, 0);
         desync["game"]["ending"] = json!("desync");
@@ -573,6 +577,11 @@ mod tests {
             .clone()
             .unwrap();
         assert_eq!(anosch.build.as_deref(), Some("1.4.2 (abc1234)"));
+        assert_eq!(
+            anosch.os.as_deref(),
+            Some("macOS 26.3.1, arm64"),
+            "later reports without it keep it"
+        );
         assert_eq!(
             (anosch.reason.as_deref(), anosch.cause.as_deref()),
             (Some("abandoned"), Some("desync"))

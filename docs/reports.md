@@ -49,7 +49,7 @@ the public address of its login ([Trust](#trust)).
 | `sidekicks` | per team, up to three sidekicks in the game's order (`eSidekickID`): `toad`, `koopa`, `hammer_bro`, `birdo`, `boo`, `dry_bones`, `monty_mole`, `shy_guy`; fewer or none when the game does not know them. May be left out |
 | `game` | for `event: "game"` only, below; `null` or left out otherwise |
 | `reason` | for `event: "end"` only: `decided` (a side won the series) or `abandoned` (it stopped before: a disconnect, or a return to the menus); `null` or left out otherwise |
-| `build`, `cause` | optional, see [Diagnostics](#diagnostics) |
+| `build`, `os`, `cause` | optional, see [Diagnostics](#diagnostics) |
 
 A game:
 
@@ -88,6 +88,7 @@ without refusing the report:
 | Field | |
 |---|---|
 | `build` | any report: the port's build, e.g. `1.1.0+g0123456789ab`; up to 64 printable characters |
+| `os` | any report: the operating system and CPU the game runs on, e.g. `Windows 11 (26100), x86_64`, `macOS 26.3.1, arm64`, `Linux (SteamOS), x86_64`, `Windows 10 (19045), x86_64, Wine 9.0 on Linux`; up to 64 printable characters. The match page shows it under the build |
 | `cause` | an end: why the series ended. `decided`; `desync` (out of sync); `disconnect` (the connection was lost); `offline` (the game's online session ended without a result: a disc error, the HOME menu; a network match has no pause menu) |
 | `game.sync` | a game that ended in `desync`: `{"check": "checksum", "frame": 4812}`, the first of the game's checks that failed (`frame`, `checksum` or `seed`: both machines on the same frame, with the same state checksum and random seed) and on which frame |
 

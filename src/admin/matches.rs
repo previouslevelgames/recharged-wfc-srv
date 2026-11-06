@@ -109,6 +109,8 @@ struct ReporterView {
     cause: Option<String>,
     /// The build that reported, when it said.
     build: Option<String>,
+    /// The operating system it ran on, when it said.
+    os: Option<String>,
     /// When its game left WFC before its end, and how.
     #[serde(with = "time::serde::rfc3339::option")]
     left_at: Option<OffsetDateTime>,
@@ -262,6 +264,7 @@ pub async fn detail(pool: &PgPool, match_id: i64) -> Result<Option<Detail>, sqlx
                     reason: reporter.reason.clone(),
                     cause: reporter.cause.clone(),
                     build: reporter.build.clone(),
+                    os: reporter.os.clone(),
                     left_at: reporter.left_at,
                     left_how: reporter.left_how.clone(),
                     opened_at: reporter.opened_at,
