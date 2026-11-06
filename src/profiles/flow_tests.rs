@@ -1,9 +1,17 @@
 //! A test match from the challenge to the result, as two launchers and their
 //! games go through it (docs/profiles.md), with GPCM's logins faked. The
-//! games log in to the profile service's node, and some tests run again
-//! with them on another node of its pool (docs/nodes.md).
+//! games log in to the profile service's node, and some tests run again in
+//! a pool of two nodes (docs/nodes.md): the requests take turns between the
+//! nodes' profile services, as behind a proxy that sends each to any node,
+//! and the games log in to the second node.
 
-use std::{net::IpAddr, sync::Arc};
+use std::{
+    net::IpAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use axum::{
     Router,
@@ -25,9 +33,10 @@ use crate::{
 };
 
 struct World {
-    app: Router,
-    /// Where the games log in to WFC: the profile service's node, or another
-    /// one of its pool.
+    /// Each node's profile service. The requests take turns.
+    apps: Vec<Router>,
+    turn: AtomicUsize,
+    /// Where the games log in to WFC: the last node.
     games: Arc<Gpcm>,
     pairings: Arc<Pairings>,
     pool: PgPool,
@@ -37,25 +46,35 @@ impl World {
     /// The profile service and the games on one server.
     fn new(pool: PgPool) -> Self {
         let gpcm = gpcm(&pool, Arc::default());
-        Self::with(pool, gpcm.clone(), gpcm)
+        Self::with(pool, vec![gpcm])
     }
 
-    /// The profile service on one node of a pool, the games logged in to
-    /// another.
+    /// A pool of two nodes: the requests take turns between them, and the
+    /// games log in to the second.
     async fn across(pool: PgPool) -> Self {
-        let http = gpcm(&pool, joined(&pool, "srv-1").await);
-        let games = gpcm(&pool, joined(&pool, "srv-2").await);
-        Self::with(pool, http, games)
+        let first = gpcm(&pool, joined(&pool, "srv-1").await);
+        let second = gpcm(&pool, joined(&pool, "srv-2").await);
+        Self::with(pool, vec![first, second])
     }
 
-    fn with(pool: PgPool, http: Arc<Gpcm>, games: Arc<Gpcm>) -> Self {
-        let pairings = Arc::<Pairings>::default();
+    fn with(pool: PgPool, nodes: Vec<Arc<Gpcm>>) -> Self {
         let config = Config::new("http://127.0.0.1:8080", None, true).unwrap();
-        let app = router(pool.clone(), http, pairings.clone(), config);
+        let pairings: Vec<Arc<Pairings>> = nodes
+            .iter()
+            .map(|_| Arc::new(Pairings::new(pool.clone())))
+            .collect();
+        let apps = nodes
+            .iter()
+            .zip(&pairings)
+            .map(|(gpcm, pairings)| {
+                router(pool.clone(), gpcm.clone(), pairings.clone(), config.clone())
+            })
+            .collect();
         Self {
-            app,
-            games,
-            pairings,
+            apps,
+            turn: AtomicUsize::new(0),
+            games: nodes.last().unwrap().clone(),
+            pairings: pairings[0].clone(),
             pool,
         }
     }
@@ -114,8 +133,7 @@ impl World {
         } else {
             Body::from(body.to_string())
         };
-        let response = self
-            .app
+        let response = self.apps[self.turn.fetch_add(1, Ordering::Relaxed) % self.apps.len()]
             .clone()
             .oneshot(request.body(body).unwrap())
             .await
@@ -322,7 +340,10 @@ async fn test_match(world: World) {
         )
         .await;
     assert_eq!(answer["paired"], false);
-    assert_eq!(world.pairings.visible_to(mario_pid), Visible::Nobody);
+    assert_eq!(
+        world.pairings.visible_to(mario_pid).await.unwrap(),
+        Visible::Nobody
+    );
     let (_, answer) = world
         .send(
             "POST",
@@ -333,7 +354,7 @@ async fn test_match(world: World) {
         .await;
     assert_eq!(answer["paired"], true);
     assert_eq!(
-        world.pairings.visible_to(mario_pid),
+        world.pairings.visible_to(mario_pid).await.unwrap(),
         Visible::Only(bowser_pid)
     );
 
@@ -371,7 +392,10 @@ async fn test_match(world: World) {
     assert_eq!(settled["state"], "finished");
     assert_eq!(settled["winner"], "opponent");
     assert_eq!(settled["games"][0]["my_score"], 1);
-    assert_eq!(world.pairings.visible_to(mario_pid), Visible::Everyone);
+    assert_eq!(
+        world.pairings.visible_to(mario_pid).await.unwrap(),
+        Visible::Everyone
+    );
 
     let (_, current) = world
         .send("GET", "/api/v1/matches/current", &mario, Value::Null)

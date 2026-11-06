@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE pairings SET ready_at = now(), game = $4\n             WHERE match_id = $1 AND side = $2 AND profile_id = $3 AND replaced",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int2",
+        "Int4",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "44e108cde386cf0faef508d1cc58b1b049ad0c7e0c760635834888fc98c536cb"
+}

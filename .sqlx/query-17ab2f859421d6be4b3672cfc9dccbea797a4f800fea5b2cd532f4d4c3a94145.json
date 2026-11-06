@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO pairings (match_id, side, profile_id, game) VALUES ($1, $2, $3, $4)\n             ON CONFLICT (match_id, side, profile_id) DO UPDATE\n             SET game = EXCLUDED.game, ready_at = now(), replaced = false",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int2",
+        "Int4",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "17ab2f859421d6be4b3672cfc9dccbea797a4f800fea5b2cd532f4d4c3a94145"
+}

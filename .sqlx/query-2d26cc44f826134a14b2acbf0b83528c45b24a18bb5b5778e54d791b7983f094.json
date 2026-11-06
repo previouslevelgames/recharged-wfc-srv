@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM pairings\n             WHERE match_id = $1 AND side = $2 AND replaced\n               AND ready_at <= now() - make_interval(secs => $3)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int2",
+        "Float8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "2d26cc44f826134a14b2acbf0b83528c45b24a18bb5b5778e54d791b7983f094"
+}

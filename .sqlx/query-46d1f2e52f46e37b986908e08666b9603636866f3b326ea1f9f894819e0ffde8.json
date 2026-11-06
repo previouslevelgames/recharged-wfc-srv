@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT DISTINCT profile_id FROM pairings\n             WHERE profile_id = ANY($1) AND ready_at > now() - make_interval(secs => $2)",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "profile_id",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "pairings",
+            "name": "profile_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4Array",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "46d1f2e52f46e37b986908e08666b9603636866f3b326ea1f9f894819e0ffde8"
+}

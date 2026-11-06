@@ -106,7 +106,7 @@ pub async fn put(state: &GamestatsState, pid: i32, body: &[u8]) -> Result<Vec<u8
 /// player's set is playing or ended less than [`SET_ENDED_SECS`] ago (the
 /// result's put comes right after the match).
 async fn in_a_set(state: &GamestatsState, pid: i32) -> Result<bool, sqlx::Error> {
-    if state.pairings.kept(pid) {
+    if state.pairings.kept(pid).await? {
         return Ok(true);
     }
     sqlx::query_scalar!(
@@ -1002,7 +1002,7 @@ mod tests {
         put(&state, mario, &put_body(1, 120, 0xbb)).await.unwrap();
         assert_eq!(score().await, Some(120));
         // A game kept for a set (ready for it in RANKED) is the set's too.
-        state.pairings.ready(99, 0, mario, "R4QE");
+        state.pairings.ready(99, 0, mario, "R4QE").await.unwrap();
         put(&state, mario, &put_body(1, 200, 0xcc)).await.unwrap();
         assert_eq!(score().await, Some(120));
     }

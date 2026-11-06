@@ -258,7 +258,7 @@ pub async fn timeline(
             go_at: set.go_at,
             playing_at: set.playing_at,
         },
-        pairing: pairings.view(id),
+        pairing: pairings.view(id).await?,
         sides,
         reports,
         events,

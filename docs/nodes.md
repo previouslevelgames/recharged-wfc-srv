@@ -5,8 +5,8 @@
 player, profile, score and match, but each server knows only its own players
 online, so all of the game's traffic goes to one of them. Built of phase 1 so
 far: the nodes' names and leases (with their players and games), the NAS
-login tokens' shared key, and the GPCM logins' rows, by which the HTTP of any
-node finds a game's login on another.
+login tokens' shared key, the GPCM logins' rows, by which the HTTP of any
+node finds a game's login on another, and the RANKED pairings.
 
 The goal, with two or more server containers, the **nodes**:
 
@@ -129,7 +129,7 @@ already. This needs phase 1 below, as `/api/v1` asks after GPCM logins.
 | `/admin` sessions, armed merges and deletes | `admin/session.rs`, `admin/maintenance.rs` | Tables | 1 |
 | Sign-ins waiting for their browser | `profiles/sign_in.rs` | A table | 1 |
 | Rate-limit windows | `profiles/mii_sign_in.rs`, `reports/errors.rs` | Stay per node: a limit holds per node | 1 |
-| RANKED pairings | `pairing.rs` | A table, each ready game with its time (`READY_TTL`) | 1 |
+| RANKED pairings | `pairing.rs` | `pairings`: each ready game by set and side, with its time by the database's clock (`READY_TTL`) and whether another game of its player replaced it. One ready call of a set at a time (an advisory lock); every node's server browser lists by them | 1, built |
 | Matchmaking activity for `/admin` | `activity.rs` | A table, the latest 1000 events | 1 |
 | GPCM logins, for the HTTP side | `gpcm/mod.rs`: the sessions | `logins` (`gpcm/logins.rs`): a row per login and node with the connection, addresses, the login ticket's hash, DWC status and since when, matchmaking, room, friend counts and `off_boards`. Each node writes its rows after each change, a login's before GPCM answers it; the rows go with its lease. Lookups (a login ticket, a request's address, presence, off the boards) take the node's own sessions first, then the rows of the other live nodes. A node without a lease writes and reads none | 1, built |
 | Players online now, Overview | each node counts its own | Overview, Players and Monitoring's figure of now count the pool's logins (the rows); the minute samples and the lease's counters stay each node's own, and Monitoring adds the samples up | 1, built |

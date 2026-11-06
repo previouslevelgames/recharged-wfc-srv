@@ -83,7 +83,8 @@ impl GamestatsState {
     /// With a GPCM of its own, which nobody is logged in to yet.
     fn with_pool(pool: sqlx::PgPool) -> Self {
         let gpcm = Gpcm::new(pool.clone(), Arc::default(), Arc::default(), Arc::default());
-        Self::new(pool, Arc::new(gpcm), Arc::default())
+        let pairings = Arc::new(Pairings::new(pool.clone()));
+        Self::new(pool, Arc::new(gpcm), pairings)
     }
 
     /// For tests that never touch the database: the pool connects on the first

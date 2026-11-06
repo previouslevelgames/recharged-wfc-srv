@@ -82,7 +82,7 @@ impl App {
             )),
             master: Arc::default(),
             activity,
-            pairings: Arc::default(),
+            pairings: Arc::new(pairing::Pairings::new(pool.clone())),
             node,
             pool,
             tickets,

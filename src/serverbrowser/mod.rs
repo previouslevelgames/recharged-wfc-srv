@@ -22,7 +22,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
 };
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, warn};
 
 use crate::{
     activity::{Activity, Via},
@@ -106,7 +106,7 @@ async fn connection(
             }
             let request: Vec<u8> = buffer.drain(..len).collect();
             trace!(target: "raw::serverbrowser", %peer, ?request, "request");
-            if let Some(reply) = answer(&master, &activity, &pairings, &request, peer) {
+            if let Some(reply) = answer(&master, &activity, &pairings, &request, peer).await {
                 stream.write_all(&reply).await?;
             }
         }
@@ -116,7 +116,7 @@ async fn connection(
     }
 }
 
-fn answer(
+async fn answer(
     master: &Arc<Master>,
     activity: &Arc<Activity>,
     pairings: &Pairings,
@@ -131,7 +131,7 @@ fn answer(
             let steering = match searcher {
                 // A lookup of one host: a friend's, kept or not.
                 None => Steering::None,
-                Some(profile_id) => Steering::search(pairings, profile_id, &sessions),
+                Some(profile_id) => Steering::search(pairings, profile_id, &sessions).await,
             };
             let (reply, found) = list.reply(&sessions, peer, &steering)?;
             if let Some(profile_id) = searcher {
@@ -243,13 +243,33 @@ enum Steering {
 }
 
 impl Steering {
-    fn search(
+    /// A search by `searcher`. Without the database it lists nothing: a
+    /// game kept for a match must not meet anybody else.
+    async fn search(
         pairings: &Pairings,
         searcher: Option<i32>,
         sessions: &[(SocketAddr, Session)],
     ) -> Self {
+        match Self::steer(pairings, searcher, sessions).await {
+            Ok(steering) => steering,
+            Err(error) => {
+                warn!(target: "serverbrowser", ?searcher, %error, "database error: listing nothing");
+                Self::Nothing
+            }
+        }
+    }
+
+    async fn steer(
+        pairings: &Pairings,
+        searcher: Option<i32>,
+        sessions: &[(SocketAddr, Session)],
+    ) -> Result<Self, sqlx::Error> {
         let profile = |session: &Session| session.field("dwc_pid")?.parse::<i32>().ok();
-        match searcher.map(|profile_id| pairings.visible_to(profile_id)) {
+        let visible = match searcher {
+            Some(profile_id) => Some(pairings.visible_to(profile_id).await?),
+            None => None,
+        };
+        Ok(match visible {
             Some(Visible::Only(opponent)) => Self::Only {
                 opponent,
                 // The searcher's own region group, from its heartbeat.
@@ -260,14 +280,14 @@ impl Steering {
                     .map(str::to_owned),
             },
             Some(Visible::Nobody) => Self::Nothing,
-            Some(Visible::Everyone) | None => Self::Unkept(
-                sessions
+            Some(Visible::Everyone) | None => {
+                let listed: Vec<i32> = sessions
                     .iter()
                     .filter_map(|(_, session)| profile(session))
-                    .filter(|&profile_id| pairings.kept(profile_id))
-                    .collect(),
-            ),
-        }
+                    .collect();
+                Self::Unkept(pairings.kept_of(&listed).await?.into_iter().collect())
+            }
+        })
     }
 }
 
@@ -549,8 +569,8 @@ mod tests {
         out
     }
 
-    #[test]
-    fn games_kept_for_a_match_see_only_each_other() {
+    #[sqlx::test]
+    async fn games_kept_for_a_match_see_only_each_other(pool: sqlx::PgPool) {
         let master = Master::default();
         // Player 2 searching, as captured; player 3 searching in the same
         // region group; player 1 searching in another one.
@@ -566,7 +586,8 @@ mod tests {
         );
         master.answer(&own, player_1);
         let sessions = master.sessions();
-        let found = |profile_id: i32, pairings: &Pairings| -> Vec<SocketAddr> {
+        let pairings = Pairings::new(pool);
+        let found = async |profile_id: i32| -> Vec<SocketAddr> {
             let region = if profile_id == 1000000000 {
                 "CO = 2"
             } else {
@@ -578,7 +599,7 @@ mod tests {
                     .replace("CO = 0", region),
                 ..ListRequest::parse(LOOKUP).unwrap()
             };
-            let steering = Steering::search(pairings, Some(profile_id), &sessions);
+            let steering = Steering::search(&pairings, Some(profile_id), &sessions).await;
             let mut found: Vec<SocketAddr> = request
                 .matches(&sessions, &steering)
                 .into_iter()
@@ -589,25 +610,24 @@ mod tests {
         };
 
         // Without matches, the region groups keep them apart.
-        let pairings = Pairings::default();
-        assert!(found(1000000000, &pairings).is_empty());
-        assert_eq!(found(1000000002, &pairings), [player_2]);
+        assert!(found(1000000000).await.is_empty());
+        assert_eq!(found(1000000002).await, [player_2]);
 
         // Player 2 is ready for a match whose other game is not: nobody
         // finds it, and it finds nobody.
-        pairings.ready(7, 0, 1000000001, "R4QE");
-        assert!(found(1000000002, &pairings).is_empty());
-        assert!(found(1000000001, &pairings).is_empty());
+        pairings.ready(7, 0, 1000000001, "R4QE").await.unwrap();
+        assert!(found(1000000002).await.is_empty());
+        assert!(found(1000000001).await.is_empty());
 
         // Player 1, its opponent, is ready too: they find each other across
         // the region groups, and player 3 still finds neither.
-        pairings.ready(7, 1, 1000000000, "R4QE");
-        assert_eq!(found(1000000000, &pairings), [player_2]);
-        assert_eq!(found(1000000001, &pairings), [player_1]);
-        assert!(found(1000000002, &pairings).is_empty());
+        pairings.ready(7, 1, 1000000000, "R4QE").await.unwrap();
+        assert_eq!(found(1000000000).await, [player_2]);
+        assert_eq!(found(1000000001).await, [player_1]);
+        assert!(found(1000000002).await.is_empty());
 
-        pairings.end(7);
-        assert_eq!(found(1000000002, &pairings), [player_2]);
+        pairings.end(7).await.unwrap();
+        assert_eq!(found(1000000002).await, [player_2]);
     }
 
     #[test]

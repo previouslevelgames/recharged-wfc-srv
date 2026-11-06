@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM pairings WHERE match_id = $1 AND side = $2 AND NOT replaced",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c884ac82df4da9e2a0d166cc9f9dacedfc0b6a7ea651fd4c416b1ae963aa2d4f"
+}

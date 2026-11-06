@@ -1,0 +1,60 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT side, profile_id, game,\n                  ready_at > now() - make_interval(secs => $2) AS \"live!\"\n           FROM pairings WHERE match_id = $1 AND NOT replaced",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "side",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "pairings",
+            "name": "side"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "profile_id",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "pairings",
+            "name": "profile_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "game",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "pairings",
+            "name": "game"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "live!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      null
+    ]
+  },
+  "hash": "f8af01037050b6a01435c81a9f81780bd264e4b94fcc8bcece5f9f35d2497395"
+}

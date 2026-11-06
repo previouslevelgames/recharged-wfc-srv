@@ -13,7 +13,7 @@ use axum::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use time::OffsetDateTime;
-use tracing::info;
+use tracing::{info, warn};
 
 use super::{
     ProfilesState, chat, database_error, friends, json_error,
@@ -231,7 +231,7 @@ pub(super) async fn search_stop(
     match search::stop(&state.pool, player.id).await {
         Ok(withdrawn) => {
             if let Some(match_id) = withdrawn {
-                state.pairings.end(match_id);
+                state.end_pairing(match_id).await;
             }
             StatusCode::NO_CONTENT.into_response()
         }
@@ -723,7 +723,7 @@ async fn answer(
         Ok(Ok(found)) => {
             info!(target: "profiles", match_id = id, state = found.state, "answered");
             if !accept {
-                state.pairings.end(id);
+                state.end_pairing(id).await;
             }
             state.respond(StatusCode::OK, &found, &player).await
         }
@@ -744,7 +744,7 @@ pub(super) async fn cancel(
     match matches::cancel(&state.pool, id, player.id).await {
         Ok(Ok(found)) => {
             info!(target: "profiles", match_id = id, player_id = player.id, "cancelled");
-            state.pairings.end(id);
+            state.end_pairing(id).await;
             state.respond(StatusCode::OK, &found, &player).await
         }
         Ok(Err(refusal)) => refused(refusal),
@@ -779,8 +779,9 @@ pub(super) async fn ready_to_play(
             // a moment ago, must not pair the set with the opponent's.
             if !request.ready
                 && let Some(side) = found.side(player.id)
+                && let Err(error) = state.pairings.unready(id, side).await
             {
-                state.pairings.unready(id, side);
+                return database_error(error);
             }
             state.respond(StatusCode::OK, &found, &player).await
         }
@@ -869,9 +870,14 @@ pub(super) async fn ready(
         Ok(false) => return json_error(StatusCode::CONFLICT, "that WFC profile is not online"),
         Err(error) => return database_error(error),
     }
-    let pairing = state
+    let pairing = match state
         .pairings
-        .ready(found.id, side, profile.profile_id, &profile.game);
+        .ready(found.id, side, profile.profile_id, &profile.game)
+        .await
+    {
+        Ok(pairing) => pairing,
+        Err(error) => return database_error(error),
+    };
     // Another game of the player's took the set: this one leaves it.
     if pairing != Pairing::Replaced
         && let Err(error) =
@@ -907,7 +913,7 @@ pub(super) async fn report(
         Ok(Ok(found)) => {
             info!(target: "profiles", match_id = id, player_id = player.id, state = found.state, "reported");
             if !found.is_open() {
-                state.pairings.end(id);
+                state.end_pairing(id).await;
             }
             state.respond(StatusCode::OK, &found, &player).await
         }
@@ -921,7 +927,7 @@ impl ProfilesState {
     /// pairings.
     async fn sweep(&self) -> Result<(), Response> {
         for match_id in matches::sweep(&self.pool).await.map_err(database_error)? {
-            self.pairings.end(match_id);
+            self.end_pairing(match_id).await;
         }
         // Searches ask their next player.
         let busy = self.busy_profiles().await.map_err(database_error)?;
@@ -929,6 +935,15 @@ impl ProfilesState {
             .await
             .map_err(database_error)?;
         Ok(())
+    }
+
+    /// The match `match_id` ended: its games are no longer kept. A failure
+    /// is logged: the games' readiness runs out by itself, as an ended match
+    /// takes no more ready calls.
+    async fn end_pairing(&self, match_id: i64) {
+        if let Err(error) = self.pairings.end(match_id).await {
+            warn!(target: "profiles", match_id, %error, "games of an ended match still kept");
+        }
     }
 
     /// The WFC profiles in the game's own online matchmaking or match now
@@ -958,6 +973,7 @@ impl ProfilesState {
         let opponent_wfc = players::wfc_profiles(&self.pool, opponent_id).await?;
         let opponent_online = players::is_online(&self.pool, opponent_id).await?;
         let reported = matches::reported(&self.pool, found.id, player.id).await?;
+        let paired = self.pairings.pairing(found.id).await? == Pairing::Paired;
         let ended = matches!(found.state.as_str(), "finished" | "disputed");
         let games = if ended {
             matches::games(&self.pool, found.id, player.id).await?
@@ -991,7 +1007,7 @@ impl ProfilesState {
             "rule_set": found.rule_set,
             "rules": found.rules,
             "rules_hash": found.rules_hash,
-            "paired": self.pairings.pairing(found.id) == Pairing::Paired,
+            "paired": paired,
             "reported": reported,
             "winner": winner,
             "games": games,

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM pairings p WHERE NOT EXISTS (\n                 SELECT 1 FROM pairings q\n                 WHERE q.match_id = p.match_id AND q.ready_at > now() - make_interval(secs => $1))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Float8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "319e628ce6bed9a767d1a10ba2105d7a3a16967dc10c0f8903072d1438c98ba8"
+}

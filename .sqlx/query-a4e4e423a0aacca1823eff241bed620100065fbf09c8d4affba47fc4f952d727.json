@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM pairings WHERE profile_id = $1 AND match_id <> $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a4e4e423a0aacca1823eff241bed620100065fbf09c8d4affba47fc4f952d727"
+}

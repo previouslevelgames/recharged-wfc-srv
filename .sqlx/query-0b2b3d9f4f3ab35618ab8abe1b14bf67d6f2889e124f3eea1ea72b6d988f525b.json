@@ -1,0 +1,79 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT side, profile_id, game, replaced,\n                      EXTRACT(EPOCH FROM now() - ready_at)::FLOAT8 AS \"secs_ago!\",\n                      ready_at > now() - make_interval(secs => $2) AS \"live!\"\n               FROM pairings WHERE match_id = $1 ORDER BY ready_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "side",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "pairings",
+            "name": "side"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "profile_id",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "pairings",
+            "name": "profile_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "game",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "pairings",
+            "name": "game"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "replaced",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "pairings",
+            "name": "replaced"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "secs_ago!",
+        "type_info": "Float8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "live!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "0b2b3d9f4f3ab35618ab8abe1b14bf67d6f2889e124f3eea1ea72b6d988f525b"
+}
