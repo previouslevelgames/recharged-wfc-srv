@@ -37,7 +37,7 @@ use axum::{
     routing::get,
 };
 use serde::Deserialize;
-use tracing::{info, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::{GAME_NAME, gpcm::Gpcm, pairing::Pairings};
 use leaderboard::Leaderboard;
@@ -151,6 +151,11 @@ async fn handle(
             trace!(target: "raw::gamestats", ?op, reply = %hex(&body), "reply");
             body.into_response()
         }
+        // A flood's refusals: the token store logs once when it begins.
+        Err(error @ (GamestatsError::TooMany | GamestatsError::Full)) => {
+            debug!(target: "gamestats", ?op, pid, peer = %peer.ip(), %error, "request refused");
+            error.into_response()
+        }
         Err(error) => {
             warn!(target: "gamestats", ?op, pid, peer = %peer.ip(), %error, "request refused");
             error.into_response()
@@ -174,7 +179,7 @@ async fn process(
 
     let (hash, data) = match (params.hash, params.data) {
         // Request 1: only the pid. Answer with a token.
-        (None, None) => return Ok(state.tokens.issue(pid).into_bytes()),
+        (None, None) => return Ok(state.tokens.issue(pid, peer)?.into_bytes()),
         (Some(hash), Some(data)) => (hash, data),
         _ => return Err(GamestatsError::BadQuery("hash and data go together".into())),
     };
@@ -226,6 +231,10 @@ pub enum GamestatsError {
     BadData,
     /// The database failed. The details go to the log, not to the client.
     Storage,
+    /// The address asked for too many tokens lately.
+    TooMany,
+    /// Too many tokens wait to be used: a flood of made-up pids.
+    Full,
 }
 
 impl fmt::Display for GamestatsError {
@@ -239,6 +248,8 @@ impl fmt::Display for GamestatsError {
             Self::NotLoggedIn => f.write_str("pid not logged in from this address"),
             Self::BadData => f.write_str("bad data"),
             Self::Storage => f.write_str("storage"),
+            Self::TooMany => f.write_str("too many requests from this address"),
+            Self::Full => f.write_str("too many requests, try again later"),
         }
     }
 }

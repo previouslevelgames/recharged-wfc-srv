@@ -128,7 +128,7 @@ async fn a_put_counts_only_from_where_its_pid_is_logged_in(pool: sqlx::PgPool) {
     let put = |from: IpAddr| {
         let params = Params {
             pid: Some(P4.to_string()),
-            hash: Some(token_hash(&state.tokens.issue(P4))),
+            hash: Some(token_hash(&state.tokens.issue(P4, from).unwrap())),
             data: Some(PUT_P4_SEASON.to_owned()),
         };
         process(&state, Op::Put, from, Ok(Query(params)))
@@ -159,7 +159,7 @@ async fn a_put_counts_from_where_its_nas_login_came_from(pool: sqlx::PgPool) {
     let put = |from: IpAddr| {
         let params = Params {
             pid: Some(P4.to_string()),
-            hash: Some(token_hash(&state.tokens.issue(P4))),
+            hash: Some(token_hash(&state.tokens.issue(P4, from).unwrap())),
             data: Some(PUT_P4_SEASON.to_owned()),
         };
         process(&state, Op::Put, from, Ok(Query(params)))

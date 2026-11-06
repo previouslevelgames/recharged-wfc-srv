@@ -86,6 +86,13 @@ Every operation is two requests (`DWCi_EncSessionProcess`):
   arrives, from `NetworkRanking::Update`, and has no timeout of its own. A
   refused request 2 fails the ranking session for the rest of the login
   (`mRequestFailed`), so the server keeps a token for 10 minutes.
+- Anyone can ask for a token for any pid, so the server bounds what it keeps:
+  an address gets 300 tokens a minute (an IPv6 address with its /64), and at
+  most 50,000 tokens wait to be used. Past either, request 1 answers
+  `error:too many requests from this address` or
+  `error:too many requests, try again later`; the log says so once, when it
+  begins. A game asks for a token per operation: a few at login and after a
+  match, one per leaderboard page.
 - The gamestats key is in every client binary. Anyone can compute `H` for a
   token, so the token proves that a request is fresh, not who sent it.
 
