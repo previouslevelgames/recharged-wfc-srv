@@ -19,7 +19,11 @@ async fn status_returns_the_embedded_revision_as_uncached_json() {
     let status: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(
         status,
-        serde_json::json!({"status": "ok", "revision": recharged_wfc_srv::REVISION})
+        serde_json::json!({
+            "status": "ok",
+            "revision": recharged_wfc_srv::REVISION,
+            "node": recharged_wfc_srv::node::host_name(),
+        })
     );
     assert!(!status["revision"].as_str().unwrap().is_empty());
 }

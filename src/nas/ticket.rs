@@ -1,6 +1,8 @@
 //! NAS login tokens: what GPCM needs to know of a NAS login, signed, so the
-//! server keeps nothing. A token can be used more than once within [`TTL`]:
-//! on a profile's first login, DWC logs in to GPCM twice with it.
+//! server keeps nothing. The nodes of a pool share the key (docs/nodes.md):
+//! a token from one logs in to another. A token can be used more than once
+//! within [`TTL`]: on a profile's first login, DWC logs in to GPCM twice with
+//! it.
 
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
@@ -58,6 +60,11 @@ impl Default for Tickets {
 }
 
 impl Tickets {
+    /// With the key the nodes share, so that each takes the others' tokens.
+    pub fn with_key(key: [u8; 32]) -> Self {
+        Self { key }
+    }
+
     pub fn issue(&self, ticket: &Ticket) -> String {
         self.issue_at(ticket, OffsetDateTime::now_utc().unix_timestamp())
     }
@@ -197,6 +204,13 @@ mod tests {
         };
         let token = tickets.issue_at(&nameless, NOW);
         assert_eq!(tickets.redeem_at(&token, NOW), Ok(nameless));
+    }
+
+    #[test]
+    fn a_token_logs_in_wherever_the_key_is_the_same() {
+        let key = rand::random();
+        let token = Tickets::with_key(key).issue_at(&ticket(), NOW);
+        assert_eq!(Tickets::with_key(key).redeem_at(&token, NOW), Ok(ticket()));
     }
 
     #[test]

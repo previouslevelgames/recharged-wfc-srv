@@ -52,14 +52,19 @@ pub(super) async fn bind(
         Ok(player) => player,
         Err(response) => return response,
     };
-    if !state
+    match state
         .gpcm
         .logged_in_with(login.profile_id, &login.login_ticket)
+        .await
     {
-        return json_error(
-            StatusCode::FORBIDDEN,
-            "that profile is not logged in to WFC with this login ticket",
-        );
+        Ok(true) => {}
+        Ok(false) => {
+            return json_error(
+                StatusCode::FORBIDDEN,
+                "that profile is not logged in to WFC with this login ticket",
+            );
+        }
+        Err(error) => return database_error(error),
     }
     if let Err(error) = players::bind_wfc(&state.pool, player.id, login.profile_id).await {
         return database_error(error);
@@ -198,14 +203,11 @@ pub(super) async fn search_start(
         Ok(_) => {}
         Err(error) => return database_error(error),
     }
-    if let Err(error) = search::start(
-        &state.pool,
-        player.id,
-        &rule_set,
-        &request.game,
-        &state.busy_profiles(),
-    )
-    .await
+    let busy = match state.busy_profiles().await {
+        Ok(busy) => busy,
+        Err(error) => return database_error(error),
+    };
+    if let Err(error) = search::start(&state.pool, player.id, &rule_set, &request.game, &busy).await
     {
         return database_error(error);
     }
@@ -397,7 +399,10 @@ pub(super) async fn players(
     };
     // The players available for random games, and the game's own online
     // players, only for one who is available too.
-    let presence = state.gpcm.presence();
+    let presence = match state.gpcm.presence().await {
+        Ok(presence) => presence,
+        Err(error) => return database_error(error),
+    };
     let (available, game_online) = match players::available(&state.pool, player.id).await {
         Ok(true) => {
             let available = match players::available_now(&state.pool, player.id).await {
@@ -483,7 +488,11 @@ pub(super) async fn remove_mii_friend(
 }
 
 async fn mii_friends(state: &ProfilesState, player_id: i64) -> Response {
-    match miis::friends(&state.pool, player_id, &state.gpcm.presence()).await {
+    let presence = match state.gpcm.presence().await {
+        Ok(presence) => presence,
+        Err(error) => return database_error(error),
+    };
+    match miis::friends(&state.pool, player_id, &presence).await {
         Ok(mii_friends) => Json(json!({ "mii_friends": mii_friends })).into_response(),
         Err(error) => database_error(error),
     }
@@ -855,8 +864,10 @@ pub(super) async fn ready(
             "that WFC profile is not yours: prove its login first",
         );
     };
-    if state.gpcm.logged_in_from(profile.profile_id).is_none() {
-        return json_error(StatusCode::CONFLICT, "that WFC profile is not online");
+    match state.gpcm.is_logged_in(profile.profile_id).await {
+        Ok(true) => {}
+        Ok(false) => return json_error(StatusCode::CONFLICT, "that WFC profile is not online"),
+        Err(error) => return database_error(error),
     }
     let pairing = state
         .pairings
@@ -913,7 +924,8 @@ impl ProfilesState {
             self.pairings.end(match_id);
         }
         // Searches ask their next player.
-        search::advance(&self.pool, &self.busy_profiles())
+        let busy = self.busy_profiles().await.map_err(database_error)?;
+        search::advance(&self.pool, &busy)
             .await
             .map_err(database_error)?;
         Ok(())
@@ -921,13 +933,15 @@ impl ProfilesState {
 
     /// The WFC profiles in the game's own online matchmaking or match now
     /// (DWC's status 2 to 6): their players are busy for searches.
-    fn busy_profiles(&self) -> Vec<i32> {
-        self.gpcm
+    async fn busy_profiles(&self) -> Result<Vec<i32>, sqlx::Error> {
+        Ok(self
+            .gpcm
             .presence()
+            .await?
             .into_iter()
             .filter(|(_, presence)| matches!(presence.status, Some(2..=6)))
             .map(|(profile_id, _)| profile_id)
-            .collect()
+            .collect())
     }
 
     async fn respond(&self, status: StatusCode, found: &Match, player: &Player) -> Response {

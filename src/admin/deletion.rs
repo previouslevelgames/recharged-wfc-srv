@@ -9,6 +9,7 @@
 
 use serde::Serialize;
 use sqlx::{PgConnection, PgPool};
+use tracing::warn;
 
 use super::merge::Side;
 use crate::{accounts, bans, gpcm::Gpcm, reports};
@@ -154,10 +155,8 @@ async fn plan_in(
     )
     .fetch_one(&mut *conn)
     .await?;
-    let online = ids
-        .iter()
-        .filter(|&&id| gpcm.logged_in_from(id).is_some())
-        .count();
+    let presence = gpcm.presence().await?;
+    let online = ids.iter().filter(|id| presence.contains_key(id)).count();
     Ok(Ok(Deletion {
         player,
         profiles,
@@ -224,7 +223,7 @@ pub async fn delete(
         .collect();
     // A game puts its whole running total: once its rows are gone, its next
     // match would put the old one back.
-    let flagged = gpcm.keep_off_boards(&ids);
+    let flagged = gpcm.keep_off_boards(&ids).await?;
     let player_id = deletion.player.as_ref().map(|player| player.player_id);
     let name = match &deletion.player {
         Some(player) => player.name.clone(),
@@ -246,7 +245,9 @@ pub async fn delete(
     let ban_id = match removed {
         Ok(ban_id) => ban_id,
         Err(failure) => {
-            gpcm.back_on_boards(&flagged);
+            if let Err(error) = gpcm.back_on_boards(&flagged).await {
+                warn!(target: "admin", %error, "logins left off the boards");
+            }
             return Err(failure);
         }
     };
@@ -352,7 +353,12 @@ mod tests {
 
     #[sqlx::test]
     async fn a_player_goes_with_every_row_of_their_profiles(pool: PgPool) {
-        let gpcm = Gpcm::new(pool.clone(), Default::default(), Default::default());
+        let gpcm = Gpcm::new(
+            pool.clone(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        );
         // Birnen (1) plays the US and the European game; Kiki (2) has a
         // profile of her own; a retail Mii (no player) played Birnen.
         run(
@@ -494,8 +500,8 @@ mod tests {
         assert_eq!(kept, [retail], "Kiki keeps the retail Mii");
         // The European game, logged in now, puts nothing until it logs in
         // again.
-        assert!(gpcm.off_boards(eu));
-        assert!(!gpcm.off_boards(kikis));
+        assert!(gpcm.off_boards(eu).await.unwrap());
+        assert!(!gpcm.off_boards(kikis).await.unwrap());
 
         // Both of Birnen's consoles and his Discord account are banned, as
         // Birnen; Kiki's are not.
@@ -525,14 +531,24 @@ mod tests {
 
     #[sqlx::test]
     async fn a_ban_ends_the_logins_of_its_profiles(pool: PgPool) {
-        let gpcm = Gpcm::new(pool, Default::default(), Default::default());
+        let gpcm = Gpcm::new(
+            pool,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        );
         gpcm.fake_login(5, IpAddr::from([10, 0, 0, 1]));
         assert_eq!(gpcm.disconnect(&[5, 6]), [5]);
     }
 
     #[sqlx::test]
     async fn a_profile_without_a_player_loses_only_its_rows(pool: PgPool) {
-        let gpcm = Gpcm::new(pool.clone(), Default::default(), Default::default());
+        let gpcm = Gpcm::new(
+            pool.clone(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        );
         let retail = profile(&pool, 11, "R4QEaaaaaaa", "Retail").await;
         let other = profile(&pool, 12, "R4QEbbbbbbb", "Other").await;
         run(
@@ -574,7 +590,7 @@ mod tests {
         assert_eq!(left, [other]);
         assert_eq!(count(&pool, "SELECT count(*) FROM online_matches").await, 0);
         // Not logged in: its next login finds no row and starts from 0.
-        assert!(!gpcm.off_boards(retail));
+        assert!(!gpcm.off_boards(retail).await.unwrap());
 
         // A console that claimed the CPU buddy's account loses its rows, but
         // the server's own account is never banned.

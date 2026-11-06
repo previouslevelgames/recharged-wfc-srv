@@ -75,6 +75,7 @@ enter the **Key** and **Value** from the table, and set **Password Mask: Yes** f
 | `DISCORD_CLIENT_SECRET` | for profiles | Its client secret. Set **Password Mask: Yes**. |
 | `PROFILES_TEST_SIGN_IN` | no | `true` lets anyone sign in to a profile with a name alone, for tests with two games on one PC. Never on a public server. An owner's switch on **Maintenance** wins over it. |
 | `GEOIP_COUNTRY_DB` | no | The country database for players' flags ([profiles.md](profiles.md#countries)). Default: the one the image carries, DB-IP's free country database of the month it was built (CC BY 4.0, [db-ip.com](https://db-ip.com)). Unreadable, players have no flags. |
+| `NODE_NAME` | no | This server's name among those that [share a database](#several-servers-on-one-database), e.g. `srv-1`: `/status` and Monitoring's counts show it, and its lease in the table `nodes` carries it. At most 32 letters, digits, `-`, `_` or `.`. Default: the container's host name (that of `wireguard` for a server in its network). |
 | `SERVER_LABEL` | no | A short name such as `DEV` for a test server: `/admin` and the sign-in pages show it in their header and tab title, with an orange tab icon, so they are not mistaken for the live server's. At most 16 letters, digits, spaces, `-`, `_` or `.`. Unset, no label. |
 | `LOG_DIR` | no | Log folder inside the container. Default: `/var/log/recharged-wfc-srv`, the mapped **Path (logs)**. Leave unset to use this default. |
 | `LOG_RETENTION_DAYS` | no | Days of log files to keep. Default: `14`. |
@@ -269,11 +270,15 @@ PostgreSQL of its own.
 
 Each server keeps who is online in its own memory: players see each other
 online, as friends and in matchmaking, only on the same server. A game's NAS
-login and its GPCM connection must reach the same server too. `/admin` shows
-the players, matchmaking and activity of the server you are signed in to, and
-its players online right now; **Monitoring**'s timeline adds up every server's
-count of each minute. Until the servers share the rest, send all of the game's
-traffic to one of them.
+login takes it to GPCM on any of them: they sign its token with one key, kept
+in the database. Each server says it runs, every few seconds, in the table
+`nodes`, by its `NODE_NAME`, and writes its GPCM logins to the table `logins`:
+the profile service, gamestats2 and the reports find a game's login on any
+server, and `/admin` shows the players online on all of them. Matchmaking and
+activity on `/admin` are those of the server you are signed in to;
+**Monitoring**'s timeline adds up every server's count of each minute. Until
+the servers share the rest, send all of the game's traffic and HTTP to one of
+them. [nodes.md](nodes.md) plans how they become one pool.
 
 ### The network
 

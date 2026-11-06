@@ -80,7 +80,7 @@ pub async fn put(state: &GamestatsState, pid: i32, body: &[u8]) -> Result<Vec<u8
     // An admin deleted this profile's scores while its game was logged in:
     // the game still holds its old totals. Its next login finds no row of its
     // own and starts again from 0.
-    if state.gpcm.off_boards(pid) {
+    if state.gpcm.off_boards(pid).await? {
         info!(target: "gamestats", pid, category, score, "scores deleted: kept off the boards until the next login");
         return Ok(PUT_REPLY.to_vec());
     }
@@ -1022,8 +1022,11 @@ mod tests {
         assert_eq!(score().await, Some(50));
 
         // An admin deletes its scores; profile 8 is not logged in.
-        assert_eq!(state.gpcm.keep_off_boards(&[7, 8]), [7]);
-        assert_eq!(state.gpcm.keep_off_boards(&[7]), Vec::<i32>::new());
+        assert_eq!(state.gpcm.keep_off_boards(&[7, 8]).await.unwrap(), [7]);
+        assert_eq!(
+            state.gpcm.keep_off_boards(&[7]).await.unwrap(),
+            Vec::<i32>::new()
+        );
         sqlx::query("DELETE FROM scores")
             .execute(&pool)
             .await
@@ -1041,8 +1044,8 @@ mod tests {
         assert_eq!(score().await, Some(0));
 
         // A delete that failed puts it back on the boards.
-        state.gpcm.keep_off_boards(&[7]);
-        state.gpcm.back_on_boards(&[7]);
+        state.gpcm.keep_off_boards(&[7]).await.unwrap();
+        state.gpcm.back_on_boards(&[7]).await.unwrap();
         put(&state, 7, &put_body(0, 3, 0)).await.unwrap();
         assert_eq!(score().await, Some(3));
     }

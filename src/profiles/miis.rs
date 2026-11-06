@@ -203,6 +203,7 @@ mod tests {
 
     fn logged_in(status: Option<u8>) -> Presence {
         Presence {
+            address: [10, 0, 0, 1].into(),
             logged_in_at: OffsetDateTime::now_utc(),
             status,
             status_since: None,

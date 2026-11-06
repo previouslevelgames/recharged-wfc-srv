@@ -200,14 +200,19 @@ pub(super) async fn sign_in_wfc(
     headers: HeaderMap,
     Json(login): Json<WfcLogin>,
 ) -> Response {
-    if !state
+    match state
         .gpcm
         .logged_in_with(login.profile_id, &login.login_ticket)
+        .await
     {
-        return json_error(
-            StatusCode::FORBIDDEN,
-            "that profile is not logged in to WFC with this login ticket",
-        );
+        Ok(true) => {}
+        Ok(false) => {
+            return json_error(
+                StatusCode::FORBIDDEN,
+                "that profile is not logged in to WFC with this login ticket",
+            );
+        }
+        Err(error) => return database_error(error),
     }
     let player_id = match players::by_wfc_identity(&state.pool, login.profile_id).await {
         Ok(Some(player_id)) => player_id,

@@ -1,0 +1,27 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO logins (node, profile_id, connection, address, nas_address, ticket,\n                             logged_in_at, status, status_since, matchmaking, room_players,\n                             friend_requests, mutual_friends, off_boards)\n         SELECT $1::BIGINT, * FROM unnest($2::INTEGER[], $3::BIGINT[], $4::TEXT[], $5::TEXT[],\n                                          $6::BYTEA[], $7::TIMESTAMPTZ[], $8::SMALLINT[],\n                                          $9::TIMESTAMPTZ[], $10::TEXT[], $11::SMALLINT[],\n                                          $12::INTEGER[], $13::INTEGER[], $14::BOOLEAN[])\n         ON CONFLICT (node, profile_id) DO UPDATE SET\n             connection = EXCLUDED.connection, address = EXCLUDED.address,\n             nas_address = EXCLUDED.nas_address, ticket = EXCLUDED.ticket,\n             logged_in_at = EXCLUDED.logged_in_at, status = EXCLUDED.status,\n             status_since = EXCLUDED.status_since, matchmaking = EXCLUDED.matchmaking,\n             room_players = EXCLUDED.room_players, friend_requests = EXCLUDED.friend_requests,\n             mutual_friends = EXCLUDED.mutual_friends,\n             off_boards = EXCLUDED.off_boards\n                 OR (logins.off_boards AND logins.connection = EXCLUDED.connection)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int4Array",
+        "Int8Array",
+        "TextArray",
+        "TextArray",
+        "ByteaArray",
+        "TimestamptzArray",
+        "Int2Array",
+        "TimestamptzArray",
+        "TextArray",
+        "Int2Array",
+        "Int4Array",
+        "Int4Array",
+        "BoolArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d168e152f95562010c8be8ea9ddd3ac12ddd668e0e02c4101a176e27a0f28e74"
+}

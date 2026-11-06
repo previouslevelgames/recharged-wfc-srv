@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS (SELECT 1 FROM logins JOIN nodes ON nodes.id = logins.node\n                              WHERE profile_id = $1 AND off_boards\n                                AND heartbeat_at > now() - make_interval(secs => $2))\n               AS \"off_boards!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "off_boards!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "97b3b67b925b5707da0aef7581291493199f012803b1aac560fcedcac0f9ad8e"
+}

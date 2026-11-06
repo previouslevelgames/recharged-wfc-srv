@@ -72,6 +72,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let admin = recharged_wfc_srv::admin::Config::from_env()?;
     let profiles = recharged_wfc_srv::profiles::Config::from_env()?;
     let relay = recharged_wfc_srv::relay::Config::from_env()?;
+    let name = recharged_wfc_srv::node::name(var, recharged_wfc_srv::node::host_name)?;
 
     // DATABASE_URL in local development; the container provides PG* instead.
     let database = match env::var("DATABASE_URL") {
@@ -91,14 +92,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let master = UdpSocket::bind(("0.0.0.0", port("MASTER_PORT", 27900)?)).await?;
     let browser = TcpListener::bind(("0.0.0.0", port("SERVER_BROWSER_PORT", 28910)?)).await?;
     let natneg = UdpSocket::bind(("0.0.0.0", port("NATNEG_PORT", 27901)?)).await?;
+    // Only a node that can serve takes a lease.
+    let app = App::join(pool, name).await?;
     info!(
-        "recharged-wfc-srv listening on {} (HTTP), {} (GPCM), {}/udp (master), {} (server browser) and {}/udp (NAT negotiation) (revision {})",
+        "recharged-wfc-srv listening on {} (HTTP), {} (GPCM), {}/udp (master), {} (server browser) and {}/udp (NAT negotiation) (revision {}, node {})",
         http.local_addr()?,
         gpcm.local_addr()?,
         master.local_addr()?,
         browser.local_addr()?,
         natneg.local_addr()?,
-        recharged_wfc_srv::REVISION
+        recharged_wfc_srv::REVISION,
+        app.node_name()
     );
 
     match &admin {
@@ -139,7 +143,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         None => info!("NAT negotiation relay off: set NATNEG_RELAY_ADDRESS to enable it"),
     }
 
-    let app = App::new(pool);
     let router = app.router(admin, profiles);
     // HTTP stops gracefully on a signal; the others stop with it.
     tokio::select! {
@@ -150,7 +153,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
         result = app.serve_server_browser(browser) => result?,
         result = app.serve_natneg(natneg, relay) => result?,
         result = app.sample_online() => result?,
+        result = app.keep_lease() => result?,
     }
+    app.leave().await;
     Ok(())
 }
 

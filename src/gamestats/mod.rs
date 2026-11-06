@@ -39,7 +39,11 @@ use axum::{
 use serde::Deserialize;
 use tracing::{debug, info, trace, warn};
 
-use crate::{GAME_NAME, gpcm::Gpcm, pairing::Pairings};
+use crate::{
+    GAME_NAME,
+    gpcm::{self, Gpcm},
+    pairing::Pairings,
+};
 use leaderboard::Leaderboard;
 use token::TokenStore;
 
@@ -78,7 +82,7 @@ impl GamestatsState {
 impl GamestatsState {
     /// With a GPCM of its own, which nobody is logged in to yet.
     fn with_pool(pool: sqlx::PgPool) -> Self {
-        let gpcm = Gpcm::new(pool.clone(), Arc::default(), Arc::default());
+        let gpcm = Gpcm::new(pool.clone(), Arc::default(), Arc::default(), Arc::default());
         Self::new(pool, Arc::new(gpcm), Arc::default())
     }
 
@@ -197,9 +201,8 @@ async fn process(
 
     let payload = match op {
         Op::Put => {
-            let login = state.gpcm.login_addresses(pid);
-            if !login.is_some_and(|login| login.contains(peer)) {
-                let logged_in_from = login.map(|login| login.to_string());
+            if !state.gpcm.logged_in_at(pid, peer).await? {
+                let logged_in_from = gpcm::addresses_text(&state.gpcm.login_addresses(pid).await?);
                 warn!(target: "gamestats", pid, %peer, ?logged_in_from, "put from elsewhere");
                 return Err(GamestatsError::NotLoggedIn);
             }

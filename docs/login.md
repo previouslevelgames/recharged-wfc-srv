@@ -85,9 +85,11 @@ has at most three digits.
 userid this server did not make registers it: a console keeps its userid.
 
 **The token** carries the login (userid, gsbrcd, challenge, Mii name and the
-address the request came from) signed with HMAC-SHA256 under a key of the
-process, so the server keeps nothing. It stays good for 10 minutes and can be
-used more than once (step 5); a restart invalidates it. GPCM keeps the NAS
+address the request came from) signed with HMAC-SHA256, so the server keeps
+nothing of it. The key is made once and kept in the database (`shared_keys`):
+every server on the database takes every other's tokens
+([nodes.md](nodes.md)), and a restart keeps them good. It stays good for 10
+minutes and can be used more than once (step 5). GPCM keeps the NAS
 address with the login: gamestats2 and the reports take the login's requests
 from it as well as from GPCM's ([gamestats2.md](gamestats2.md#trust)), since
 some networks send the game's HTTP out by another address. The log line

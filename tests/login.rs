@@ -86,6 +86,59 @@ async fn a_new_login_disconnects_the_old_one(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn a_nas_login_on_one_node_logs_in_to_another(pool: PgPool) {
+    let first = Server::join(pool.clone(), "srv-1").await;
+    let second = Server::join(pool.clone(), "srv-2").await;
+    let names: Vec<String> = sqlx::query_scalar("SELECT name FROM nodes ORDER BY id")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(names, ["srv-1", "srv-2"]);
+
+    let (token, challenge) = first.nas_login(42).await;
+    let mut client = Client::connect(second.gpcm).await;
+    let login = client.log_in(&token, &challenge).await;
+    assert_eq!(login["userid"], "42");
+
+    // A server on its own has a key of its own.
+    let alone = Server::start(pool).await;
+    let mut client = Client::connect(alone.gpcm).await;
+    client.send_login(&token, &challenge).await;
+    assert_eq!(client.receive().await["err"], "266");
+}
+
+/// The game's HTTP may go to another node of the pool than its GPCM login
+/// (docs/nodes.md): that node finds the login by its row.
+#[sqlx::test]
+async fn a_game_logged_in_to_one_node_reports_to_another(pool: PgPool) {
+    let first = Server::join(pool.clone(), "srv-1").await;
+    let second = Server::join(pool.clone(), "srv-2").await;
+    let mut player = Player::log_in(&second, 42).await;
+    let report = serde_json::json!({
+        "profile_id": player.profile_id.parse::<i32>().unwrap(), "release": "R4QE",
+        "event": "start", "series": 1_792_000_000_i64, "mode": "friends", "best_of": 1,
+        "side": "home", "mii": "Mario", "opponent_mii": "Luigi",
+        "captains": {"home": "mario", "away": "luigi"},
+    })
+    .to_string();
+    let (status, body) = first.report(&report).await;
+    assert_eq!(status, 200, "{body}");
+
+    // Its row goes soon after its logout.
+    player.client.send(r"\logout\\final\").await;
+    assert!(player.client.closed().await);
+    let mut status = 0;
+    for _ in 0..50 {
+        status = first.report(&report).await.0;
+        if status == 403 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(status, 403);
+}
+
+#[sqlx::test]
 async fn friend_requests_get_no_answer(pool: PgPool) {
     let server = Server::start(pool).await;
     let (token, challenge) = server.nas_login(42).await;
@@ -732,7 +785,18 @@ struct Server {
 
 impl Server {
     async fn start(pool: PgPool) -> Self {
-        let app = App::new(pool);
+        Self::serve(App::new(pool)).await
+    }
+
+    /// The node `name` of a pool (docs/nodes.md), its lease kept.
+    async fn join(pool: PgPool, name: &str) -> Self {
+        let app = App::join(pool, name.to_owned()).await.unwrap();
+        let lease = app.clone();
+        tokio::spawn(async move { lease.keep_lease().await });
+        Self::serve(app).await
+    }
+
+    async fn serve(app: App) -> Self {
         let http = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let gpcm = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let server = Self {

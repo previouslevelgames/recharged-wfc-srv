@@ -102,7 +102,7 @@ pub async fn leaderboards(pool: &PgPool, gpcm: &Gpcm) -> Result<Leaderboards, sq
         entries: row.entries,
         players: row.players,
         past_entries: row.past_entries,
-        online: gpcm.presence().len(),
+        online: gpcm.presence().await?.len(),
     })
 }
 
@@ -327,7 +327,12 @@ mod tests {
         };
         let before = profiles().await;
 
-        let gpcm = Gpcm::new(pool.clone(), Default::default(), Default::default());
+        let gpcm = Gpcm::new(
+            pool.clone(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+        );
         let boards = leaderboards(&pool, &gpcm).await.unwrap();
         assert_eq!(
             (boards.entries, boards.players, boards.past_entries),

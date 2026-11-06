@@ -117,7 +117,9 @@ def main():
         wait_healthy(container)
         address = docker("port", container, "8080/tcp")
         with urllib.request.urlopen(f"http://{address}/status", timeout=5) as response:
-            assert json.load(response) == {"status": "ok", "revision": revision}
+            # Unnamed, a node is named by its host: the container's.
+            assert json.load(response) == {"status": "ok", "revision": revision,
+                                           "node": inspect(container)["Config"]["Hostname"]}
         assert http_status(f"http://{address}/admin")[0] == 404
         greeting = gpcm_greeting(docker("port", container, "29900/tcp"))
         assert greeting.startswith("\\lc\\1\\challenge\\"), greeting
@@ -195,12 +197,20 @@ def main():
         assert sql(db, "SELECT value FROM persistence_probe") == "persisted"
         assert sql(db, "SELECT count(DISTINCT client_addr) FROM pg_stat_activity "
                        "WHERE application_name = 'recharged-wfc-srv'") == "2"
+        # Each has its lease, by its host name. Containers stopped without
+        # their database left theirs, which run out by themselves.
+        hosts = ",".join(f"'{inspect(server)['Config']['Hostname']}'" for server in servers)
+        leases = f"SELECT count(DISTINCT name) FROM nodes WHERE name IN ({hosts})"
+        assert sql(db, leases) == "2"
+        assert sql(db, "SELECT count(*) FROM shared_keys") == "1"
+        assert sql(db, "SELECT count(*) FROM logins") == "0"
         print("Two servers share the bundled database's data in a database container.",
               flush=True)
         for server in servers:
             docker("stop", "--timeout", "30", server)
             assert inspect(server)["State"]["ExitCode"] == 0
-        print("A server on a database container stops cleanly.", flush=True)
+        assert sql(db, leases.replace("count(DISTINCT name)", "count(*)")) == "0"
+        print("A server on a database container stops cleanly and leaves the pool.", flush=True)
 
         container = start(*remote, "-e", "POSTGRES_PASSWORD=incorrect-password", mounts=())
         assert wait_exit(container) != 0

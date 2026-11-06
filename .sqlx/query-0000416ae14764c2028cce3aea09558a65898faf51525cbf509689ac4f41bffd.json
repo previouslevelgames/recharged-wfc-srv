@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE logins SET off_boards = true\n                 WHERE profile_id = ANY($1) AND NOT off_boards\n                 RETURNING profile_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "profile_id",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "logins",
+            "name": "profile_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4Array"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0000416ae14764c2028cce3aea09558a65898faf51525cbf509689ac4f41bffd"
+}

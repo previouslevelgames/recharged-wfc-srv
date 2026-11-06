@@ -16,7 +16,7 @@ pub struct Overview {
 }
 
 pub async fn read(pool: &PgPool, gpcm: &Gpcm, master: &Master) -> Result<Overview, sqlx::Error> {
-    let presence = gpcm.presence();
+    let presence = gpcm.presence().await?;
     reports::settle_idle(pool).await?;
     let mut tx = snapshot(pool).await?;
     let overview = Overview {

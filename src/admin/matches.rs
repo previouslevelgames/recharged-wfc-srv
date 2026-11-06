@@ -315,7 +315,12 @@ pub(crate) mod tests {
 
     impl Games {
         pub async fn new(pool: PgPool) -> Self {
-            let gpcm = Arc::new(Gpcm::new(pool.clone(), Arc::default(), Arc::default()));
+            let gpcm = Arc::new(Gpcm::new(
+                pool.clone(),
+                Arc::default(),
+                Arc::default(),
+                Arc::default(),
+            ));
             let mut profiles = Vec::new();
             for (user_id, mii) in [(1, "Anosch"), (2, "Sam")] {
                 accounts::log_in(&pool, user_id).await.unwrap();

@@ -1,0 +1,150 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT profile_id, address, nas_address, ticket, logged_in_at, status, status_since,\n                    matchmaking, room_players, friend_requests, mutual_friends\n             FROM logins JOIN nodes ON nodes.id = logins.node\n             WHERE node <> $1 AND heartbeat_at > now() - make_interval(secs => $2)\n               AND ($3::INTEGER IS NULL OR profile_id = $3)\n             ORDER BY logged_in_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "profile_id",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "logins",
+            "name": "profile_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "address",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "logins",
+            "name": "address"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "nas_address",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "logins",
+            "name": "nas_address"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "ticket",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "logins",
+            "name": "ticket"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "logged_in_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "logins",
+            "name": "logged_in_at"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "status",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "logins",
+            "name": "status"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "status_since",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "logins",
+            "name": "status_since"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "matchmaking",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "logins",
+            "name": "matchmaking"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "room_players",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "logins",
+            "name": "room_players"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "friend_requests",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "logins",
+            "name": "friend_requests"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "mutual_friends",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "logins",
+            "name": "mutual_friends"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Float8",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "c7e24ec88c5f075eabc17773bd5a60e4961ebfbba5123c07c6bbc88c5440eb4e"
+}

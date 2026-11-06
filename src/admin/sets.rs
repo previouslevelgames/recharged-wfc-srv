@@ -162,6 +162,7 @@ pub async fn timeline(
     })
     .collect();
 
+    let presence = gpcm.presence().await?;
     // Each profile's freshest session.
     let sessions = master.sessions();
     let session_of = |profile_id: i32| {
@@ -204,9 +205,9 @@ pub async fn timeline(
                     profile_id: row.profile_id,
                     game: row.gsbrcd.chars().take(4).collect(),
                     mii: row.ingamesn.clone(),
-                    logged_in_from: gpcm
-                        .logged_in_from(row.profile_id)
-                        .map(|address| address.to_string()),
+                    logged_in_from: presence
+                        .get(&row.profile_id)
+                        .map(|online| online.address.to_string()),
                     session,
                 }
             })

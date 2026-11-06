@@ -162,7 +162,7 @@ impl From<&Presence> for Online {
 }
 
 pub async fn read(pool: &PgPool, gpcm: &Gpcm, search: &Search) -> Result<Players, sqlx::Error> {
-    let presence = gpcm.presence();
+    let presence = gpcm.presence().await?;
     let mut tx = snapshot(pool).await?;
     let players = Players {
         totals: totals(&mut tx, &presence).await?,
@@ -388,7 +388,7 @@ pub async fn detail(
     gpcm: &Gpcm,
     profile_id: i32,
 ) -> Result<Option<Detail>, sqlx::Error> {
-    let online = gpcm.presence().get(&profile_id).map(Online::from);
+    let online = gpcm.presence().await?.get(&profile_id).map(Online::from);
     reports::settle_idle(pool).await?;
     let mut tx = snapshot(pool).await?;
     let Some(row) = sqlx::query!(
@@ -635,7 +635,12 @@ mod tests {
         let profile = accounts::profile_login(&pool, 42, "R4QEaaaaaaa", Some("Mario"), "10.0.0.1")
             .await
             .unwrap();
-        let gpcm = Gpcm::new(pool.clone(), Arc::new(Tickets::default()), Arc::default());
+        let gpcm = Gpcm::new(
+            pool.clone(),
+            Arc::new(Tickets::default()),
+            Arc::default(),
+            Arc::default(),
+        );
 
         let players = read(&pool, &gpcm, &Search::default()).await.unwrap();
         assert_eq!((players.totals.accounts, players.totals.profiles), (1, 1));
@@ -720,6 +725,7 @@ mod tests {
             games.pool.clone(),
             Arc::new(Tickets::default()),
             Arc::default(),
+            Arc::default(),
         );
         let detail = detail(&games.pool, &gpcm, games.anosch)
             .await
@@ -788,6 +794,7 @@ mod tests {
         let gpcm = Gpcm::new(
             games.pool.clone(),
             Arc::new(Tickets::default()),
+            Arc::default(),
             Arc::default(),
         );
         detail(&games.pool, &gpcm, profile_id)

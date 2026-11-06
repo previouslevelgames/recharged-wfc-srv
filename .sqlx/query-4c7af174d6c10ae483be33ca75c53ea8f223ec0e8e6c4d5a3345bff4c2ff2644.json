@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE logins SET off_boards = false WHERE profile_id = ANY($1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4c7af174d6c10ae483be33ca75c53ea8f223ec0e8e6c4d5a3345bff4c2ff2644"
+}

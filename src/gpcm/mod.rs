@@ -9,7 +9,10 @@
 //! (`delbuddy`); their matchmaking messages (`\bm\1\`) pass between them.
 //! The CPU buddy accepts every request at once. The rest comes later: those
 //! commands are accepted and ignored.
+//!
+//! The other nodes of a pool see the logins by their rows (`logins.rs`).
 
+mod logins;
 mod message;
 
 use std::{
@@ -40,8 +43,10 @@ use crate::{
     activity::{Activity, Via},
     bans,
     nas::{TicketError, Tickets},
+    node::Node,
     reports,
 };
+use logins::{Written, ticket_hash};
 use message::{Message, split};
 
 /// A client sends short messages: more than this unread means it is not one.
@@ -80,9 +85,15 @@ pub struct Gpcm {
     tickets: Arc<Tickets>,
     /// Where the match commands relayed are told.
     activity: Arc<Activity>,
+    /// The node, whose lease the logins' rows go with.
+    node: Arc<Node>,
     /// The connection logged in to each profile, to log out by a new login.
     sessions: Mutex<HashMap<i32, Session>>,
     next_connection: AtomicU64,
+    /// The rows last written of the sessions; one writer at a time.
+    written: tokio::sync::Mutex<Written>,
+    /// A session changed: its row is to be written.
+    changed: Notify,
 }
 
 struct Session {
@@ -113,10 +124,10 @@ struct Session {
     matchmaking: Option<Matchmaking>,
     /// A friend room it hosts (DWC status 6): its players, the host too.
     room_players: Option<u8>,
-    /// The login ticket (`lt`) the login got. The game's own use of it is
-    /// SAKE, which this game does not have; the port shows it to the profile
-    /// service to prove which login is its own (docs/profiles.md).
-    login_ticket: String,
+    /// SHA-256 of the login ticket (`lt`) the login got. The game's own use
+    /// of it is SAKE, which this game does not have; the port shows it to the
+    /// profile service to prove which login is its own (docs/profiles.md).
+    ticket: [u8; 32],
     /// An admin deleted the profile's scores during this login: the game
     /// still holds its old totals, so its puts stay off the boards.
     off_boards: bool,
@@ -142,8 +153,11 @@ fn room_players(statstring: &str) -> Option<u8> {
     None
 }
 
-/// What `/admin` shows of a profile's login.
+/// What `/admin` and the profile service show of a profile's login.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Presence {
+    /// Where its GPCM connection came from.
+    pub address: IpAddr,
     pub logged_in_at: OffsetDateTime,
     /// DWC's status from the last `\status\`: 1 online, 2 playing, 3 to 6
     /// matchmaking.
@@ -180,6 +194,12 @@ impl LoginAddresses {
     }
 }
 
+/// Where `logins` came from, for the logs: none without a login.
+pub fn addresses_text(logins: &[LoginAddresses]) -> Option<String> {
+    let texts: Vec<String> = logins.iter().map(ToString::to_string).collect();
+    (!texts.is_empty()).then(|| texts.join(", "))
+}
+
 impl fmt::Display for LoginAddresses {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.gpcm == self.nas {
@@ -197,7 +217,7 @@ impl Session {
         nas_address: IpAddr,
         kick: Arc<Notify>,
         outbox: mpsc::UnboundedSender<Message>,
-        login_ticket: String,
+        login_ticket: &str,
     ) -> Self {
         Self {
             connection,
@@ -213,8 +233,21 @@ impl Session {
             status_since: None,
             matchmaking: None,
             room_players: None,
-            login_ticket,
+            ticket: ticket_hash(login_ticket),
             off_boards: false,
+        }
+    }
+
+    fn presence(&self) -> Presence {
+        Presence {
+            address: self.address,
+            logged_in_at: self.logged_in_at,
+            status: self.dwc_status,
+            status_since: self.status_since,
+            matchmaking: self.matchmaking,
+            room_players: self.room_players,
+            friend_requests: self.friends.len(),
+            mutual_friends: self.mutual.len(),
         }
     }
 
@@ -247,76 +280,31 @@ impl Session {
 }
 
 impl Gpcm {
-    pub fn new(pool: PgPool, tickets: Arc<Tickets>, activity: Arc<Activity>) -> Self {
+    pub fn new(
+        pool: PgPool,
+        tickets: Arc<Tickets>,
+        activity: Arc<Activity>,
+        node: Arc<Node>,
+    ) -> Self {
         Self {
             pool,
             tickets,
             activity,
+            node,
             sessions: Mutex::default(),
             next_connection: AtomicU64::new(1),
+            written: tokio::sync::Mutex::default(),
+            changed: Notify::new(),
         }
     }
 
-    /// Who is logged in, by profile.
-    pub fn presence(&self) -> HashMap<i32, Presence> {
+    /// Who is logged in to this node, by profile: what it carries. Every
+    /// other question about logins asks the pool (`logins.rs`).
+    pub fn local_presence(&self) -> HashMap<i32, Presence> {
         let sessions = self.sessions.lock().unwrap();
         sessions
             .iter()
-            .map(|(&profile_id, session)| {
-                let presence = Presence {
-                    logged_in_at: session.logged_in_at,
-                    status: session.dwc_status,
-                    status_since: session.status_since,
-                    matchmaking: session.matchmaking,
-                    room_players: session.room_players,
-                    friend_requests: session.friends.len(),
-                    mutual_friends: session.mutual.len(),
-                };
-                (profile_id, presence)
-            })
-            .collect()
-    }
-
-    /// Where `profile_id` is logged in from, if it is.
-    pub fn logged_in_from(&self, profile_id: i32) -> Option<IpAddr> {
-        let sessions = self.sessions.lock().unwrap();
-        sessions.get(&profile_id).map(|session| session.address)
-    }
-
-    /// Where `profile_id`'s login came from, GPCM's connection and its NAS
-    /// login, if it is logged in.
-    pub fn login_addresses(&self, profile_id: i32) -> Option<LoginAddresses> {
-        let sessions = self.sessions.lock().unwrap();
-        sessions.get(&profile_id).map(|session| LoginAddresses {
-            gpcm: session.address,
-            nas: session.nas_address,
-        })
-    }
-
-    /// Whether `profile_id` is logged in with the login ticket
-    /// `login_ticket`.
-    pub fn logged_in_with(&self, profile_id: i32, login_ticket: &str) -> bool {
-        let sessions = self.sessions.lock().unwrap();
-        sessions
-            .get(&profile_id)
-            .is_some_and(|session| session.login_ticket == login_ticket)
-    }
-
-    /// Keeps the puts of these profiles' logins off the boards from now on:
-    /// an admin deletes their scores, and a game puts its whole running total,
-    /// so its next match would put the old one back. Its next login reads no
-    /// row of its own and starts again from 0 (docs/gamestats2.md,
-    /// "Seasons"). Returns the profiles it flagged now.
-    pub fn keep_off_boards(&self, profiles: &[i32]) -> Vec<i32> {
-        let mut sessions = self.sessions.lock().unwrap();
-        profiles
-            .iter()
-            .copied()
-            .filter(|profile_id| {
-                sessions
-                    .get_mut(profile_id)
-                    .is_some_and(|session| !std::mem::replace(&mut session.off_boards, true))
-            })
+            .map(|(&profile_id, session)| (profile_id, session.presence()))
             .collect()
     }
 
@@ -337,25 +325,15 @@ impl Gpcm {
             .collect()
     }
 
-    /// Undoes [`Self::keep_off_boards`] for `profiles` (a delete that failed).
-    pub fn back_on_boards(&self, profiles: &[i32]) {
-        let mut sessions = self.sessions.lock().unwrap();
-        for profile_id in profiles {
-            if let Some(session) = sessions.get_mut(profile_id) {
-                session.off_boards = false;
-            }
+    /// GPCM on `listener`, the logins' rows kept with it.
+    pub async fn serve(self: Arc<Self>, listener: TcpListener) -> std::io::Result<()> {
+        tokio::select! {
+            result = self.clone().accept(listener) => result,
+            result = self.keep_published() => result,
         }
     }
 
-    /// Whether `profile_id`'s login keeps its puts off the boards.
-    pub fn off_boards(&self, profile_id: i32) -> bool {
-        let sessions = self.sessions.lock().unwrap();
-        sessions
-            .get(&profile_id)
-            .is_some_and(|session| session.off_boards)
-    }
-
-    pub async fn serve(self: Arc<Self>, listener: TcpListener) -> std::io::Result<()> {
+    async fn accept(self: Arc<Self>, listener: TcpListener) -> std::io::Result<()> {
         loop {
             let (stream, peer) = listener.accept().await?;
             let gpcm = self.clone();
@@ -460,6 +438,7 @@ impl Gpcm {
                             ));
                         }
                     }
+                    self.changed.notify_one();
                 }
             }
             info!(target: "gpcm", profile_id, how = connection.ended, "logged out");
@@ -548,16 +527,20 @@ impl Gpcm {
                 let login = connection.login.as_mut().unwrap();
                 login.locstring = message.get("locstring").unwrap_or_default().to_owned();
                 self.set_status(connection, &message);
+                self.changed.notify_one();
                 Ok(true)
             }
             "addbuddy" => {
-                if self.add_friend(connection, &message) == Some(accounts::CPU_BUDDY) {
+                let friend = self.add_friend(connection, &message);
+                self.changed.notify_one();
+                if friend == Some(accounts::CPU_BUDDY) {
                     connection.accept_as_cpu_buddy().await?;
                 }
                 Ok(true)
             }
             "delbuddy" => {
                 self.delete_friend(connection, &message);
+                self.changed.notify_one();
                 Ok(true)
             }
             "bm" => {
@@ -633,12 +616,14 @@ impl Gpcm {
                 ticket.address,
                 kick.clone(),
                 connection.outbox.clone(),
-                login_ticket,
+                &login_ticket,
             ),
         );
         if let Some(previous) = previous.filter(|previous| previous.connection != connection.id) {
             previous.kick.notify_one();
         }
+        // The port shows the login ticket to any node's profile service.
+        self.publish_now().await;
         connection.login = Some(Login {
             profile,
             kick,
@@ -1016,7 +1001,7 @@ impl Gpcm {
             nas,
             Arc::new(Notify::new()),
             mpsc::unbounded_channel().0,
-            format!("ticket-{profile_id}"),
+            &format!("ticket-{profile_id}"),
         );
         self.sessions.lock().unwrap().insert(profile_id, session);
     }
@@ -1026,6 +1011,11 @@ impl Gpcm {
         if let Some(session) = self.sessions.lock().unwrap().get_mut(&profile_id) {
             session.set_dwc_status(Some(status), "");
         }
+    }
+
+    /// Ends `profile_id`'s fake login.
+    pub(crate) fn fake_logout(&self, profile_id: i32) {
+        self.sessions.lock().unwrap().remove(&profile_id);
     }
 }
 
@@ -1037,14 +1027,14 @@ mod tests {
     async fn presence_tells_who_is_logged_in() {
         let pool = sqlx::postgres::PgPoolOptions::new()
             .connect_lazy_with(sqlx::postgres::PgConnectOptions::new());
-        let gpcm = Gpcm::new(pool, Arc::default(), Arc::default());
+        let gpcm = Gpcm::new(pool, Arc::default(), Arc::default(), Arc::default());
         let mut session = Session::new(
             1,
             IpAddr::from([10, 0, 0, 1]),
             IpAddr::from([10, 0, 0, 1]),
             Arc::new(Notify::new()),
             mpsc::unbounded_channel().0,
-            String::new(),
+            "",
         );
         session.add_friend(1_000_000_001);
         session.mutual.insert(1_000_000_001);
@@ -1052,17 +1042,15 @@ mod tests {
         let status_since = session.status_since;
         gpcm.sessions.lock().unwrap().insert(1_000_000_000, session);
 
-        let presence = gpcm.presence();
+        let presence = gpcm.local_presence();
         let online = &presence[&1_000_000_000];
+        assert_eq!(online.address, IpAddr::from([10, 0, 0, 1]));
         assert_eq!(online.status, Some(2));
         assert_eq!(online.status_since, status_since);
         assert_eq!((online.friend_requests, online.mutual_friends), (1, 1));
         assert!(!presence.contains_key(&1_000_000_001));
-        assert_eq!(
-            gpcm.logged_in_from(1_000_000_000),
-            Some(IpAddr::from([10, 0, 0, 1]))
-        );
-        assert_eq!(gpcm.logged_in_from(1_000_000_001), None);
+        // A node without a lease is a pool of its own: no database.
+        assert_eq!(gpcm.presence().await.unwrap(), presence);
     }
 
     #[test]
@@ -1073,7 +1061,7 @@ mod tests {
             IpAddr::from([10, 0, 0, 1]),
             Arc::new(Notify::new()),
             mpsc::unbounded_channel().0,
-            String::new(),
+            "",
         );
         let mut seen = vec![];
         for (status, statstring) in [
@@ -1119,7 +1107,7 @@ mod tests {
             IpAddr::from([10, 0, 0, 1]),
             Arc::new(Notify::new()),
             mpsc::unbounded_channel().0,
-            String::new(),
+            "",
         );
         assert!(session.add_friend(1_000_000_001));
         assert!(!session.add_friend(1_000_000_001));
@@ -1138,7 +1126,7 @@ mod tests {
             IpAddr::from([10, 0, 0, 1]),
             Arc::new(Notify::new()),
             mpsc::unbounded_channel().0,
-            String::new(),
+            "",
         );
         assert_eq!(session.status_since, None);
         session.set_dwc_status(Some(2), "");

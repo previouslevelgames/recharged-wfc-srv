@@ -28,7 +28,7 @@ use serde_json::json;
 use sqlx::PgPool;
 use tracing::{debug, info, trace, warn};
 
-use crate::gpcm::Gpcm;
+use crate::gpcm::{self, Gpcm};
 use report::Report;
 pub(crate) use store::{left, settle_idle, sides};
 
@@ -77,7 +77,7 @@ async fn receive(
             // Counted for a game logged in from here only: a stranger could
             // name any profile.
             if let Some(profile_id) = profile_id(&body)
-                && logged_in_at(&state.gpcm, profile_id, peer.ip())
+                && logged_in_at(&state.gpcm, profile_id, peer.ip()).await
             {
                 state
                     .count_refusal(profile_id, "invalid", &problem, peer)
@@ -89,12 +89,12 @@ async fn receive(
 
     // As for gamestats2's puts (docs/gamestats2.md, "Trust"): a profile id
     // is easy to learn, the login's addresses are not.
-    let login = state.gpcm.login_addresses(report.profile_id);
-    if !login.is_some_and(|login| login.contains(peer.ip())) {
-        let logged_in_from = login.map(|login| login.to_string());
+    if !logged_in_at(&state.gpcm, report.profile_id, peer.ip()).await {
+        let logins = state.gpcm.login_addresses(report.profile_id).await;
+        let logged_in_from = gpcm::addresses_text(&logins.unwrap_or_default());
         warn!(target: "reports", profile_id = report.profile_id, %peer, ?logged_in_from, "report from elsewhere");
-        let problem = match login {
-            Some(login) => format!("logged in from {login}"),
+        let problem = match &logged_in_from {
+            Some(logins) => format!("logged in from {logins}"),
             None => "not logged in".to_owned(),
         };
         state
@@ -150,9 +150,10 @@ async fn receive_error(
         );
     }
     // Only a profile logged in from where the error came is kept.
-    let profile_id = error
-        .profile_id
-        .filter(|&id| logged_in_at(&state.gpcm, id, peer.ip()));
+    let profile_id = match error.profile_id {
+        Some(id) if logged_in_at(&state.gpcm, id, peer.ip()).await => Some(id),
+        _ => None,
+    };
     let address = peer.ip().to_string();
     match errors::store(&state.pool, &error, profile_id, &address).await {
         Ok(()) => {
@@ -179,10 +180,13 @@ impl ReportsState {
     }
 }
 
-/// Whether `profile_id` is logged in and `address` is one of its login's.
-fn logged_in_at(gpcm: &Gpcm, profile_id: i32, address: IpAddr) -> bool {
-    gpcm.login_addresses(profile_id)
-        .is_some_and(|login| login.contains(address))
+/// Whether `profile_id` is logged in and `address` is one of its login's;
+/// not as far as it can tell without the database.
+async fn logged_in_at(gpcm: &Gpcm, profile_id: i32, address: IpAddr) -> bool {
+    gpcm.logged_in_at(profile_id, address)
+        .await
+        .inspect_err(|error| warn!(target: "reports", %error, "database error"))
+        .unwrap_or(false)
 }
 
 /// The profile a body that is not a report names, if it names one.
@@ -225,7 +229,7 @@ mod tests {
 
     impl Server {
         fn new(pool: PgPool) -> Self {
-            let gpcm = Gpcm::new(pool.clone(), Arc::default(), Arc::default());
+            let gpcm = Gpcm::new(pool.clone(), Arc::default(), Arc::default(), Arc::default());
             Self {
                 pool,
                 gpcm: Arc::new(gpcm),

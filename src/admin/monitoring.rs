@@ -189,7 +189,7 @@ struct Refusal {
 
 pub async fn read(pool: &PgPool, gpcm: &Gpcm) -> Result<Monitoring, sqlx::Error> {
     reports::settle_idle(pool).await?;
-    let (wfc, playing, recharged) = online::now(pool, gpcm).await?;
+    let (wfc, playing, recharged) = online::now(pool, &gpcm.presence().await?).await?;
     let online_now = Online {
         at: OffsetDateTime::now_utc(),
         wfc,
@@ -474,7 +474,12 @@ mod tests {
     use std::sync::Arc;
 
     fn gpcm(pool: &PgPool) -> Gpcm {
-        Gpcm::new(pool.clone(), Arc::new(Tickets::default()), Arc::default())
+        Gpcm::new(
+            pool.clone(),
+            Arc::new(Tickets::default()),
+            Arc::default(),
+            Arc::default(),
+        )
     }
 
     #[sqlx::test]
@@ -639,7 +644,9 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        crate::online::sample(&pool, &gpcm(&pool)).await.unwrap();
+        crate::online::sample(&pool, &gpcm(&pool), "srv-1")
+            .await
+            .unwrap();
         let span = i64::from(ONLINE_MINUTES) * 60;
         let base = OffsetDateTime::now_utc().unix_timestamp() / span * span - 3 * span;
         for (server, offset, wfc, playing, recharged) in [

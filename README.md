@@ -114,3 +114,4 @@ updates.
 - [docs/reports.md](docs/reports.md): the match reports Recharged builds send, and how the
   server pairs them into matches
 - [docs/profiles.md](docs/profiles.md): Recharged profiles, which the launcher signs in to for competitive play
+- [docs/nodes.md](docs/nodes.md): the plan for several servers as one pool, updated one at a time

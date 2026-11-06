@@ -1,5 +1,7 @@
 //! A test match from the challenge to the result, as two launchers and their
-//! games go through it (docs/profiles.md), with GPCM's logins faked.
+//! games go through it (docs/profiles.md), with GPCM's logins faked. The
+//! games log in to the profile service's node, and some tests run again
+//! with them on another node of its pool (docs/nodes.md).
 
 use std::{net::IpAddr, sync::Arc};
 
@@ -18,32 +20,55 @@ use crate::{
     activity::Activity,
     gpcm::Gpcm,
     nas::Tickets,
+    node::{self, Node},
     pairing::{Pairings, Visible},
 };
 
 struct World {
     app: Router,
-    gpcm: Arc<Gpcm>,
+    /// Where the games log in to WFC: the profile service's node, or another
+    /// one of its pool.
+    games: Arc<Gpcm>,
     pairings: Arc<Pairings>,
     pool: PgPool,
 }
 
 impl World {
+    /// The profile service and the games on one server.
     fn new(pool: PgPool) -> Self {
-        let gpcm = Arc::new(Gpcm::new(
-            pool.clone(),
-            Arc::<Tickets>::default(),
-            Arc::<Activity>::default(),
-        ));
+        let gpcm = gpcm(&pool, Arc::default());
+        Self::with(pool, gpcm.clone(), gpcm)
+    }
+
+    /// The profile service on one node of a pool, the games logged in to
+    /// another.
+    async fn across(pool: PgPool) -> Self {
+        let http = gpcm(&pool, joined(&pool, "srv-1").await);
+        let games = gpcm(&pool, joined(&pool, "srv-2").await);
+        Self::with(pool, http, games)
+    }
+
+    fn with(pool: PgPool, http: Arc<Gpcm>, games: Arc<Gpcm>) -> Self {
         let pairings = Arc::<Pairings>::default();
         let config = Config::new("http://127.0.0.1:8080", None, true).unwrap();
-        let app = router(pool.clone(), gpcm.clone(), pairings.clone(), config);
+        let app = router(pool.clone(), http, pairings.clone(), config);
         Self {
             app,
-            gpcm,
+            games,
             pairings,
             pool,
         }
+    }
+
+    /// The games' node writes its logins for the others.
+    async fn logins_changed(&self) {
+        self.games.publish().await.unwrap();
+    }
+
+    /// The `\status\` of `profile_id`'s game: DWC's `status`.
+    async fn fake_status(&self, profile_id: i32, status: u8) {
+        self.games.fake_status(profile_id, status);
+        self.logins_changed().await;
     }
 
     async fn send(&self, method: &str, uri: &str, token: &str, body: Value) -> (StatusCode, Value) {
@@ -141,10 +166,29 @@ impl World {
         let profile = accounts::profile_login(&self.pool, user_id, gsbrcd, Some("Mii"), "10.0.0.1")
             .await
             .unwrap();
-        self.gpcm
+        self.games
             .fake_login(profile.profile_id, "10.0.0.1".parse::<IpAddr>().unwrap());
+        self.logins_changed().await;
         profile.profile_id
     }
+}
+
+fn gpcm(pool: &PgPool, node: Arc<Node>) -> Arc<Gpcm> {
+    Arc::new(Gpcm::new(
+        pool.clone(),
+        Arc::<Tickets>::default(),
+        Arc::<Activity>::default(),
+        node,
+    ))
+}
+
+/// The node `name` of a pool, its lease kept for the test.
+async fn joined(pool: &PgPool, name: &str) -> Arc<Node> {
+    let node = Arc::new(Node::new(name.to_owned()));
+    node.register(pool, node::Load::default()).await.unwrap();
+    let (kept, pool) = (node.clone(), pool.clone());
+    tokio::spawn(async move { kept.keep(&pool, node::Load::default).await });
+    node
 }
 
 fn games(mine: [u32; 2], theirs: [u32; 2]) -> Value {
@@ -174,7 +218,15 @@ fn mirrored(report: &Value) -> Value {
 
 #[sqlx::test]
 async fn a_test_match_from_challenge_to_result(pool: PgPool) {
-    let world = World::new(pool);
+    test_match(World::new(pool)).await;
+}
+
+#[sqlx::test]
+async fn a_test_match_with_the_games_on_another_node(pool: PgPool) {
+    test_match(World::across(pool).await).await;
+}
+
+async fn test_match(world: World) {
     let mario = world.sign_in("Mario").await;
     let bowser = world.sign_in("Bowser").await;
 
@@ -424,7 +476,15 @@ async fn a_challenge_plays_by_rules_of_its_own(pool: PgPool) {
 
 #[sqlx::test]
 async fn a_search_leaves_out_players_in_the_games_online_mode(pool: PgPool) {
-    let world = World::new(pool);
+    search_and_the_games_online_mode(World::new(pool)).await;
+}
+
+#[sqlx::test]
+async fn a_search_leaves_out_players_in_the_online_mode_of_another_node(pool: PgPool) {
+    search_and_the_games_online_mode(World::across(pool).await).await;
+}
+
+async fn search_and_the_games_online_mode(world: World) {
     // Mario searches; Peach is open to challenges, but her game searches
     // RANKED (DWC's matchmaking), then plays its match.
     let mario = world.sign_in("Mario").await;
@@ -442,7 +502,7 @@ async fn a_search_leaves_out_players_in_the_games_online_mode(pool: PgPool) {
         )
         .await;
     assert_eq!(status, StatusCode::OK);
-    world.gpcm.fake_status(hers, 3);
+    world.fake_status(hers, 3).await;
     let rules = json!({"tweaks": [], "limit": "time", "time": 120, "goals": 5, "games": 1,
                        "stadium": "random"});
     let (status, body) = world
@@ -455,14 +515,14 @@ async fn a_search_leaves_out_players_in_the_games_online_mode(pool: PgPool) {
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(body["search"]["asked"], 0);
-    world.gpcm.fake_status(hers, 2);
+    world.fake_status(hers, 2).await;
     let (_, now) = world
         .send("GET", "/api/v1/matches/current", &mario, Value::Null)
         .await;
     assert_eq!(now["search"]["asked"], 0);
 
     // Back in the online menu: she is asked.
-    world.gpcm.fake_status(hers, 1);
+    world.fake_status(hers, 1).await;
     let (_, now) = world
         .send("GET", "/api/v1/matches/current", &mario, Value::Null)
         .await;
@@ -1587,8 +1647,56 @@ async fn friends_are_added_by_hand_and_follow_the_player(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn the_lists_show_a_mii_friend_online(pool: PgPool) {
+    a_mii_friend_online(World::new(pool)).await;
+}
+
+#[sqlx::test]
+async fn the_lists_show_a_mii_friend_online_on_another_node(pool: PgPool) {
+    a_mii_friend_online(World::across(pool).await).await;
+}
+
+/// A Mii friend's game logs in, plays a match, and leaves.
+async fn a_mii_friend_online(world: World) {
+    let mario = world.sign_in("Mario").await;
+    let kiki = world.wfc_login(1, "R4QEkkkkkkk").await;
+    let (status, body) = world
+        .send(
+            "POST",
+            "/api/v1/friends/miis",
+            &mario,
+            json!({"profile_id": kiki}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let friend = || async {
+        let (status, lists) = world
+            .send("GET", "/api/v1/players", &mario, Value::Null)
+            .await;
+        assert_eq!(status, StatusCode::OK, "{lists}");
+        let friend = &lists["mii_friends"][0];
+        (friend["online"].clone(), friend["status"].clone())
+    };
+    assert_eq!(friend().await, (json!(true), json!("menu")));
+    world.fake_status(kiki, 2).await;
+    assert_eq!(friend().await, (json!(true), json!("match")));
+
+    world.games.fake_logout(kiki);
+    world.logins_changed().await;
+    assert_eq!(friend().await, (json!(false), Value::Null));
+}
+
+#[sqlx::test]
 async fn a_player_without_discord_plays_by_its_mii(pool: PgPool) {
-    let world = World::new(pool);
+    playing_by_a_mii(World::new(pool)).await;
+}
+
+#[sqlx::test]
+async fn a_player_without_discord_plays_by_its_mii_on_another_node(pool: PgPool) {
+    playing_by_a_mii(World::across(pool).await).await;
+}
+
+async fn playing_by_a_mii(world: World) {
     let (_, server) = world.send("GET", "/api/v1/server", "", Value::Null).await;
     assert_eq!(server["sign_in"]["mii"], true);
 
@@ -1674,7 +1782,15 @@ async fn a_player_without_discord_plays_by_its_mii(pool: PgPool) {
 
 #[sqlx::test]
 async fn a_mii_player_comes_back_by_its_wfc_login(pool: PgPool) {
-    let world = World::new(pool);
+    coming_back_by_a_wfc_login(World::new(pool)).await;
+}
+
+#[sqlx::test]
+async fn a_mii_player_comes_back_by_its_wfc_login_on_another_node(pool: PgPool) {
+    coming_back_by_a_wfc_login(World::across(pool).await).await;
+}
+
+async fn coming_back_by_a_wfc_login(world: World) {
     let (_, signed_in) = world.mii_sign_in("Nelly", "198.51.100.1").await;
     let nelly_id = signed_in["player"]["id"].clone();
     let nelly = signed_in["token"].as_str().unwrap().to_owned();

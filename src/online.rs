@@ -4,20 +4,20 @@
 //! match, and with Recharged open (a launcher or game of a version with
 //! profiles asked in the last minute). Samples older than [`KEPT_DAYS`] go.
 //!
-//! Each server knows only the players logged in to it, so servers that share
-//! the database each write their own row per minute, by [`server`], and the
-//! Monitoring page adds them up.
+//! Each node writes the players logged in to it, one row per minute by its
+//! name (docs/nodes.md), and the Monitoring page adds them up; its figure
+//! of now counts the whole pool.
 
-use std::{
-    sync::{Arc, LazyLock},
-    time::Duration,
-};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use sqlx::PgPool;
 use tokio::time::MissedTickBehavior;
 use tracing::warn;
 
-use crate::gpcm::Gpcm;
+use crate::{
+    gpcm::{Gpcm, Presence},
+    node::Node,
+};
 
 /// The days samples are kept.
 pub const KEPT_DAYS: i32 = 30;
@@ -27,23 +27,13 @@ const EVERY: Duration = Duration::from_secs(60);
 /// (the profile service's heartbeat).
 const RECHARGED_SECS: f64 = 60.0;
 
-/// This server among those that share the database: its host name, which
-/// Docker makes the container's (or that of the container whose network it
-/// runs in).
-pub fn server() -> &'static str {
-    static SERVER: LazyLock<String> = LazyLock::new(|| {
-        std::fs::read_to_string("/proc/sys/kernel/hostname")
-            .map(|name| name.trim().to_owned())
-            .unwrap_or_default()
-    });
-    &SERVER
-}
-
-/// Players online now: logged in to WFC, of them in an online match (DWC's
-/// status 2), and with Recharged open. The first two count this server's
-/// players only; the last, from the database, every server's.
-pub async fn now(pool: &PgPool, gpcm: &Gpcm) -> Result<(i32, i32, i32), sqlx::Error> {
-    let presence = gpcm.presence();
+/// Players online now: logged in to WFC (the logins of `presence`), of them
+/// in an online match (DWC's status 2), and with Recharged open, from the
+/// database.
+pub async fn now(
+    pool: &PgPool,
+    presence: &HashMap<i32, Presence>,
+) -> Result<(i32, i32, i32), sqlx::Error> {
     let wfc = i32::try_from(presence.len()).unwrap_or(i32::MAX);
     let playing = i32::try_from(
         presence
@@ -62,16 +52,16 @@ pub async fn now(pool: &PgPool, gpcm: &Gpcm) -> Result<(i32, i32, i32), sqlx::Er
     Ok((wfc, playing, recharged))
 }
 
-/// Writes this server's sample of this minute, and drops those older than
-/// [`KEPT_DAYS`].
-pub async fn sample(pool: &PgPool, gpcm: &Gpcm) -> Result<(), sqlx::Error> {
-    let (wfc, playing, recharged) = now(pool, gpcm).await?;
+/// Writes the sample of this minute of the node `server`, and drops those
+/// older than [`KEPT_DAYS`].
+pub async fn sample(pool: &PgPool, gpcm: &Gpcm, server: &str) -> Result<(), sqlx::Error> {
+    let (wfc, playing, recharged) = now(pool, &gpcm.local_presence()).await?;
     sqlx::query!(
         "INSERT INTO online_samples (at, server, wfc, playing, recharged)
          VALUES (date_trunc('minute', now()), $1, $2, $3, $4)
          ON CONFLICT (at, server) DO UPDATE
          SET wfc = EXCLUDED.wfc, playing = EXCLUDED.playing, recharged = EXCLUDED.recharged",
-        server(),
+        server,
         wfc,
         playing,
         recharged,
@@ -89,12 +79,12 @@ pub async fn sample(pool: &PgPool, gpcm: &Gpcm) -> Result<(), sqlx::Error> {
 
 /// Samples once a minute, for as long as the server runs; a sample that
 /// fails is skipped.
-pub async fn run(pool: PgPool, gpcm: Arc<Gpcm>) -> std::io::Result<()> {
+pub async fn run(pool: PgPool, gpcm: Arc<Gpcm>, node: Arc<Node>) -> std::io::Result<()> {
     let mut every = tokio::time::interval(EVERY);
     every.set_missed_tick_behavior(MissedTickBehavior::Delay);
     loop {
         every.tick().await;
-        if let Err(error) = sample(&pool, &gpcm).await {
+        if let Err(error) = sample(&pool, &gpcm, node.name()).await {
             warn!(target: "online", %error, "players online not sampled");
         }
     }
@@ -115,9 +105,14 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        let gpcm = Gpcm::new(pool.clone(), Arc::new(Tickets::default()), Arc::default());
-        sample(&pool, &gpcm).await.unwrap();
-        sample(&pool, &gpcm).await.unwrap();
+        let gpcm = Gpcm::new(
+            pool.clone(),
+            Arc::new(Tickets::default()),
+            Arc::default(),
+            Arc::default(),
+        );
+        sample(&pool, &gpcm, "srv-1").await.unwrap();
+        sample(&pool, &gpcm, "srv-1").await.unwrap();
         let rows: Vec<(String, i32)> = sqlx::query_as(
             "SELECT server, wfc FROM online_samples
              WHERE at = date_trunc('minute', now()) ORDER BY server = 'other'",
@@ -125,7 +120,6 @@ mod tests {
         .fetch_all(&pool)
         .await
         .unwrap();
-        assert!(!server().is_empty());
-        assert_eq!(rows, [(server().to_owned(), 0), ("other".to_owned(), 4)]);
+        assert_eq!(rows, [("srv-1".to_owned(), 0), ("other".to_owned(), 4)]);
     }
 }
