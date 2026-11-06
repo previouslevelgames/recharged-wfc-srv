@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Exercise the built image using a temporary Docker volume and containers."""
+"""Exercise the built image using a temporary Docker volume and containers:
+with its bundled PostgreSQL, then with that data in a database container of
+its own that two servers share, then bundled again."""
 
 import json
 import socket
@@ -61,6 +63,15 @@ def sql(container, query):
     )
 
 
+def wait_for(condition, what, seconds=60):
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if condition():
+            return
+        time.sleep(0.5)
+    raise AssertionError(f"{what} within {seconds} seconds")
+
+
 def gpcm_greeting(address):
     host, port = address.rsplit(":", 1)
     with socket.create_connection((host, int(port)), timeout=5) as connection:
@@ -79,19 +90,24 @@ def main():
     image, revision = sys.argv[1:]
     volume = "recharged-wfc-test-" + uuid.uuid4().hex
     logs_volume = volume + "-logs"
+    network = volume
     containers = []
     docker("volume", "create", volume)
     docker("volume", "create", logs_volume)
+    docker("network", "create", network)
+    credentials = (
+        "-e", "POSTGRES_DB=integration_db", "-e", "POSTGRES_USER=integration_user",
+        "-e", "POSTGRES_PASSWORD=container-test-only",
+    )
+    data = ("--mount", f"type=volume,source={volume},target=/var/lib/postgresql")
 
-    def start(*extra):
+    def start(*extra, mounts=data):
         container = docker(
             "run", "-d", "-p", "127.0.0.1::8080", "-p", "127.0.0.1::29900",
             "--health-interval=1s", "--health-start-period=0s",
-            "--mount", f"type=volume,source={volume},target=/var/lib/postgresql",
+            *mounts,
             "--mount", f"type=volume,source={logs_volume},target=/var/log/recharged-wfc-srv",
-            "-e", "POSTGRES_DB=integration_db", "-e", "POSTGRES_USER=integration_user",
-            "-e", "POSTGRES_PASSWORD=container-test-only",
-            "-e", "GIT_COMMIT=runtime-override", *extra, image,
+            *credentials, "-e", "GIT_COMMIT=runtime-override", *extra, image,
         )
         containers.append(container)
         return container
@@ -159,6 +175,53 @@ def main():
         assert wait_exit(container) != 0
         assert "Set POSTGRES_PASSWORD" in docker("logs", container)
         print("A missing database password is rejected.", flush=True)
+
+        # The same data in a database container of its own, as the Compose
+        # file runs it, which two servers share. They start first and wait.
+        remote = ("--network", network, "-e", f"POSTGRES_HOST={network}-db")
+        servers = [start(*remote, mounts=()) for _ in range(2)]
+        wait_for(lambda: "Waiting for PostgreSQL" in docker("logs", servers[0]),
+                 "A server did not wait for the database")
+        db = docker("run", "-d", "--name", network + "-db", "--network", network,
+                    *data, *credentials, "postgres:18-bookworm")
+        containers.append(db)
+        for server in servers:
+            wait_healthy(server)
+            address = docker("port", server, "8080/tcp")
+            with urllib.request.urlopen(f"http://{address}/status", timeout=5) as response:
+                assert json.load(response)["status"] == "ok"
+            greeting = gpcm_greeting(docker("port", server, "29900/tcp"))
+            assert greeting.startswith("\\lc\\1\\challenge\\"), greeting
+        assert sql(db, "SELECT value FROM persistence_probe") == "persisted"
+        assert sql(db, "SELECT count(DISTINCT client_addr) FROM pg_stat_activity "
+                       "WHERE application_name = 'recharged-wfc-srv'") == "2"
+        print("Two servers share the bundled database's data in a database container.",
+              flush=True)
+        for server in servers:
+            docker("stop", "--timeout", "30", server)
+            assert inspect(server)["State"]["ExitCode"] == 0
+        print("A server on a database container stops cleanly.", flush=True)
+
+        container = start(*remote, "-e", "POSTGRES_PASSWORD=incorrect-password", mounts=())
+        assert wait_exit(container) != 0
+        print("A wrong password for the database container is rejected.", flush=True)
+
+        container = start(*remote, mounts=data)
+        wait_healthy(container)
+        assert "SQL data folder mapped at" in docker("logs", container)
+        processes = docker("exec", container, "sh", "-c", "cat /proc/[0-9]*/comm")
+        assert "postgres" not in processes.split(), processes
+        docker("stop", "--timeout", "30", container)
+        print("With POSTGRES_HOST, a mapped data folder is left alone.", flush=True)
+
+        docker("stop", "--timeout", "30", db)
+        assert inspect(db)["State"]["ExitCode"] == 0
+        container = start()
+        wait_healthy(container)
+        assert sql(container, "SELECT value FROM persistence_probe") == "persisted"
+        docker("stop", "--timeout", "30", container)
+        assert inspect(container)["State"]["ExitCode"] == 0
+        print("The bundled PostgreSQL takes the data back.", flush=True)
     except Exception:
         for container in containers:
             subprocess.run(["docker", "logs", container], check=False)
@@ -168,6 +231,7 @@ def main():
             subprocess.run(["docker", "rm", "-fv", container], check=False,
                            stdout=subprocess.DEVNULL)
         docker("volume", "rm", volume, logs_volume)
+        docker("network", "rm", network)
 
 
 if __name__ == "__main__":
