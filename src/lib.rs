@@ -68,8 +68,8 @@ impl App {
     }
 
     /// The HTTP routes: status, NAS, gamestats2, match reports, and `/admin`
-    /// and the profile service with their configurations. gamestats2 and the
-    /// reports need the caller's address: serve them with
+    /// and the profile service with their configurations. NAS, gamestats2 and
+    /// the reports need the caller's address: serve them with
     /// `into_make_service_with_connect_info::<SocketAddr>()`.
     pub fn router(
         &self,

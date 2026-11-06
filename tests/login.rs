@@ -5,7 +5,10 @@
 //! negotiation over UDP, and a Recharged build's match reports over HTTP
 //! (docs/reports.md).
 
-use std::{collections::HashMap, net::SocketAddr};
+use std::{
+    collections::HashMap,
+    net::{IpAddr, SocketAddr},
+};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use md5::{Digest, Md5};
@@ -271,6 +274,30 @@ async fn a_logged_in_game_reports_its_series(pool: PgPool) {
             r#"{"error":"profile not logged in from this address"}"#
         )
     );
+}
+
+/// A network that sends the game's HTTP out by another address than its
+/// GPCM connection (a carrier's NAT, a provider's web proxy): its reports
+/// count from where its NAS login came from, and from nowhere else.
+#[cfg(target_os = "linux")]
+#[sqlx::test]
+async fn a_game_whose_http_leaves_by_another_address_reports(pool: PgPool) {
+    let mut server = Server::start(pool).await;
+    server.http_from = Some(IpAddr::from([127, 0, 0, 2]));
+    // NAS from 127.0.0.2, GPCM from 127.0.0.1.
+    let player = Player::log_in(&server, 42).await;
+    let report = serde_json::json!({
+        "profile_id": player.profile_id.parse::<i32>().unwrap(), "release": "R4QE",
+        "event": "start", "series": 1_792_000_000_i64, "mode": "friends", "best_of": 1,
+        "side": "home", "mii": "Mario", "opponent_mii": "Luigi",
+        "captains": {"home": "mario", "away": "luigi"},
+    })
+    .to_string();
+
+    let (status, body) = server.report(&report).await;
+    assert_eq!(status, 200, "{body}");
+    server.http_from = Some(IpAddr::from([127, 0, 0, 3]));
+    assert_eq!(server.report(&report).await.0, 403);
 }
 
 #[sqlx::test]
@@ -654,6 +681,8 @@ impl Master {
 struct Server {
     http: SocketAddr,
     gpcm: SocketAddr,
+    /// The local address the HTTP requests leave from, if not the default.
+    http_from: Option<IpAddr>,
 }
 
 impl Server {
@@ -664,6 +693,7 @@ impl Server {
         let server = Self {
             http: http.local_addr().unwrap(),
             gpcm: gpcm.local_addr().unwrap(),
+            http_from: None,
         };
         let router = app.router(None, None);
         tokio::spawn(async move {
@@ -692,7 +722,7 @@ impl Server {
              Connection: close\r\n\r\n{body}",
             body.len()
         );
-        let mut stream = TcpStream::connect(self.http).await.unwrap();
+        let mut stream = self.connect_http().await;
         stream.write_all(request.as_bytes()).await.unwrap();
         let mut response = String::new();
         stream.read_to_string(&mut response).await.unwrap();
@@ -720,13 +750,23 @@ impl Server {
              Connection: close\r\n\r\n{report}",
             report.len()
         );
-        let mut stream = TcpStream::connect(self.http).await.unwrap();
+        let mut stream = self.connect_http().await;
         stream.write_all(request.as_bytes()).await.unwrap();
         let mut response = String::new();
         stream.read_to_string(&mut response).await.unwrap();
         let (head, body) = response.split_once("\r\n\r\n").unwrap();
         let status = head.split(' ').nth(1).unwrap().parse().unwrap();
         (status, body.to_owned())
+    }
+
+    /// A connection to the HTTP port, from [`Self::http_from`] if set.
+    async fn connect_http(&self) -> TcpStream {
+        let Some(source) = self.http_from else {
+            return TcpStream::connect(self.http).await.unwrap();
+        };
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.bind(SocketAddr::new(source, 0)).unwrap();
+        socket.connect(self.http).await.unwrap()
     }
 
     /// A NAS login of `user_id` to [`GSBRCD`]. Returns the token and the
