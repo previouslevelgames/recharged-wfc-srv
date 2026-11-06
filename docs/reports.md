@@ -96,7 +96,8 @@ sides has no end yet (within 30 minutes of its last report) left WFC in the
 middle of the match: its reports can no longer come. The side keeps when and
 how: `logout` (the game left online play), `closed` (the connection was
 closed without a logout: the game was closed or crashed), `lost` (it broke
-off) or `replaced` (another login of the profile took over). A connection
+off), `replaced` (another login of the profile took over) or `banned` (an
+admin banned its console). A connection
 that goes silent is not noticed until TCP gives up on it. Refused reports are
 counted by profile with the last problem and address (`report_refusals`):
 those from another address than the profile's login's, and invalid ones from

@@ -38,6 +38,7 @@ use tracing::{debug, info, trace, warn};
 use crate::{
     accounts::{self, Profile},
     activity::{Activity, Via},
+    bans,
     nas::{TicketError, Tickets},
     reports,
 };
@@ -319,6 +320,23 @@ impl Gpcm {
             .collect()
     }
 
+    /// Ends the logins of `profiles`, whose consoles an admin banned: each
+    /// game gets a GP error and goes offline. Returns those logged in to this
+    /// server; another server sharing the database keeps its own.
+    pub fn disconnect(&self, profiles: &[i32]) -> Vec<i32> {
+        let sessions = self.sessions.lock().unwrap();
+        profiles
+            .iter()
+            .copied()
+            .filter(|profile_id| {
+                sessions
+                    .get(profile_id)
+                    .inspect(|session| session.kick.notify_one())
+                    .is_some()
+            })
+            .collect()
+    }
+
     /// Undoes [`Self::keep_off_boards`] for `profiles` (a delete that failed).
     pub fn back_on_boards(&self, profiles: &[i32]) {
         let mut sessions = self.sessions.lock().unwrap();
@@ -384,6 +402,15 @@ impl Gpcm {
             let read = tokio::select! {
                 read = reader.read(&mut chunk) => read,
                 () = async { kick.unwrap().notified().await }, if kick.is_some() => {
+                    // Another login took the profile over, or (the session
+                    // still this one's) a ban ended it.
+                    let profile_id = connection.login.as_ref().unwrap().profile.profile_id;
+                    let banned = self.sessions.lock().unwrap().get(&profile_id)
+                        .is_some_and(|session| session.connection == connection.id);
+                    if banned {
+                        connection.ended = "banned";
+                        break connection.fail(Error::BANNED, None).await;
+                    }
                     connection.ended = "replaced";
                     break connection.fail(Error::FORCED_DISCONNECT, None).await;
                 }
@@ -560,6 +587,15 @@ impl Gpcm {
         let proof = |first: &str, second: &str| proof(&ticket.challenge, token, first, second);
         if response != proof(client_challenge, &connection.challenge) {
             return Err(Error::LOGIN);
+        }
+        // A token NAS gave before the ban.
+        match bans::console_banned(&self.pool, ticket.user_id).await {
+            Ok(false) => {}
+            Ok(true) => return Err(Error::BANNED),
+            Err(error) => {
+                warn!(target: "gpcm", %error, "database error");
+                return Err(Error::DATABASE);
+            }
         }
 
         let profile = accounts::profile_login(
@@ -909,6 +945,9 @@ impl Error {
         "The login ticket had expired and could not be used.",
     );
     const BAD_PROFILE: Self = Self::new(0x0A01, "The profile info was requested on is invalid.");
+    /// The console is banned (docs/profiles.md, "Deleting a player"). GP has
+    /// no code of its own for it: a login error.
+    const BANNED: Self = Self::new(0x0100, "This console is banned from this server.");
 
     const fn new(code: u16, message: &'static str) -> Self {
         Self { code, message }

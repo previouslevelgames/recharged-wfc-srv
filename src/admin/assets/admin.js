@@ -210,6 +210,7 @@ const LEFT_HOW = {
   closed: 'closed without logging out',
   lost: 'connection broke off',
   replaced: 'another login took over',
+  banned: 'its console was banned',
 };
 // A Monitoring incident, with its badge tone.
 const INCIDENTS = {
@@ -729,6 +730,7 @@ function renderOverview(data, now) {
 
 function presence(player, now) {
   if (player.cpu_buddy) return [badge('accent', 'Server'), h('span', { class: 'sub' }, 'Accepts every friend request; never plays')];
+  if (player.banned && !player.online) return [badge('critical', 'Banned'), h('span', { class: 'sub' }, 'Its console logs in nowhere')];
   if (!player.online) return badge(null, 'Offline');
   const [name, tone, about] = statusOf(player.online);
   // A status counts from when the game sent it, the login from its start.
@@ -2692,8 +2694,13 @@ function playerCard(profile) {
     tools.push(h('button', { class: 'button', type: 'button', onclick: () => playerTools.unlink(profile) }, 'Unlink'));
     tools.push(h('button', { class: 'button', type: 'button', onclick: () => playerTools.openMerge(player) }, 'Keep this player and merge another…'));
   }
-  tools.push(h('button', { class: 'button destroy', type: 'button', onclick: () => playerTools.askDelete(profile) }, 'Delete player…'));
+  if (profile.ban) {
+    tools.push(h('button', { class: 'button', type: 'button', onclick: () => playerTools.liftBan(profile) }, 'Lift ban…'));
+  }
+  tools.push(h('button', { class: 'button destroy', type: 'button', onclick: () => playerTools.askDelete(profile) }, 'Delete and ban player…'));
   const result = playerTools.result && h('p', { class: 'tile-sub', 'data-tone': playerTools.result[1] }, playerTools.result[0]);
+  const ban = profile.ban
+    && warningNote(`Its console is banned: banned as ${profile.ban.name} by ${profile.ban.banned_by}, ${clock.format(new Date(profile.ban.banned_at))} (ban #${profile.ban.ban_id}). NAS and GPCM refuse every Mii on it.`);
   const body = player
     ? [
         h('p', null, h('strong', null, player.name), ` · player #${player.player_id}`, player.discord ? ` · Discord ${player.discord}` : ''),
@@ -2705,15 +2712,17 @@ function playerCard(profile) {
           player.profiles,
           'No profiles.',
         ),
+        ban,
         result,
       ]
-    : [h('p', { class: 'sub' }, 'No Recharged player has proved this profile theirs.'), result];
+    : [h('p', { class: 'sub' }, 'No Recharged player has proved this profile theirs.'), ban, result];
   return card('Recharged player', 'Linked WFC profiles share one leaderboard row per season or day. The row uses the highest-scoring profile’s Mii name, not the Recharged player name.', body, tools);
 }
 
-/** Linking a profile to a player, unlinking it, merging two players and
- * deleting one (the last two in two asks, as the leaderboard wipe). The
- * dialogs stay out of the polled page, so typing survives each refresh. */
+/** Linking a profile to a player, unlinking it, merging two players,
+ * deleting and banning one (the last two in two asks, as the leaderboard
+ * wipe) and lifting a ban. The dialogs stay out of the polled page, so typing
+ * survives each refresh. */
 const playerTools = {
   dialog: null,
   result: null, // [text, tone] of the last action.
@@ -2790,6 +2799,25 @@ const playerTools = {
       h('div', { class: 'editor-actions' }, h('button', { class: 'button', type: 'button', onclick: () => this.dialog.close() }, 'Cancel'), submit),
     );
     input.focus();
+  },
+
+  liftBan(profile) {
+    const ban = profile.ban;
+    const submit = h('button', { class: 'button', type: 'submit' }, 'Lift ban');
+    submit.addEventListener('click', async (event) => {
+      event.preventDefault();
+      try {
+        await send('DELETE', `/admin/api/bans/${ban.ban_id}`);
+        this.done(`Ban #${ban.ban_id} (${ban.name}) is lifted.`, 'good');
+      } catch (error) {
+        this.done(error.message, 'critical');
+      }
+    });
+    this.show(
+      `Lift the ban of ${ban.name}?`,
+      h('p', null, 'Every console and Discord account of this ban can play again. A Discord sign-in makes a new Recharged player; what the delete removed stays gone.'),
+      h('div', { class: 'editor-actions' }, h('button', { class: 'button', type: 'button', onclick: () => this.dialog.close() }, 'Cancel'), submit),
+    );
   },
 
   async unlink(profile) {
@@ -2888,7 +2916,7 @@ const playerTools = {
     const { phrase, expires_at: expiresAt, impact, token } = asked;
     const player = impact.player;
     const input = h('input', { type: 'text', autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false' });
-    const confirm = h('button', { class: 'button destroy', type: 'submit', disabled: true }, player ? `Delete player #${player.player_id}` : 'Delete its data');
+    const confirm = h('button', { class: 'button destroy', type: 'submit', disabled: true }, player ? `Delete and ban player #${player.player_id}` : 'Delete its data and ban its console');
     input.addEventListener('input', () => {
       confirm.disabled = input.value.trim() !== phrase;
     });
@@ -2898,9 +2926,10 @@ const playerTools = {
       try {
         const deleted = await send('POST', '/admin/api/players/delete/confirm', { profile_id: profile.profile_id, token, phrase: input.value.trim() });
         const rows = `${plural(deleted.scores, 'board row', 'board rows')}, ${plural(deleted.past_scores, 'past-season row', 'past-season rows')} and ${plural(deleted.online_matches, 'online match', 'online matches')}`;
+        const banned = `${plural(deleted.consoles, 'console is', 'consoles are')} banned (ban #${deleted.ban_id})`;
         this.done(deleted.player
-          ? `Deleted Recharged player ${deleted.player.name} (#${deleted.player.player_id}) with ${plural(deleted.sets, 'set', 'sets')}, and ${rows} of their WFC profiles. The WFC profiles stay.`
-          : `Deleted ${rows} of WFC profile #${profile.profile_id}. The profile stays.`, 'good');
+          ? `Deleted Recharged player ${deleted.player.name} (#${deleted.player.player_id}) with ${plural(deleted.sets, 'set', 'sets')}, and ${rows} of their WFC profiles. Their ${banned}.`
+          : `Deleted ${rows} of WFC profile #${profile.profile_id}. Its ${banned}.`, 'good');
       } catch (error) {
         this.done(error.message, 'critical');
       }
@@ -2908,7 +2937,7 @@ const playerTools = {
     const profiles = impact.profiles.map((p) => `${p.mii_name || 'Unnamed'} (#${p.profile_id}, ${p.release})`).join(', ');
     const kinds = player && (player.signs_in_with.length ? player.signs_in_with.join(', ') : 'no account');
     this.show(
-      player ? `Delete ${player.name} (player #${player.player_id})?` : `Delete the data of ${profile.mii_name || 'this profile'}?`,
+      player ? `Delete and ban ${player.name} (player #${player.player_id})?` : `Delete the data of ${profile.mii_name || 'this profile'} and ban its console?`,
       player
         ? h('p', null, h('strong', null, 'Recharged player: '), `${player.name} (#${player.player_id}, ${kinds}) is deleted with their sign-ins and launcher sessions (their launchers are signed out), friends, chats and search.`)
         : h('p', null, 'No Recharged player plays this profile: only its own data goes.'),
@@ -2920,9 +2949,9 @@ const playerTools = {
         player ? h('li', null, plural(impact.friends, 'friend entry', 'friend entries'), ' (both ways)') : null,
         h('li', null, plural(impact.mii_friends, 'Mii friend entry', 'Mii friend entries'), ' of these profiles'),
       ),
-      h('p', null, 'The WFC profiles stay: the game logs in only to the profile number its save holds, so the console keeps playing online and starts again from 0 on the boards. Signing in from the launcher again makes a new Recharged player.'),
+      h('p', null, h('strong', null, 'Banned: '), plural(impact.consoles, 'console', 'consoles'), ' (NAS and GPCM refuse every Mii on them)', player ? [' and ', plural(impact.identities, 'Discord account', 'Discord accounts'), ' (they make no new player)'] : null, '. The WFC profiles stay, marked banned; the profile’s page lifts the ban.'),
       impact.online
-        ? warningNote(`${plural(impact.online, 'of these profiles is', 'of these profiles are')} logged in now. `, 'A game keeps its totals until it logs in again: the server keeps its results off the boards until then.')
+        ? warningNote(`${plural(impact.online, 'of these profiles is', 'of these profiles are')} logged in now. `, 'Their games are disconnected from this server.')
         : null,
       warningNote('This cannot be undone.'),
       h('label', { class: 'editor-field' }, h('span', null, 'Type ', h('code', null, phrase), ' to confirm'), input),

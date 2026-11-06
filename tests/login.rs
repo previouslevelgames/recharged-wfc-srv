@@ -367,6 +367,51 @@ async fn a_login_needs_the_token_and_its_proof(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn a_banned_console_logs_in_nowhere(pool: PgPool) {
+    let server = Server::start(pool.clone()).await;
+    // A token from before the ban.
+    let (token, challenge) = server.nas_login(42).await;
+    sqlx::raw_sql(
+        "INSERT INTO bans (name, banned_by) VALUES ('Cheater', 'admin@example.com');
+         INSERT INTO banned_accounts (user_id, ban_id) SELECT 42, ban_id FROM bans;",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let name: Vec<u8> = "Mario".encode_utf16().flat_map(u16::to_be_bytes).collect();
+    let reply = server
+        .nas(&[
+            ("action", b"login"),
+            ("gsbrcd", GSBRCD.as_bytes()),
+            ("userid", b"0000000000042"),
+            ("ingamesn", &name),
+        ])
+        .await;
+    assert_eq!(reply["returncd"], "120");
+    assert!(!reply.contains_key("token"));
+
+    let mut client = Client::connect(server.gpcm).await;
+    client.send_login(&token, &challenge).await;
+    assert_eq!(client.receive().await["err"], "256");
+    assert!(client.closed().await);
+    let profiles: i64 = sqlx::query_scalar("SELECT count(*) FROM profiles WHERE user_id = 42")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(profiles, 0, "no profile made");
+
+    // Lifted, it logs in again.
+    sqlx::raw_sql("DELETE FROM bans")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let (token, challenge) = server.nas_login(42).await;
+    let mut client = Client::connect(server.gpcm).await;
+    assert!(!client.log_in(&token, &challenge).await["profileid"].is_empty());
+}
+
+#[sqlx::test]
 async fn nas_refuses_logins_without_their_fields(pool: PgPool) {
     let server = Server::start(pool).await;
     let reply = server.nas(&[("action", b"login"), ("userid", b"42")]).await;

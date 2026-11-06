@@ -41,7 +41,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, Uri, header},
     middleware::{self, Next},
     response::{Html, IntoResponse, Redirect, Response},
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use serde::{Deserialize, Serialize};
@@ -51,6 +51,7 @@ use tracing::{info, warn};
 
 use crate::{
     activity::Activity,
+    bans,
     gpcm::Gpcm,
     html::{escape, label_page},
     master::Master,
@@ -201,6 +202,7 @@ pub(crate) fn router(
         .route("/admin/api/players/merge/confirm", post(merge_players))
         .route("/admin/api/players/delete", post(arm_delete_player))
         .route("/admin/api/players/delete/confirm", post(delete_player))
+        .route("/admin/api/bans/{id}", delete(lift_ban))
         .route("/admin/api/rules", post(create_rule_set))
         .route(
             "/admin/api/rules/{id}",
@@ -982,16 +984,50 @@ async fn delete_player(
     ) {
         return refused(operation, refusal);
     }
-    match deletion::delete(&state.pool, &state.gpcm, confirmation.profile_id).await {
+    match deletion::delete(
+        &state.pool,
+        &state.gpcm,
+        confirmation.profile_id,
+        &admin.email,
+    )
+    .await
+    {
         Ok(Ok(deleted)) => {
             warn!(target: "admin", email = %admin.email, profile_id = confirmation.profile_id,
                   player_id = ?deleted.player.as_ref().map(|player| player.player_id),
                   profiles = deleted.profiles.len(), scores = deleted.scores,
                   past_scores = deleted.past_scores, online_matches = deleted.online_matches,
-                  sets = deleted.sets, "player deleted");
+                  sets = deleted.sets, ban_id = ?deleted.ban_id, consoles = deleted.consoles,
+                  identities = deleted.identities, "player deleted and banned");
             Json(deleted).into_response()
         }
         Ok(Err(refusal)) => error(StatusCode::CONFLICT, refusal),
+        Err(failure) => {
+            warn!(target: "admin", error = %failure, "database error");
+            error(StatusCode::INTERNAL_SERVER_ERROR, "the database failed")
+        }
+    }
+}
+
+/// Lifts a ban (any admin, as a delete bans): its consoles log in again, and
+/// its Discord accounts make a new player.
+async fn lift_ban(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Path(ban_id): Path<i64>,
+) -> Response {
+    let admin = match state.editor(&jar, &headers) {
+        Ok(admin) => admin,
+        Err(status) => return status.into_response(),
+    };
+    match bans::lift(&state.pool, ban_id).await {
+        Ok(Some(ban)) => {
+            warn!(target: "admin", email = %admin.email, ban_id, name = %ban.name,
+                  banned_by = %ban.banned_by, "ban lifted");
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Ok(None) => error(StatusCode::NOT_FOUND, "no such ban"),
         Err(failure) => {
             warn!(target: "admin", error = %failure, "database error");
             error(StatusCode::INTERNAL_SERVER_ERROR, "the database failed")

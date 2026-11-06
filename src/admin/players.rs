@@ -11,7 +11,7 @@ use time::OffsetDateTime;
 
 use super::page::snapshot;
 use crate::{
-    accounts,
+    accounts, bans,
     gamestats::submission::Submission,
     gpcm::{Gpcm, Matchmaking, Presence},
     reports::{
@@ -122,6 +122,8 @@ struct Player {
     /// Rows in `scores`.
     scores: i64,
     online: Option<Online>,
+    /// Its console is banned (docs/profiles.md, "Deleting a player").
+    banned: bool,
 }
 
 /// A login to GPCM.
@@ -202,7 +204,8 @@ async fn profiles(
     let rows = sqlx::query!(
         r#"SELECT p.profile_id, p.user_id, p.gsbrcd, p.ingamesn, p.created_at,
                   p.last_login_at, p.last_ip,
-                  (SELECT count(*) FROM scores s WHERE s.profile_id = p.profile_id) AS "scores!"
+                  (SELECT count(*) FROM scores s WHERE s.profile_id = p.profile_id) AS "scores!",
+                  EXISTS (SELECT 1 FROM banned_accounts b WHERE b.user_id = p.user_id) AS "banned!"
            FROM profiles p
            WHERE $2::TEXT IS NULL
               OR strpos(lower(coalesce(p.ingamesn, '')), $2) > 0
@@ -237,6 +240,7 @@ async fn profiles(
             last_login_at: row.last_login_at,
             last_ip: row.last_ip,
             scores: row.scores,
+            banned: row.banned,
         })
         .collect();
     // The CPU buddy, then who is online; each in the order of their logins.
@@ -276,6 +280,8 @@ struct Profile {
     /// The Recharged player who proved the profile theirs
     /// (docs/profiles.md, "Friend codes").
     player: Option<Bound>,
+    /// The ban of its console (docs/profiles.md, "Deleting a player").
+    ban: Option<bans::Ban>,
 }
 
 #[derive(Serialize)]
@@ -428,6 +434,7 @@ pub async fn detail(
             profiles,
         });
     }
+    let ban = bans::of_console(&mut tx, row.user_id).await?;
     let profile = Profile {
         profile_id: row.profile_id,
         user_id: row.user_id,
@@ -441,6 +448,7 @@ pub async fn detail(
         last_ip: row.last_ip,
         online,
         player: bound,
+        ban,
     };
     let standing = standing(&mut tx, profile_id).await?;
     let (stats, matches) = record(&mut tx, profile_id).await?;
