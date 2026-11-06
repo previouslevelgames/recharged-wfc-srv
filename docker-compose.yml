@@ -1,12 +1,65 @@
+# PostgreSQL in a container of its own, which the servers share
+# (docs/install.md, "Several servers on one database"). Coming from the single
+# container, run `docker compose down` once before the first `up`: the
+# database must never run in two containers on the same data folder.
+x-server: &server
+  image: ${SERVER_IMAGE:-ghcr.io/previouslevelgames/recharged-wfc-srv:latest}
+  restart: unless-stopped
+  stop_grace_period: 30s
+  depends_on:
+    db:
+      condition: service_healthy
+
+x-server-environment: &server-environment
+  PORT: "8080"
+  POSTGRES_HOST: db
+  POSTGRES_DB: ${POSTGRES_DB:-recharged_wfc}
+  POSTGRES_USER: ${POSTGRES_USER:-recharged_wfc}
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+  PUBLIC_URL: ${PUBLIC_URL:-}
+  GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+  GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+  ADMIN_GOOGLE_EMAILS: ${ADMIN_GOOGLE_EMAILS:-}
+  OWNER_GOOGLE_EMAILS: ${OWNER_GOOGLE_EMAILS:-}
+  DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID:-}
+  DISCORD_CLIENT_SECRET: ${DISCORD_CLIENT_SECRET:-}
+  PROFILES_TEST_SIGN_IN: ${PROFILES_TEST_SIGN_IN:-}
+  SERVER_LABEL: ${SERVER_LABEL:-}
+  NATNEG_RELAY: ${NATNEG_RELAY:-}
+  NATNEG_RELAY_ADDRESS: ${NATNEG_RELAY_ADDRESS:-}
+  NATNEG_RELAY_MAX: ${NATNEG_RELAY_MAX:-}
+  LOG_RETENTION_DAYS: ${LOG_RETENTION_DAYS:-}
+
 services:
+  db:
+    # bookworm, as the server image: a database made by the bundled PostgreSQL
+    # keeps its collations. The default Debian of postgres:18 is newer.
+    image: postgres:18-bookworm
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      # These initialize an empty data folder only.
+      POSTGRES_DB: ${POSTGRES_DB:-recharged_wfc}
+      POSTGRES_USER: ${POSTGRES_USER:-recharged_wfc}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_INITDB_ARGS: --auth-host=scram-sha-256
+    volumes:
+      - ${POSTGRES_DATA_DIR:-./data/postgres}:/var/lib/postgresql
+    healthcheck:
+      # Over TCP, as the servers connect: during the first start PostgreSQL
+      # answers on its socket before it is ready.
+      test: ["CMD-SHELL", "pg_isready -q -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
   server:
-    image: ${SERVER_IMAGE:-ghcr.io/previouslevelgames/recharged-wfc-srv:latest}
+    <<: *server
     build:
       context: .
       args:
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
-    restart: unless-stopped
-    stop_grace_period: 30s
     ports:
       # The game reaches NAS and gamestats2 on port 80.
       - "${HTTP_PORT:-80}:8080"
@@ -15,23 +68,26 @@ services:
       - "28910:28910"
       - "27901:27901/udp"
     environment:
-      PORT: "8080"
-      POSTGRES_DB: ${POSTGRES_DB:-recharged_wfc}
-      POSTGRES_USER: ${POSTGRES_USER:-recharged_wfc}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
-      PUBLIC_URL: ${PUBLIC_URL:-}
-      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
-      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
-      ADMIN_GOOGLE_EMAILS: ${ADMIN_GOOGLE_EMAILS:-}
-      OWNER_GOOGLE_EMAILS: ${OWNER_GOOGLE_EMAILS:-}
-      DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID:-}
-      DISCORD_CLIENT_SECRET: ${DISCORD_CLIENT_SECRET:-}
-      PROFILES_TEST_SIGN_IN: ${PROFILES_TEST_SIGN_IN:-}
-      SERVER_LABEL: ${SERVER_LABEL:-}
-      NATNEG_RELAY: ${NATNEG_RELAY:-}
-      NATNEG_RELAY_ADDRESS: ${NATNEG_RELAY_ADDRESS:-}
-      NATNEG_RELAY_MAX: ${NATNEG_RELAY_MAX:-}
-      LOG_RETENTION_DAYS: ${LOG_RETENTION_DAYS:-}
+      <<: *server-environment
     volumes:
-      - ${POSTGRES_DATA_DIR:-./data/postgres}:/var/lib/postgresql
       - ${LOG_DATA_DIR:-./data/logs}:/var/log/recharged-wfc-srv
+
+  # A second server on the same database, with COMPOSE_PROFILES=second-server.
+  # The game's ports are fixed, so it needs its own address in front to take
+  # games; until then its host ports are other ones.
+  server-2:
+    <<: *server
+    profiles: [second-server]
+    ports:
+      - "${SERVER_2_HTTP_PORT:-8081}:8080"
+      - "${SERVER_2_GPCM_PORT:-39900}:29900"
+      - "${SERVER_2_MASTER_PORT:-37900}:27900/udp"
+      - "${SERVER_2_SERVER_BROWSER_PORT:-38910}:28910"
+      - "${SERVER_2_NATNEG_PORT:-37901}:27901/udp"
+    environment:
+      <<: *server-environment
+      PUBLIC_URL: ${SERVER_2_PUBLIC_URL:-${PUBLIC_URL:-}}
+      SERVER_LABEL: ${SERVER_2_LABEL:-}
+    volumes:
+      # Its own: two servers would write the same daily file.
+      - ${SERVER_2_LOG_DATA_DIR:-./data/logs-2}:/var/log/recharged-wfc-srv

@@ -93,7 +93,7 @@ light or dark mode.
 
 The server ships as one container image,
 `ghcr.io/previouslevelgames/recharged-wfc-srv`, with its PostgreSQL database
-inside. It needs five ports reachable from the players' games, and the game is
+inside. Several servers can also share one database in a container of its own. It needs five ports reachable from the players' games, and the game is
 pointed at it with one line in its `recharged.ini`:
 
 ```ini

@@ -1,7 +1,10 @@
 # Installing the server
 
-One container runs the server and PostgreSQL 18. The image is
-`ghcr.io/previouslevelgames/recharged-wfc-srv`; `stable` is the latest release.
+One container runs the server and PostgreSQL 18. To run several servers on
+one database, PostgreSQL gets a container of its own instead
+([Several servers on one database](#several-servers-on-one-database)). The
+image is `ghcr.io/previouslevelgames/recharged-wfc-srv`; `stable` is the latest
+release.
 `GET /status` returns `{"status":"ok","revision":"<Git commit SHA>"}`.
 
 The game reaches the server on five ports:
@@ -51,6 +54,8 @@ enter the **Key** and **Value** from the table, and set **Password Mask: Yes** f
 | `POSTGRES_PASSWORD` | yes | Generate a password in the Unraid terminal with `openssl rand -hex 32` and paste the output. Keep it across container updates. |
 | `POSTGRES_DB` | no | Database name. Default: `recharged_wfc`. |
 | `POSTGRES_USER` | no | Database user. Default: `recharged_wfc`. |
+| `POSTGRES_HOST` | no | The name or address of a database container, e.g. `recharged-wfc-db`, for [several servers on one database](#several-servers-on-one-database). The container then starts no PostgreSQL of its own and needs no **Path (SQL data)**. Unset: the bundled PostgreSQL. |
+| `POSTGRES_PORT` | no | The database's port. Default: `5432`. |
 | `PGDATA` | no | SQL data directory inside the container. Default: `/var/lib/postgresql/18/docker`, beneath the mapped `/var/lib/postgresql` path. Leave unset to use this default. |
 | `PORT` | no | HTTP port inside the container (NAS, gamestats2, `/status`, `/admin`). Default: `8080`; the Host Port mapping makes it 80. |
 | `GPCM_PORT` | no | GPCM port inside the container. Default: `29900`. |
@@ -85,8 +90,9 @@ keep it at its default for this setup.
 `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD` initialize an empty data
 folder; changing them later does not update an existing database or its credentials.
 
-If replacing the earlier two-container setup, stop its PostgreSQL container before
-reusing the same host folder.
+PostgreSQL must never run in two containers on the same data folder: stop a
+database container before giving its folder back to the server container, and
+the other way round.
 
 Click **Apply**. The container starts PostgreSQL on internal `127.0.0.1:5432`, then
 the server. Open `http://<unraid-ip>/status` to check the running revision. The
@@ -248,8 +254,96 @@ Give a test container its own **Path (SQL data)** and **Host Port**: the server
 applies its database migrations on start, so a test build would upgrade the
 release container's database.
 
+With a [database container](#several-servers-on-one-database), give a test
+server a database container of its own.
+
 Make the [GHCR package public](https://github.com/orgs/previouslevelgames/packages/container/recharged-wfc-srv/settings)
 for pulls without credentials, or run `docker login ghcr.io` on Unraid.
+
+## Several servers on one database
+
+PostgreSQL can run in a container of its own, which several server containers
+share: they keep one set of players, profiles, scores and matches. A server
+container with `POSTGRES_HOST` uses the database there and starts no
+PostgreSQL of its own.
+
+Each server keeps who is online in its own memory: players see each other
+online, as friends and in matchmaking, only on the same server. A game's NAS
+login and its GPCM connection must reach the same server too. `/admin` shows
+the players, matchmaking and activity of the server you are signed in to, and
+**Monitoring**'s count of players online takes one server's count per minute.
+Until the servers share this, send all of the game's traffic to one of them.
+
+### The network
+
+The servers reach the database container by its name on a Docker network of
+their own. Create it once in the Unraid terminal:
+
+```bash
+docker network create recharged-wfc
+```
+
+Unraid keeps networks made this way across restarts with **Settings → Docker →
+Preserve user defined networks: Yes** (Advanced View, with Docker stopped), and
+lists it under **Network** as `Custom: recharged-wfc`. A server inside another
+container's network, such as a VPN container's, reaches the database when that
+container is on `recharged-wfc`.
+
+### The database container
+
+In **Docker → Add Container** (Advanced View):
+
+| Setting | Value |
+|---|---|
+| Name | `recharged-wfc-db` |
+| Repository | `postgres:18-bookworm`. Keep `-bookworm`: the server image is built on it, so a database the bundled PostgreSQL made keeps its collations. |
+| Network | `Custom: recharged-wfc` |
+| Path (SQL data) | Config Type **Path**: Container Path `/var/lib/postgresql`, Host Path `/mnt/user/appdata/recharged-wfc-srv/postgres`, Access Mode **Read/Write**: the server's **Path (SQL data)** so far, which keeps its data. |
+| Variables | `POSTGRES_PASSWORD` (**Password Mask: Yes**), `POSTGRES_USER` and `POSTGRES_DB`, as on the servers. They initialize an empty folder only. |
+| Extra Parameters (Advanced) | `--stop-timeout=30` |
+| Autostart | Enabled |
+
+It needs no **Port**: only the servers reach it, over the network. Keep it
+above the servers in the Docker tab, so it starts first; a server waits for the
+database anyway and logs `Waiting for PostgreSQL` until it answers.
+
+On a folder that holds a database, its log says `Skipping initialization`. If
+it initializes a new database instead, stop it: **Host Path** does not point at
+the old data.
+
+### The server containers
+
+Set them up as in [Unraid setup](#unraid-setup), with these differences:
+
+- **Network** `Custom: recharged-wfc`.
+- The variable `POSTGRES_HOST` = `recharged-wfc-db`, and the same
+  `POSTGRES_PASSWORD`, `POSTGRES_USER` and `POSTGRES_DB` as the database.
+- No **Path (SQL data)**. Without it, a server whose `POSTGRES_HOST` goes
+  missing starts an empty database of its own instead of opening the shared
+  folder a second time.
+- Each server its own **Path (logs)**, e.g. `.../recharged-wfc-srv/logs-2`:
+  two servers would write the same daily file.
+- Each server its own **Host Ports**, or its own address: the game's ports are
+  fixed.
+
+### Switching an existing container
+
+1. Stop `recharged-wfc-srv`, and copy its data folder while it is stopped,
+   e.g. `cp -a /mnt/user/appdata/recharged-wfc-srv/postgres /mnt/user/appdata/recharged-wfc-srv/postgres.bak`.
+2. Create the network and the database container as above, on the same
+   **Host Path**, and start it. Check its log for `Skipping initialization`.
+3. Edit `recharged-wfc-srv`: add `POSTGRES_HOST`, remove **Path (SQL data)**,
+   and move it to the network. **Apply**.
+
+To go back, stop the server and the database container, give the server its
+**Path (SQL data)** again and remove `POSTGRES_HOST`.
+
+### Updates
+
+The first server to start on a new version updates the database, while the
+others wait for it. Update every server to the same version together: a server
+older than the database refuses to start (`migration … was previously applied
+but is missing`). CA Auto Update on every server container does this.
 
 ## Docker Compose
 
@@ -261,9 +355,23 @@ docker compose pull
 docker compose up -d --no-build --wait
 ```
 
-For Compose, `POSTGRES_DATA_DIR` and `LOG_DATA_DIR` set the **host** folders for
-the SQL data and the logs, and `HTTP_PORT` sets the host HTTP port (default 80, which the game needs); GPCM, the master server, the
-server browser and NAT negotiation use 29900, 27900/udp, 28910 and 27901/udp.
-In Unraid, use the **Path** and **Port** mappings above.
-Repeat the last two commands to update. To build locally instead, run
-`./scripts/build.sh` before `docker compose up -d --no-build --wait`.
+Compose runs PostgreSQL in a container of its own, `db`, and the server as
+`server`. `POSTGRES_DATA_DIR` and `LOG_DATA_DIR` set the **host** folders for
+the SQL data and the logs, and `HTTP_PORT` sets the host HTTP port (default 80,
+which the game needs); GPCM, the master server, the server browser and NAT
+negotiation use 29900, 27900/udp, 28910 and 27901/udp. In Unraid, use the
+**Path** and **Port** mappings above. Repeat the last two commands to update.
+To build locally instead, run `./scripts/build.sh` before
+`docker compose up -d --no-build --wait`.
+
+The Compose file before this one ran the database inside the server container.
+Coming from it, run `docker compose down` once before the first `up`; the
+database container then opens the same `POSTGRES_DATA_DIR`.
+
+`COMPOSE_PROFILES=second-server` adds `server-2` on the same database, with its
+own log folder `SERVER_2_LOG_DATA_DIR` and the host ports `SERVER_2_HTTP_PORT`
+(8081), `SERVER_2_GPCM_PORT` (39900), `SERVER_2_MASTER_PORT` (37900/udp),
+`SERVER_2_SERVER_BROWSER_PORT` (38910) and `SERVER_2_NATNEG_PORT` (37901/udp).
+`SERVER_2_LABEL` labels its pages, and `SERVER_2_PUBLIC_URL` gives it its own
+`PUBLIC_URL`. See [Several servers on one database](#several-servers-on-one-database)
+for what the servers share.

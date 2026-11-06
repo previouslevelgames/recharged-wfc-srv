@@ -44,13 +44,16 @@ ENV PORT=8080 \
     POSTGRES_USER=recharged_wfc \
     POSTGRES_INITDB_ARGS="--auth-host=scram-sha-256" \
     LOG_DIR=/var/log/recharged-wfc-srv
-# PostgreSQL's base image provides PGDATA and the /var/lib/postgresql volume.
+# PostgreSQL's base image provides PGDATA and the /var/lib/postgresql volume,
+# for the bundled database. With POSTGRES_HOST set, the container uses the
+# database there instead and runs only the server (docker/entrypoint.sh).
 # HTTP (NAS, gamestats2, /admin), GPCM, the QR2 master server, the server
 # browser and NAT negotiation.
 EXPOSE 8080 29900 27900/udp 28910 27901/udp
 STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD pg_isready -q -h 127.0.0.1 -p 5432 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+    CMD pg_isready -q -h "${POSTGRES_HOST:-127.0.0.1}" -p "${POSTGRES_PORT:-5432}" \
+            -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
         && curl --fail --silent --show-error --max-time 3 "http://127.0.0.1:${PORT}/status" || exit 1
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/start-server"]
 CMD []
