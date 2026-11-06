@@ -1136,6 +1136,7 @@ function sideReporter(side) {
     h('a', { href: playerPath(reporter.profile_id) }, `Profile ${reporter.profile_id}`),
     h('span', { class: 'sub' }, ['Friend code ', h('code', null, reporter.friend_code)]),
     reporter.build && h('span', { class: 'sub' }, ['Build ', h('code', null, reporter.build)]),
+    reporter.os && h('span', { class: 'sub' }, ['OS ', reporter.os]),
   ];
 }
 
