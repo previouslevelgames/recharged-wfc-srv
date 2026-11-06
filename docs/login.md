@@ -69,7 +69,7 @@ by a NUL; status 200 always, as the client retries anything else.
 
 | Key | `acctcreate` | `login` |
 |---|---|---|
-| `returncd` | `002` | `001`; `103` for a missing or bad field |
+| `returncd` | `002` | `001`; `103` for a missing or bad field; `120` for a banned console (docs/profiles.md, "Deleting a player") |
 | `datetime` | UTC `YYYYMMDDhhmmss`: the game's clock for seasons | same |
 | `retry` | `0` | `0` |
 | `userid` | the new account's | |
@@ -77,13 +77,21 @@ by a NUL; status 200 always, as the client retries anything else.
 | `locator` | | `gamespy.com` |
 | `token` | | `NDS` and Base64 (DWC keeps 255 characters) |
 
+DWC stops a login at any `returncd` from 102 to 999 without trying again and
+shows error 20000 + `returncd`. It keeps `returncd` in four bytes, so a code
+has at most three digits.
+
 **Registration** makes an `accounts` row with a random userid. A `login` with a
 userid this server did not make registers it: a console keeps its userid.
 
-**The token** carries the login (userid, gsbrcd, challenge, Mii name) signed
-with HMAC-SHA256 under a key of the process, so the server keeps nothing. It
-stays good for 10 minutes and can be used more than once (step 5); a restart
-invalidates it.
+**The token** carries the login (userid, gsbrcd, challenge, Mii name and the
+address the request came from) signed with HMAC-SHA256 under a key of the
+process, so the server keeps nothing. It stays good for 10 minutes and can be
+used more than once (step 5); a restart invalidates it. GPCM keeps the NAS
+address with the login: gamestats2 and the reports take the login's requests
+from it as well as from GPCM's ([gamestats2.md](gamestats2.md#trust)), since
+some networks send the game's HTTP out by another address. The log line
+`nas: logged in` names it as `peer`.
 
 ## GPCM: TCP 29900
 

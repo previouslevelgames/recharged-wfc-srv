@@ -134,7 +134,7 @@ pub enum Operation {
         into: i64,
     },
     /// The player of a WFC profile deleted, with every row of their
-    /// profiles (Players).
+    /// profiles, and their consoles and sign-ins banned (Players).
     DeletePlayer {
         profile_id: i32,
     },
@@ -146,7 +146,7 @@ impl Operation {
         match self {
             Self::WipeLeaderboards => "wipe all leaderboards",
             Self::MergePlayers { .. } => "merge these players",
-            Self::DeletePlayer { .. } => "delete this player",
+            Self::DeletePlayer { .. } => "delete and ban this player",
         }
     }
 }

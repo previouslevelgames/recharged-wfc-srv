@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT bans.ban_id, name, banned_by, banned_at\n         FROM banned_accounts JOIN bans USING (ban_id)\n         WHERE banned_accounts.user_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "ban_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "bans",
+            "name": "ban_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "bans",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "banned_by",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "bans",
+            "name": "banned_by"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "banned_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "bans",
+            "name": "banned_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "708822a73bab377cb188d637da8bb18092c272efc224ce17fce656326ddfbeda"
+}

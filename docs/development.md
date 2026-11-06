@@ -6,7 +6,8 @@ one file per day in that folder (the image sets it). `RUST_LOG` filters them
 `RUST_LOG=info,raw=trace` adds raw protocol dumps. Check with `cargo fmt --check`,
 `cargo clippy --locked --all-targets -- -D warnings`, and `cargo test --locked`
 (`just check` runs all three). The standalone Rust process serves status without
-starting PostgreSQL; the image entrypoint manages the database. The container
+starting PostgreSQL; the image entrypoint manages the database, or, with
+`POSTGRES_HOST`, waits for the one there and starts none. The container
 supplies `PGHOST`, `PGPORT`, `PGUSER`, `PGPASSWORD`, and `PGDATABASE` to the
 Rust process. Routes live in `src/lib.rs`.
 

@@ -14,6 +14,7 @@ mod message;
 
 use std::{
     collections::{HashMap, HashSet},
+    fmt,
     net::{IpAddr, SocketAddr},
     sync::{
         Arc, Mutex,
@@ -37,6 +38,7 @@ use tracing::{debug, info, trace, warn};
 use crate::{
     accounts::{self, Profile},
     activity::{Activity, Via},
+    bans,
     nas::{TicketError, Tickets},
     reports,
 };
@@ -85,9 +87,12 @@ pub struct Gpcm {
 
 struct Session {
     connection: u64,
-    /// Where the console logged in from: gamestats2 takes its scores only
-    /// from there.
+    /// Where the console logged in from. gamestats2 and the reports take its
+    /// requests only from there or from `nas_address`.
     address: IpAddr,
+    /// Where the NAS login whose token it logged in with came from: the
+    /// game's HTTP, which some networks send out by another address.
+    nas_address: IpAddr,
     kick: Arc<Notify>,
     logged_in_at: OffsetDateTime,
     /// Messages to the connection from other logins: friends' answers and
@@ -154,10 +159,42 @@ pub struct Presence {
     pub mutual_friends: usize,
 }
 
+/// Where a login came from. Usually one address; some networks send the
+/// game's HTTP out by another one than its GPCM connection (carrier NAT, a
+/// provider's web proxy).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LoginAddresses {
+    /// The GPCM connection's.
+    pub gpcm: IpAddr,
+    /// The NAS login's, whose token the GPCM login presented.
+    pub nas: IpAddr,
+}
+
+impl LoginAddresses {
+    /// Whether a request from `address` may be the login's own: gamestats2's
+    /// puts and the reports come over HTTP like the NAS login, so either
+    /// address counts. Both are the login's: the NAS address is signed into
+    /// the token, which only that login's game has.
+    pub fn contains(&self, address: IpAddr) -> bool {
+        address == self.gpcm || address == self.nas
+    }
+}
+
+impl fmt::Display for LoginAddresses {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.gpcm == self.nas {
+            write!(f, "{}", self.gpcm)
+        } else {
+            write!(f, "{} (NAS {})", self.gpcm, self.nas)
+        }
+    }
+}
+
 impl Session {
     fn new(
         connection: u64,
         address: IpAddr,
+        nas_address: IpAddr,
         kick: Arc<Notify>,
         outbox: mpsc::UnboundedSender<Message>,
         login_ticket: String,
@@ -165,6 +202,7 @@ impl Session {
         Self {
             connection,
             address,
+            nas_address,
             kick,
             logged_in_at: OffsetDateTime::now_utc(),
             outbox,
@@ -245,6 +283,16 @@ impl Gpcm {
         sessions.get(&profile_id).map(|session| session.address)
     }
 
+    /// Where `profile_id`'s login came from, GPCM's connection and its NAS
+    /// login, if it is logged in.
+    pub fn login_addresses(&self, profile_id: i32) -> Option<LoginAddresses> {
+        let sessions = self.sessions.lock().unwrap();
+        sessions.get(&profile_id).map(|session| LoginAddresses {
+            gpcm: session.address,
+            nas: session.nas_address,
+        })
+    }
+
     /// Whether `profile_id` is logged in with the login ticket
     /// `login_ticket`.
     pub fn logged_in_with(&self, profile_id: i32, login_ticket: &str) -> bool {
@@ -268,6 +316,23 @@ impl Gpcm {
                 sessions
                     .get_mut(profile_id)
                     .is_some_and(|session| !std::mem::replace(&mut session.off_boards, true))
+            })
+            .collect()
+    }
+
+    /// Ends the logins of `profiles`, whose consoles an admin banned: each
+    /// game gets a GP error and goes offline. Returns those logged in to this
+    /// server; another server sharing the database keeps its own.
+    pub fn disconnect(&self, profiles: &[i32]) -> Vec<i32> {
+        let sessions = self.sessions.lock().unwrap();
+        profiles
+            .iter()
+            .copied()
+            .filter(|profile_id| {
+                sessions
+                    .get(profile_id)
+                    .inspect(|session| session.kick.notify_one())
+                    .is_some()
             })
             .collect()
     }
@@ -337,6 +402,15 @@ impl Gpcm {
             let read = tokio::select! {
                 read = reader.read(&mut chunk) => read,
                 () = async { kick.unwrap().notified().await }, if kick.is_some() => {
+                    // Another login took the profile over, or (the session
+                    // still this one's) a ban ended it.
+                    let profile_id = connection.login.as_ref().unwrap().profile.profile_id;
+                    let banned = self.sessions.lock().unwrap().get(&profile_id)
+                        .is_some_and(|session| session.connection == connection.id);
+                    if banned {
+                        connection.ended = "banned";
+                        break connection.fail(Error::BANNED, None).await;
+                    }
                     connection.ended = "replaced";
                     break connection.fail(Error::FORCED_DISCONNECT, None).await;
                 }
@@ -514,6 +588,15 @@ impl Gpcm {
         if response != proof(client_challenge, &connection.challenge) {
             return Err(Error::LOGIN);
         }
+        // A token NAS gave before the ban.
+        match bans::console_banned(&self.pool, ticket.user_id).await {
+            Ok(false) => {}
+            Ok(true) => return Err(Error::BANNED),
+            Err(error) => {
+                warn!(target: "gpcm", %error, "database error");
+                return Err(Error::DATABASE);
+            }
+        }
 
         let profile = accounts::profile_login(
             &self.pool,
@@ -547,6 +630,7 @@ impl Gpcm {
             Session::new(
                 connection.id,
                 connection.peer,
+                ticket.address,
                 kick.clone(),
                 connection.outbox.clone(),
                 login_ticket,
@@ -861,6 +945,9 @@ impl Error {
         "The login ticket had expired and could not be used.",
     );
     const BAD_PROFILE: Self = Self::new(0x0A01, "The profile info was requested on is invalid.");
+    /// The console is banned (docs/profiles.md, "Deleting a player"). GP has
+    /// no code of its own for it: a login error.
+    const BANNED: Self = Self::new(0x0100, "This console is banned from this server.");
 
     const fn new(code: u16, message: &'static str) -> Self {
         Self { code, message }
@@ -917,9 +1004,16 @@ impl Gpcm {
     /// A login of `profile_id` from `address` with no connection behind it,
     /// for other modules' tests. Its login ticket is `ticket-<profile_id>`.
     pub(crate) fn fake_login(&self, profile_id: i32, address: IpAddr) {
+        self.fake_login_via(profile_id, address, address);
+    }
+
+    /// [`Self::fake_login`] whose NAS login came from `nas`, another address
+    /// than its GPCM connection's (`gpcm`).
+    pub(crate) fn fake_login_via(&self, profile_id: i32, gpcm: IpAddr, nas: IpAddr) {
         let session = Session::new(
             0,
-            address,
+            gpcm,
+            nas,
             Arc::new(Notify::new()),
             mpsc::unbounded_channel().0,
             format!("ticket-{profile_id}"),
@@ -946,6 +1040,7 @@ mod tests {
         let gpcm = Gpcm::new(pool, Arc::default(), Arc::default());
         let mut session = Session::new(
             1,
+            IpAddr::from([10, 0, 0, 1]),
             IpAddr::from([10, 0, 0, 1]),
             Arc::new(Notify::new()),
             mpsc::unbounded_channel().0,
@@ -974,6 +1069,7 @@ mod tests {
     fn a_match_keeps_whom_its_matchmaking_was_with() {
         let mut session = Session::new(
             1,
+            IpAddr::from([10, 0, 0, 1]),
             IpAddr::from([10, 0, 0, 1]),
             Arc::new(Notify::new()),
             mpsc::unbounded_channel().0,
@@ -1020,6 +1116,7 @@ mod tests {
         let mut session = Session::new(
             1,
             IpAddr::from([10, 0, 0, 1]),
+            IpAddr::from([10, 0, 0, 1]),
             Arc::new(Notify::new()),
             mpsc::unbounded_channel().0,
             String::new(),
@@ -1037,6 +1134,7 @@ mod tests {
     fn a_status_keeps_its_time_until_it_changes() {
         let mut session = Session::new(
             1,
+            IpAddr::from([10, 0, 0, 1]),
             IpAddr::from([10, 0, 0, 1]),
             Arc::new(Notify::new()),
             mpsc::unbounded_channel().0,

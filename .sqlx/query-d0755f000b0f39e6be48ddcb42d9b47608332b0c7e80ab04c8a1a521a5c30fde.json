@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO banned_accounts (user_id, ban_id)\n         SELECT DISTINCT user_id, $2::BIGINT FROM profiles\n         WHERE profile_id = ANY($1) AND user_id <> $3\n         ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4Array",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "d0755f000b0f39e6be48ddcb42d9b47608332b0c7e80ab04c8a1a521a5c30fde"
+}

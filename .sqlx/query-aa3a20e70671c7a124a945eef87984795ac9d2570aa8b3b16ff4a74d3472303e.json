@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO banned_identities (provider, external_id, ban_id)\n         SELECT provider, external_id, $2::BIGINT FROM player_identities\n         WHERE player_id = $1 AND provider <> 'wfc'\n         ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "aa3a20e70671c7a124a945eef87984795ac9d2570aa8b3b16ff4a74d3472303e"
+}

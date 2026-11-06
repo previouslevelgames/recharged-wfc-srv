@@ -10,11 +10,11 @@
 mod base64;
 mod ticket;
 
-use std::{collections::BTreeMap, collections::HashMap, sync::Arc};
+use std::{collections::BTreeMap, collections::HashMap, net::SocketAddr, sync::Arc};
 
 use axum::{
     Form, Router,
-    extract::State,
+    extract::{ConnectInfo, State},
     http::{StatusCode, header},
     response::{IntoResponse, Response},
     routing::post,
@@ -25,7 +25,7 @@ use tracing::{debug, info, warn};
 
 pub use ticket::{Ticket, TicketError, Tickets};
 
-use crate::accounts;
+use crate::{accounts, bans};
 
 /// What `login` gives GPCM as the place to log in to; DWC ignores it.
 const LOCATOR: &str = "gamespy.com";
@@ -36,6 +36,8 @@ struct NasState {
     tickets: Arc<Tickets>,
 }
 
+/// The routes. A login keeps the caller's address in its token: serve them
+/// with `into_make_service_with_connect_info::<SocketAddr>()`.
 pub fn router(pool: PgPool, tickets: Arc<Tickets>) -> Router {
     Router::new()
         .route("/ac", post(account))
@@ -48,10 +50,15 @@ mod returncd {
     pub const REGISTERED: &str = "002";
     /// A field is missing or does not parse.
     pub const BAD_REQUEST: &str = "103";
+    /// The console is banned (docs/profiles.md, "Deleting a player"). DWC
+    /// stops the login and shows error 20120; a `returncd` has at most three
+    /// digits, as DWC keeps it in four bytes.
+    pub const BANNED: &str = "120";
 }
 
 async fn account(
     State(state): State<NasState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Form(form): Form<Vec<(String, String)>>,
 ) -> Response {
     let fields = decode(form);
@@ -62,7 +69,7 @@ async fn account(
 
     let reply = match action.as_deref() {
         Some("acctcreate") => register(&state).await,
-        Some("login") => login(&state, &fields).await,
+        Some("login") => login(&state, &fields, peer).await,
         // `svcloc` and the rest: the game never asks for them.
         _ => {
             warn!(target: "nas", ?action, "unsupported action");
@@ -101,11 +108,19 @@ async fn register(state: &NasState) -> Result<Reply, sqlx::Error> {
 }
 
 /// `login`: a token and a challenge for GPCM.
-async fn login(state: &NasState, fields: &HashMap<String, Vec<u8>>) -> Result<Reply, sqlx::Error> {
+async fn login(
+    state: &NasState,
+    fields: &HashMap<String, Vec<u8>>,
+    peer: SocketAddr,
+) -> Result<Reply, sqlx::Error> {
     let Some(login) = LoginFields::parse(fields) else {
         warn!(target: "nas", fields = ?fields.keys().collect::<Vec<_>>(), "bad login");
         return Ok(Reply::new(returncd::BAD_REQUEST));
     };
+    if bans::console_banned(&state.pool, login.user_id).await? {
+        info!(target: "nas", user_id = login.user_id, gsbrcd = %login.gsbrcd, peer = %peer.ip(), "banned console refused");
+        return Ok(Reply::new(returncd::BANNED));
+    }
     accounts::log_in(&state.pool, login.user_id).await?;
     let ticket = Ticket {
         user_id: login.user_id,
@@ -114,8 +129,9 @@ async fn login(state: &NasState, fields: &HashMap<String, Vec<u8>>) -> Result<Re
             .map(|_| char::from(rand::random_range(b'A'..=b'Z')))
             .collect(),
         ingamesn: login.ingamesn,
+        address: peer.ip(),
     };
-    info!(target: "nas", user_id = ticket.user_id, gsbrcd = %ticket.gsbrcd, ingamesn = ?ticket.ingamesn, "logged in");
+    info!(target: "nas", user_id = ticket.user_id, gsbrcd = %ticket.gsbrcd, ingamesn = ?ticket.ingamesn, peer = %peer.ip(), "logged in");
     Ok(Reply::new(returncd::LOGGED_IN)
         .with("challenge", ticket.challenge.clone())
         .with("locator", LOCATOR.into())

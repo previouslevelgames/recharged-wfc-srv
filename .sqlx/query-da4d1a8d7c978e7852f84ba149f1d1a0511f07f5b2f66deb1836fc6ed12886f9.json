@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM bans WHERE ban_id = $1 RETURNING ban_id, name, banned_by, banned_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "ban_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "bans",
+            "name": "ban_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "bans",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "banned_by",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "bans",
+            "name": "banned_by"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "banned_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "bans",
+            "name": "banned_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "da4d1a8d7c978e7852f84ba149f1d1a0511f07f5b2f66deb1836fc6ed12886f9"
+}

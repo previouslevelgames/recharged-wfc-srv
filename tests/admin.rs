@@ -260,7 +260,7 @@ async fn an_admin_deletes_a_player_and_only_when_asked_twice(pool: PgPool) {
     assert_eq!(status, 409, "{answer}");
     let (status, asked) = admin.post_json(ASK, ask.clone()).await;
     assert_eq!(status, 200, "{asked}");
-    assert_eq!(asked["phrase"], "delete this player");
+    assert_eq!(asked["phrase"], "delete and ban this player");
     assert_eq!(asked["impact"]["player"]["name"], "Cheater", "{asked}");
     assert_eq!(asked["impact"]["scores"], 2, "{asked}");
     let token = asked["token"].as_str().unwrap();
@@ -272,7 +272,7 @@ async fn an_admin_deletes_a_player_and_only_when_asked_twice(pool: PgPool) {
     let mut owner = Browser::new(app);
     sign_in(&mut owner, &google, "owner@example.com").await;
     let (status, _) = owner
-        .post_json(CONFIRM, confirm(token, "delete this player"))
+        .post_json(CONFIRM, confirm(token, "delete and ban this player"))
         .await;
     assert_eq!(status, 409);
     assert_eq!(
@@ -284,7 +284,7 @@ async fn an_admin_deletes_a_player_and_only_when_asked_twice(pool: PgPool) {
     let (_, asked) = admin.post_json(ASK, ask).await;
     let token = asked["token"].as_str().unwrap();
     let (status, deleted) = admin
-        .post_json(CONFIRM, confirm(token, "delete this player"))
+        .post_json(CONFIRM, confirm(token, "delete and ban this player"))
         .await;
     assert_eq!(status, 200, "{deleted}");
     assert_eq!(deleted["scores"], 2, "{deleted}");
@@ -294,6 +294,40 @@ async fn an_admin_deletes_a_player_and_only_when_asked_twice(pool: PgPool) {
         count("SELECT count(*) FROM profiles WHERE profile_id = 1000000005").await,
         1
     );
+
+    // The console is banned, as the player was named, until an admin lifts it.
+    assert_eq!(deleted["consoles"], 1, "{deleted}");
+    let ban_id = deleted["ban_id"].as_i64().unwrap();
+    let (status, _, detail) = admin.get("/admin/api/players/1000000005").await;
+    assert_eq!(status, 200);
+    let detail: serde_json::Value = serde_json::from_str(&detail).unwrap();
+    assert_eq!(
+        detail["content"]["profile"]["ban"]["ban_id"], ban_id,
+        "{detail}"
+    );
+    assert_eq!(
+        detail["content"]["profile"]["ban"]["name"], "Cheater",
+        "{detail}"
+    );
+    assert_eq!(
+        detail["content"]["profile"]["ban"]["banned_by"],
+        "second@example.com"
+    );
+    let (_, _, list) = admin.get("/admin/api/players").await;
+    let list: serde_json::Value = serde_json::from_str(&list).unwrap();
+    let row = list["content"]["profiles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["profile_id"] == 1000000005)
+        .unwrap();
+    assert_eq!(row["banned"], true, "{row}");
+    let lift = format!("/admin/api/bans/{ban_id}");
+    let (status, _) = admin.send_json(Request::delete(&lift), None).await;
+    assert_eq!(status, 204);
+    assert_eq!(count("SELECT count(*) FROM banned_accounts").await, 0);
+    let (status, _) = admin.send_json(Request::delete(&lift), None).await;
+    assert_eq!(status, 404);
 }
 
 #[sqlx::test]
