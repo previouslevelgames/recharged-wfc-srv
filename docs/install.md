@@ -271,8 +271,9 @@ Each server keeps who is online in its own memory: players see each other
 online, as friends and in matchmaking, only on the same server. A game's NAS
 login and its GPCM connection must reach the same server too. `/admin` shows
 the players, matchmaking and activity of the server you are signed in to, and
-**Monitoring**'s count of players online takes one server's count per minute.
-Until the servers share this, send all of the game's traffic to one of them.
+its players online right now; **Monitoring**'s timeline adds up every server's
+count of each minute. Until the servers share the rest, send all of the game's
+traffic to one of them.
 
 ### The network
 

@@ -240,9 +240,12 @@ async fn by_day(conn: &mut PgConnection, since: OffsetDateTime) -> Result<Vec<Da
            e AS (
                SELECT (received_at AT TIME ZONE 'UTC')::date AS day, count(*) AS errors
                FROM client_errors WHERE received_at >= $1 GROUP BY 1),
+           minutes AS (
+               SELECT at, sum(wfc)::integer AS wfc
+               FROM online_samples WHERE at >= $1 GROUP BY at),
            o AS (
                SELECT (at AT TIME ZONE 'UTC')::date AS day, max(wfc) AS peak_online
-               FROM online_samples WHERE at >= $1 GROUP BY 1)
+               FROM minutes GROUP BY 1)
            SELECT days.day::text AS "day!",
                   coalesce(m.matches, 0) AS "matches!", coalesce(m.abandoned, 0) AS "abandoned!",
                   coalesce(g.games, 0) AS "games!", coalesce(g.desyncs, 0) AS "desyncs!",
@@ -419,11 +422,17 @@ async fn timeline(conn: &mut PgConnection, online_now: Online) -> Result<Timelin
     )
     .fetch_all(&mut *conn)
     .await?;
+    // Each minute the servers' players in WFC and in matches add up; with
+    // Recharged open, every server counted all.
     let online = sqlx::query_as!(
         Online,
-        r#"SELECT date_bin(make_interval(mins => $2), at, TIMESTAMPTZ '1970-01-01 00:00:00+00') AS "at!",
+        r#"WITH minutes AS (
+               SELECT at, sum(wfc)::integer AS wfc, sum(playing)::integer AS playing,
+                      max(recharged) AS recharged
+               FROM online_samples WHERE at >= $1 GROUP BY at)
+           SELECT date_bin(make_interval(mins => $2), at, TIMESTAMPTZ '1970-01-01 00:00:00+00') AS "at!",
                   max(wfc) AS "wfc!", max(playing) AS "playing!", max(recharged) AS "recharged!"
-           FROM online_samples WHERE at >= $1
+           FROM minutes
            GROUP BY 1 ORDER BY 1"#,
         from,
         ONLINE_MINUTES,
@@ -623,8 +632,9 @@ mod tests {
             (0, 0)
         );
 
-        // A player with Recharged open, and samples: three in one span of
-        // ten minutes, one in the next, one older than the timeline.
+        // A player with Recharged open, and samples of two servers: three
+        // minutes in one span of ten minutes, one in the next, one older than
+        // the timeline.
         sqlx::query("INSERT INTO players (display_name, heartbeat_at) VALUES ('Mario', now())")
             .execute(&pool)
             .await
@@ -632,18 +642,22 @@ mod tests {
         crate::online::sample(&pool, &gpcm(&pool)).await.unwrap();
         let span = i64::from(ONLINE_MINUTES) * 60;
         let base = OffsetDateTime::now_utc().unix_timestamp() / span * span - 3 * span;
-        for (offset, wfc, playing, recharged) in [
-            (0, 3, 0, 1),
-            (60, 7, 2, 2),
-            (120, 5, 4, 1),
-            (span, 2, 0, 0),
-            (-3 * 24 * 3600, 40, 10, 9),
+        for (server, offset, wfc, playing, recharged) in [
+            ("a", 0, 3, 0, 1),
+            ("a", 60, 7, 2, 2),
+            ("b", 60, 4, 1, 2),
+            ("a", 120, 5, 4, 1),
+            ("b", 120, 1, 3, 1),
+            ("a", span, 2, 0, 0),
+            ("a", -3 * 24 * 3600, 40, 10, 9),
+            ("b", -3 * 24 * 3600, 5, 0, 9),
         ] {
             sqlx::query(
-                "INSERT INTO online_samples (at, wfc, playing, recharged)
-                 VALUES (to_timestamp($1), $2, $3, $4)",
+                "INSERT INTO online_samples (at, server, wfc, playing, recharged)
+                 VALUES (to_timestamp($1), $2, $3, $4, $5)",
             )
             .bind((base + offset) as f64)
+            .bind(server)
             .bind(wfc)
             .bind(playing)
             .bind(recharged)
@@ -666,8 +680,10 @@ mod tests {
                 )
             })
             .collect();
-        // Each span's most; the sample of now (the player, nobody in WFC) last.
-        assert_eq!(&points[..2], [(0, 7, 4, 2), (span, 2, 0, 0)]);
+        // Each span's most of the minutes, where the servers' players in WFC
+        // and in matches add up and those with Recharged open don't; the
+        // sample of now (the player, nobody in WFC) last.
+        assert_eq!(&points[..2], [(0, 11, 7, 2), (span, 2, 0, 0)]);
         assert_eq!(points.last().map(|point| (point.1, point.3)), Some((0, 1)));
         // The day's peak: the most logged in to WFC that day (the day of the
         // samples: just after midnight UTC, yesterday).
@@ -681,7 +697,7 @@ mod tests {
             .find(|day| day.day == sampled)
             .unwrap();
         assert!(
-            day.peak_online.is_some_and(|peak| peak >= 7),
+            day.peak_online.is_some_and(|peak| peak >= 11),
             "{:?}",
             day.peak_online
         );
@@ -690,6 +706,6 @@ mod tests {
             .date()
             .to_string();
         let day = monitoring.by_day.iter().find(|day| day.day == old).unwrap();
-        assert_eq!(day.peak_online, Some(40));
+        assert_eq!(day.peak_online, Some(45));
     }
 }
