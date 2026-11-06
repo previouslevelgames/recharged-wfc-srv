@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS (SELECT 1 FROM banned_identities\n                          WHERE provider = $1 AND external_id = $2) AS \"banned!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "banned!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "349b2f41cfeb6772a6cebcd845e357c94fd6c842ebb965c4c74603d98eb8a8db"
+}

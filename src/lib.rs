@@ -8,6 +8,7 @@ use tower_http::trace::TraceLayer;
 mod accounts;
 mod activity;
 pub mod admin;
+mod bans;
 mod gamestats;
 mod gpcm;
 mod html;

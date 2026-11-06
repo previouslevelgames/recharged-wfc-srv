@@ -444,25 +444,47 @@ profile's page (owners only):
 
 ### Deleting a player
 
-**Delete player…** on a profile's page (any admin, not only owners), in two
-asks as the leaderboard wipe (`POST /admin/api/players/delete` with `{"profile_id"}`
-answers what goes, the phrase and a token; `.../delete/confirm` with the
-profile, the token and the phrase deletes), removes the Recharged player the
-profile plays for and every row their WFC profiles have on the boards: the
-`scores` of every category and the `past_scores` of ended seasons and days.
-With them go the online matches the profiles reported (both sides), the Mii
-friends of the profiles (the player's own and other players'), and the
-player's sign-ins, sessions (their launchers are signed out), friends,
-chats, search and sets (for their opponents too). A profile no player plays
-for loses only its own rows. Refused while the player has a set to play or a
-profile an online match in progress, and for the CPU buddy.
+**Delete and ban player…** on a profile's page (any admin, not only owners),
+in two asks as the leaderboard wipe (`POST /admin/api/players/delete` with
+`{"profile_id"}` answers what goes, the phrase and a token;
+`.../delete/confirm` with the profile, the token and the phrase deletes),
+removes the Recharged player the profile plays for and every row their WFC
+profiles have on the boards: the `scores` of every category and the
+`past_scores` of ended seasons and days. With them go the online matches the
+profiles reported (both sides), the Mii friends of the profiles (the
+player's own and other players'), and the player's sign-ins, sessions (their
+launchers are signed out), friends, chats, search and sets (for their
+opponents too). A profile no player plays for loses only its own rows.
+Refused while the player has a set to play or a profile an online match in
+progress, and for the CPU buddy.
 
 The WFC profiles stay: DWC logs in only to the profile number its save holds
-and refuses any other (`DWCi_GPConnectCallback`), so a deleted profile would
-lock that Mii out of online play. The console keeps playing and starts again
-from 0, and signing in from a launcher again makes a new player. A game
-logged in during the delete still holds its totals: its puts stay off the
-boards until it logs in again (docs/gamestats2.md, "What `score` means").
+and refuses any other (`DWCi_GPConnectCallback`), so deleting a profile
+would not keep its Mii out, only make its next login a new profile. The
+game sends its Mii name again at every login, so the delete bans instead
+(`bans`):
+
+- **The consoles** of the profiles (`banned_accounts`, by DWC userid), never
+  the CPU buddy's account. NAS answers their `login` with `returncd` `120`,
+  which the game shows as error 20120 (docs/login.md), and GPCM refuses a
+  token NAS gave before the ban. Every Mii on such a console is out, not only
+  the player's. Their games logged in to this server are disconnected at
+  once, with a GP error; a server sharing the database keeps its own logins
+  until they end.
+- **The player's Discord accounts** (`banned_identities`): a sign-in with one
+  is refused (`This account is banned from this server`) and makes no new
+  player.
+
+The Players page marks a banned console's profiles **Banned**, and a
+profile's page names the ban: whom it was for, the admin and when. **Lift
+ban…** there (`DELETE /admin/api/bans/<id>`, any admin) lets its consoles
+log in again and its Discord accounts make a new player; what the delete
+removed stays gone, and the consoles start again from 0 on the boards.
+
+A ban doesn't reach what doesn't identify the console or the account: a
+console whose WFC data is erased registers a new userid, and **Play with a
+Mii** in a launcher makes a new player under any name. Such a player can't
+play online from a banned console, and is deleted the same way.
 
 ## Rules
 

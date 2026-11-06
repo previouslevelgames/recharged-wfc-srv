@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS (SELECT 1 FROM banned_accounts WHERE user_id = $1) AS \"banned!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "banned!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "9c589929e2b95c8eb95ed801238dc323d7cb4a2229adc1367140578fc706a728"
+}

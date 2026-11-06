@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT profile_id FROM profiles\n         WHERE user_id IN (SELECT user_id FROM banned_accounts WHERE ban_id = $1)\n         ORDER BY profile_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "profile_id",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "profiles",
+            "name": "profile_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "a6111cb77c6bf33b6b01364c611d3cf5e4e367a0e3b446051ccb075bc7ecc421"
+}

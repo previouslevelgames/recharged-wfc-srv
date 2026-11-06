@@ -25,7 +25,7 @@ use tracing::{debug, info, warn};
 
 pub use ticket::{Ticket, TicketError, Tickets};
 
-use crate::accounts;
+use crate::{accounts, bans};
 
 /// What `login` gives GPCM as the place to log in to; DWC ignores it.
 const LOCATOR: &str = "gamespy.com";
@@ -50,6 +50,10 @@ mod returncd {
     pub const REGISTERED: &str = "002";
     /// A field is missing or does not parse.
     pub const BAD_REQUEST: &str = "103";
+    /// The console is banned (docs/profiles.md, "Deleting a player"). DWC
+    /// stops the login and shows error 20120; a `returncd` has at most three
+    /// digits, as DWC keeps it in four bytes.
+    pub const BANNED: &str = "120";
 }
 
 async fn account(
@@ -113,6 +117,10 @@ async fn login(
         warn!(target: "nas", fields = ?fields.keys().collect::<Vec<_>>(), "bad login");
         return Ok(Reply::new(returncd::BAD_REQUEST));
     };
+    if bans::console_banned(&state.pool, login.user_id).await? {
+        info!(target: "nas", user_id = login.user_id, gsbrcd = %login.gsbrcd, peer = %peer.ip(), "banned console refused");
+        return Ok(Reply::new(returncd::BANNED));
+    }
     accounts::log_in(&state.pool, login.user_id).await?;
     let ticket = Ticket {
         user_id: login.user_id,

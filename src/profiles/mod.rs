@@ -50,6 +50,7 @@ use sqlx::PgPool;
 use tracing::{info, warn};
 
 use crate::{
+    bans,
     gpcm::Gpcm,
     html::{escape, label_page},
     pairing::Pairings,
@@ -276,6 +277,13 @@ impl ProfilesState {
         discord: Option<discord::SdkTokens>,
         link: Option<&Link>,
     ) -> Result<Finished, sqlx::Error> {
+        // An account banned with its player (docs/profiles.md, "Deleting a
+        // player") makes no new one, nor joins another.
+        if bans::identity_banned(&self.pool, identity.provider, identity.external_id).await? {
+            info!(target: "profiles", provider = identity.provider, "banned account refused");
+            self.sign_ins.finish(id, Outcome::Conflict(BANNED.into()));
+            return Ok(Finished::Banned);
+        }
         let (player_id, token) = match link {
             Some(link) => match players::link(&self.pool, link.player_id, identity).await? {
                 Ok(()) => {
@@ -423,7 +431,12 @@ enum Finished {
     Expired,
     /// The link it was for can't be made.
     Refused(LinkRefusal),
+    /// The account is banned.
+    Banned,
 }
+
+/// What the launcher and the page say to a banned account.
+const BANNED: &str = "This account is banned from this server";
 
 /// What the launcher and the page say when a link can't be made.
 fn link_refusal(refusal: &LinkRefusal) -> &'static str {
@@ -756,6 +769,7 @@ async fn discord_callback(
         Ok(Finished::Expired) => {
             state.notice_page(StatusCode::NOT_FOUND, &SignInError::Expired.message())
         }
+        Ok(Finished::Banned) => state.notice_page(StatusCode::FORBIDDEN, &format!("{BANNED}.")),
         Ok(Finished::Refused(refusal)) => {
             info!(target: "profiles", ?refusal, "Discord not linked");
             state.notice_page(
@@ -808,6 +822,7 @@ async fn page_test_sign_in(
         .await
     {
         Ok(Finished::SignedIn) => state.signed_in_page(&name, None),
+        Ok(Finished::Banned) => state.notice_page(StatusCode::FORBIDDEN, &format!("{BANNED}.")),
         Ok(Finished::Expired | Finished::Refused(_)) => {
             state.notice_page(StatusCode::NOT_FOUND, &SignInError::Expired.message())
         }

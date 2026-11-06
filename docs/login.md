@@ -69,13 +69,17 @@ by a NUL; status 200 always, as the client retries anything else.
 
 | Key | `acctcreate` | `login` |
 |---|---|---|
-| `returncd` | `002` | `001`; `103` for a missing or bad field |
+| `returncd` | `002` | `001`; `103` for a missing or bad field; `120` for a banned console (docs/profiles.md, "Deleting a player") |
 | `datetime` | UTC `YYYYMMDDhhmmss`: the game's clock for seasons | same |
 | `retry` | `0` | `0` |
 | `userid` | the new account's | |
 | `challenge` | | 8 letters (DWC keeps 8) |
 | `locator` | | `gamespy.com` |
 | `token` | | `NDS` and Base64 (DWC keeps 255 characters) |
+
+DWC stops a login at any `returncd` from 102 to 999 without trying again and
+shows error 20000 + `returncd`. It keeps `returncd` in four bytes, so a code
+has at most three digits.
 
 **Registration** makes an `accounts` row with a random userid. A `login` with a
 userid this server did not make registers it: a console keeps its userid.

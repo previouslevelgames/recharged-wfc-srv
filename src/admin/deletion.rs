@@ -3,13 +3,15 @@
 //! their WFC profiles have on the server, every board's rows first. The WFC
 //! profiles themselves stay: the game logs in only to the profile number its
 //! save holds (DWC refuses any other), so deleting one would lock that Mii
-//! out of online play instead of giving it a fresh start.
+//! out of online play instead of giving it a fresh start. Their consoles
+//! and the player's sign-ins are banned instead (`crate::bans`), so the Mii
+//! that comes back with each login doesn't.
 
 use serde::Serialize;
 use sqlx::{PgConnection, PgPool};
 
 use super::merge::Side;
-use crate::{accounts, gpcm::Gpcm, reports};
+use crate::{accounts, bans, gpcm::Gpcm, reports};
 
 /// What a delete removes, as its first ask shows it and its second does it.
 #[derive(Debug, PartialEq, Serialize)]
@@ -31,9 +33,16 @@ pub struct Deletion {
     pub friends: i64,
     /// Mii friends: the player's own, and other players' of these profiles.
     pub mii_friends: i64,
-    /// Of the profiles, those logged in to GPCM now. Their games still hold
-    /// their totals: their puts stay off the boards until they log in again.
+    /// Of the profiles, those logged in to GPCM now. The delete ends their
+    /// logins with the rest of their consoles'.
     pub online: usize,
+    /// The consoles of the profiles, which the delete bans: NAS and GPCM
+    /// refuse every Mii on them. Never the CPU buddy's account.
+    pub consoles: i64,
+    /// The player's sign-ins (Discord's) the delete bans.
+    pub identities: i64,
+    /// The ban, once the delete is done.
+    pub ban_id: Option<i64>,
 }
 
 #[derive(Debug, PartialEq, Serialize)]
@@ -134,9 +143,14 @@ async fn plan_in(
              (SELECT count(*) FROM matches WHERE home = $2 OR away = $2) AS "sets!",
              (SELECT count(*) FROM friends WHERE player_id = $2 OR friend_id = $2) AS "friends!",
              (SELECT count(*) FROM friend_profiles
-              WHERE profile_id = ANY($1) OR player_id = $2) AS "mii_friends!""#,
+              WHERE profile_id = ANY($1) OR player_id = $2) AS "mii_friends!",
+             (SELECT count(DISTINCT user_id) FROM profiles
+              WHERE profile_id = ANY($1) AND user_id <> $3) AS "consoles!",
+             (SELECT count(*) FROM player_identities
+              WHERE player_id = $2 AND provider <> 'wfc') AS "identities!""#,
         &ids,
         player_id,
+        accounts::CPU_BUDDY_ACCOUNT,
     )
     .fetch_one(&mut *conn)
     .await?;
@@ -154,6 +168,9 @@ async fn plan_in(
         friends: counts.friends,
         mii_friends: counts.mii_friends,
         online,
+        consoles: counts.consoles,
+        identities: counts.identities,
+        ban_id: None,
     }))
 }
 
@@ -185,16 +202,18 @@ async fn side(conn: &mut PgConnection, player_id: i64) -> Result<Option<Side>, s
 /// the profiles' rows on every board and of past seasons, their online
 /// matches and the Mii friends of them; the player with their sign-ins,
 /// sessions (their launchers are signed out), friends, chats, search and
-/// sets. Games of the profiles logged in now keep their puts off the boards
-/// until they log in again. Err: why not (as [`plan`]).
+/// sets. Bans, by `banned_by`, the profiles' consoles and the player's
+/// sign-ins, and ends the consoles' logins to this server. Err: why not (as
+/// [`plan`]).
 pub async fn delete(
     pool: &PgPool,
     gpcm: &Gpcm,
     profile_id: i32,
+    banned_by: &str,
 ) -> Result<Result<Deletion, &'static str>, sqlx::Error> {
     reports::settle_idle(pool).await?;
     let mut tx = pool.begin().await?;
-    let deletion = match plan_in(&mut tx, gpcm, profile_id).await? {
+    let mut deletion = match plan_in(&mut tx, gpcm, profile_id).await? {
         Ok(deletion) => deletion,
         Err(refusal) => return Ok(Err(refusal)),
     };
@@ -207,14 +226,33 @@ pub async fn delete(
     // match would put the old one back.
     let flagged = gpcm.keep_off_boards(&ids);
     let player_id = deletion.player.as_ref().map(|player| player.player_id);
-    let removed = match remove(&mut tx, &ids, player_id).await {
-        Ok(()) => tx.commit().await,
+    let name = match &deletion.player {
+        Some(player) => player.name.clone(),
+        None => deletion
+            .profiles
+            .iter()
+            .find(|profile| profile.profile_id == profile_id)
+            .and_then(|profile| profile.mii_name.clone())
+            .unwrap_or_else(|| format!("WFC profile {profile_id}")),
+    };
+    // The ban first: the player's sign-ins go with them.
+    let removed = match bans::ban(&mut tx, &name, banned_by, &ids, player_id).await {
+        Ok(ban_id) => match remove(&mut tx, &ids, player_id).await {
+            Ok(()) => tx.commit().await.map(|()| ban_id),
+            Err(failure) => Err(failure),
+        },
         Err(failure) => Err(failure),
     };
-    if let Err(failure) = removed {
-        gpcm.back_on_boards(&flagged);
-        return Err(failure);
-    }
+    let ban_id = match removed {
+        Ok(ban_id) => ban_id,
+        Err(failure) => {
+            gpcm.back_on_boards(&flagged);
+            return Err(failure);
+        }
+    };
+    deletion.ban_id = Some(ban_id);
+    // Every Mii of the consoles leaves: the game would send its name again.
+    gpcm.disconnect(&bans::profiles(pool, ban_id).await?);
     Ok(Ok(deletion))
 }
 
@@ -271,6 +309,8 @@ mod tests {
             .profile_id
     }
 
+    const ADMIN: &str = "admin@example.com";
+
     async fn run(pool: &PgPool, sql: &str) {
         let mut conn = pool.acquire().await.unwrap();
         sqlx::raw_sql(sqlx::AssertSqlSafe(sql.to_owned()))
@@ -320,10 +360,10 @@ mod tests {
             "INSERT INTO players (display_name) VALUES ('Birnen'), ('Kiki')",
         )
         .await;
-        let us = profile(&pool, 1, "R4QEaaaaaaa", "Birnen").await;
-        let eu = profile(&pool, 2, "R4QPbbbbbbb", "Birnen").await;
-        let kikis = profile(&pool, 3, "R4QEccccccc", "Kiki").await;
-        let retail = profile(&pool, 4, "R4QEddddddd", "Retail").await;
+        let us = profile(&pool, 11, "R4QEaaaaaaa", "Birnen").await;
+        let eu = profile(&pool, 12, "R4QPbbbbbbb", "Birnen").await;
+        let kikis = profile(&pool, 13, "R4QEccccccc", "Kiki").await;
+        let retail = profile(&pool, 14, "R4QEddddddd", "Retail").await;
         run(&pool, &format!(
             "INSERT INTO player_identities (provider, external_id, player_id, username) VALUES
                  ('discord', 'd1', 1, 'birnen'), ('discord', 'd2', 2, 'kiki');
@@ -362,13 +402,13 @@ mod tests {
         )
         .await;
         assert_eq!(
-            delete(&pool, &gpcm, us).await.unwrap(),
+            delete(&pool, &gpcm, us, ADMIN).await.unwrap(),
             Err("the player has a set to play: wait until it is over")
         );
         run(&pool, "DELETE FROM matches WHERE state = 'challenged'").await;
         run(&pool, &online_match("in_progress", eu, None)).await;
         assert_eq!(
-            delete(&pool, &gpcm, us).await.unwrap(),
+            delete(&pool, &gpcm, us, ADMIN).await.unwrap(),
             Err("an online match is in progress: wait until it is over")
         );
         run(
@@ -379,7 +419,8 @@ mod tests {
 
         // Asked from either profile, the same player goes.
         let planned = plan(&pool, &gpcm, eu).await.unwrap().unwrap();
-        let deleted = delete(&pool, &gpcm, us).await.unwrap().unwrap();
+        let mut deleted = delete(&pool, &gpcm, us, ADMIN).await.unwrap().unwrap();
+        let ban_id = deleted.ban_id.take().expect("a ban");
         assert_eq!(planned, deleted);
         let player = deleted.player.as_ref().unwrap();
         assert_eq!((player.player_id, player.name.as_str()), (1, "Birnen"));
@@ -400,8 +441,10 @@ mod tests {
                 deleted.friends,
                 deleted.mii_friends,
                 deleted.online,
+                deleted.consoles,
+                deleted.identities,
             ),
-            (3, 1, 2, 1, 2, 2, 1)
+            (3, 1, 2, 1, 2, 2, 1, 2, 1)
         );
 
         // Birnen is gone, and so is every row of his profiles; they stay.
@@ -453,13 +496,45 @@ mod tests {
         // again.
         assert!(gpcm.off_boards(eu));
         assert!(!gpcm.off_boards(kikis));
+
+        // Both of Birnen's consoles and his Discord account are banned, as
+        // Birnen; Kiki's are not.
+        for (user_id, banned) in [(11, true), (12, true), (13, false), (14, false)] {
+            assert_eq!(
+                bans::console_banned(&pool, user_id).await.unwrap(),
+                banned,
+                "console {user_id}"
+            );
+        }
+        assert!(bans::identity_banned(&pool, "discord", "d1").await.unwrap());
+        assert!(!bans::identity_banned(&pool, "discord", "d2").await.unwrap());
+        assert_eq!(bans::profiles(&pool, ban_id).await.unwrap(), [us, eu]);
+        let mut conn = pool.acquire().await.unwrap();
+        let ban = bans::of_console(&mut conn, 12).await.unwrap().unwrap();
+        assert_eq!(
+            (ban.ban_id, ban.name.as_str(), ban.banned_by.as_str()),
+            (ban_id, "Birnen", ADMIN)
+        );
+        drop(conn);
+        // Lifted, the consoles log in again and the account makes a player.
+        assert_eq!(bans::lift(&pool, ban_id).await.unwrap(), Some(ban));
+        assert!(!bans::console_banned(&pool, 11).await.unwrap());
+        assert!(!bans::identity_banned(&pool, "discord", "d1").await.unwrap());
+        assert_eq!(bans::lift(&pool, ban_id).await.unwrap(), None);
+    }
+
+    #[sqlx::test]
+    async fn a_ban_ends_the_logins_of_its_profiles(pool: PgPool) {
+        let gpcm = Gpcm::new(pool, Default::default(), Default::default());
+        gpcm.fake_login(5, IpAddr::from([10, 0, 0, 1]));
+        assert_eq!(gpcm.disconnect(&[5, 6]), [5]);
     }
 
     #[sqlx::test]
     async fn a_profile_without_a_player_loses_only_its_rows(pool: PgPool) {
         let gpcm = Gpcm::new(pool.clone(), Default::default(), Default::default());
-        let retail = profile(&pool, 1, "R4QEaaaaaaa", "Retail").await;
-        let other = profile(&pool, 2, "R4QEbbbbbbb", "Other").await;
+        let retail = profile(&pool, 11, "R4QEaaaaaaa", "Retail").await;
+        let other = profile(&pool, 12, "R4QEbbbbbbb", "Other").await;
         run(
             &pool,
             &format!(
@@ -472,8 +547,16 @@ mod tests {
         .await;
         run(&pool, &online_match("finished", other, Some(retail))).await;
 
-        let deleted = delete(&pool, &gpcm, retail).await.unwrap().unwrap();
+        let deleted = delete(&pool, &gpcm, retail, ADMIN).await.unwrap().unwrap();
         assert_eq!(deleted.player, None);
+        assert_eq!((deleted.consoles, deleted.identities), (1, 0));
+        // Its console is banned under its Mii name; the other is not.
+        assert!(bans::console_banned(&pool, 11).await.unwrap());
+        assert!(!bans::console_banned(&pool, 12).await.unwrap());
+        let mut conn = pool.acquire().await.unwrap();
+        let ban = bans::of_console(&mut conn, 11).await.unwrap().unwrap();
+        assert_eq!(ban.name, "Retail");
+        drop(conn);
         assert_eq!(
             (
                 deleted.scores,
@@ -492,5 +575,16 @@ mod tests {
         assert_eq!(count(&pool, "SELECT count(*) FROM online_matches").await, 0);
         // Not logged in: its next login finds no row and starts from 0.
         assert!(!gpcm.off_boards(retail));
+
+        // A console that claimed the CPU buddy's account loses its rows, but
+        // the server's own account is never banned.
+        let claimed = profile(&pool, accounts::CPU_BUDDY_ACCOUNT, "R4QEccccccc", "Claimed").await;
+        let deleted = delete(&pool, &gpcm, claimed, ADMIN).await.unwrap().unwrap();
+        assert_eq!(deleted.consoles, 0);
+        assert!(
+            !bans::console_banned(&pool, accounts::CPU_BUDDY_ACCOUNT)
+                .await
+                .unwrap()
+        );
     }
 }
