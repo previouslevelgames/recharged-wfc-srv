@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT players.player_id FROM players\n             WHERE players.player_id <> $1 AND NOT (players.player_id = ANY($2))\n               AND players.heartbeat_at > now() - make_interval(secs => $3)\n               AND coalesce(players.activity, '') <> 'match'\n               AND (players.available\n                    OR EXISTS (SELECT 1 FROM searches WHERE searches.player_id = players.player_id))\n               AND NOT EXISTS (SELECT 1 FROM matches\n                               WHERE matches.state IN ('challenged', 'accepted')\n                                 AND players.player_id IN (matches.home, matches.away))\n               AND NOT EXISTS (SELECT 1 FROM player_wfc_profiles\n                               WHERE player_wfc_profiles.player_id = players.player_id\n                                 AND player_wfc_profiles.profile_id = ANY($4))\n             ORDER BY random() LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "player_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "player_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8Array",
+        "Float8",
+        "Int4Array"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "7f433c1726f8226834b23e4c2ddb1d0e8daf5a55ed112080c422c79f229b0797"
+}

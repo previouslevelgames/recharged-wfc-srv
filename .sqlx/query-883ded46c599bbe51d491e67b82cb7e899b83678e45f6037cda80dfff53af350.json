@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT player_id, rule_set, rules, rules_hash, game, asked FROM searches\n         WHERE match_id IS NULL\n            OR NOT EXISTS (SELECT 1 FROM matches\n                           WHERE matches.match_id = searches.match_id AND matches.state = 'challenged')\n         ORDER BY started_at",
+  "query": "SELECT player_id, rule_set, rules, rules_hash, asked FROM searches\n         WHERE match_id IS NULL\n            OR NOT EXISTS (SELECT 1 FROM matches\n                           WHERE matches.match_id = searches.match_id AND matches.state = 'challenged')\n         ORDER BY started_at",
   "describe": {
     "columns": [
       {
@@ -49,17 +49,6 @@
       },
       {
         "ordinal": 4,
-        "name": "game",
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "searches",
-            "name": "game"
-          }
-        }
-      },
-      {
-        "ordinal": 5,
         "name": "asked",
         "type_info": "Int8Array",
         "origin": {
@@ -78,9 +67,8 @@
       false,
       false,
       false,
-      false,
       false
     ]
   },
-  "hash": "63715bb8b3c80af7d92c6109c0390a0ca257e83fc3d9e53647050dbb5d57608c"
+  "hash": "883ded46c599bbe51d491e67b82cb7e899b83678e45f6037cda80dfff53af350"
 }

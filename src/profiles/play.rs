@@ -288,25 +288,6 @@ pub(super) async fn challenge(
         }
         Err(error) => return database_error(error),
     }
-    // A set's two games meet in RANKED, which pairs only games of one
-    // version: a US and an EU game would search for each other forever.
-    match (
-        players::game(&state.pool, player.id).await,
-        players::game(&state.pool, opponent).await,
-    ) {
-        (Ok(Some(mine)), Ok(Some(theirs))) if mine != theirs => {
-            return json_error(
-                StatusCode::CONFLICT,
-                &format!(
-                    "that player plays {}, you play {}: a set needs the same version",
-                    players::version_name(&theirs),
-                    players::version_name(&mine)
-                ),
-            );
-        }
-        (Err(error), _) | (_, Err(error)) => return database_error(error),
-        _ => {}
-    }
     let rule_set = match rules_of(&state, request.rules, request.rule_set, request.name).await {
         Ok(rule_set) => rule_set,
         Err(response) => return response,
@@ -870,7 +851,6 @@ pub(super) async fn ready(
     }
     Json(json!({
         "paired": pairing == Pairing::Paired,
-        "other_release": pairing == Pairing::OtherRelease,
         "replaced": pairing == Pairing::Replaced,
     }))
     .into_response()

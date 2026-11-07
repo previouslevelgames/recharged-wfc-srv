@@ -546,18 +546,16 @@ async fn a_stopped_set_keeps_nobody_from_the_next(pool: PgPool) {
 }
 
 #[sqlx::test]
-async fn a_set_pairs_only_players_on_one_version(pool: PgPool) {
+async fn a_set_pairs_players_of_two_versions(pool: PgPool) {
     let world = World::new(pool);
-    // Birnen has a US and an EU profile and plays the EU game now; Mario
-    // plays the US game. RANKED never pairs those games.
+    // Birnen plays the EU game; Mario plays the US game. Recharged plays
+    // their match by the European game's rules.
     let mario = world.sign_in("Mario").await;
     let birnen = world.sign_in("Birnen").await;
     let mine = world.wfc_login(1, "R4QEaaaaaaa").await;
-    let his_us = world.wfc_login(2, "R4QEbbbbbbb").await;
-    let his_eu = world.wfc_login(3, "R4QPbbbbbbb").await;
+    let his = world.wfc_login(2, "R4QPbbbbbbb").await;
     assert_eq!(world.prove(&mario, mine).await.0, StatusCode::OK);
-    assert_eq!(world.prove(&birnen, his_us).await.0, StatusCode::OK);
-    assert_eq!(world.prove(&birnen, his_eu).await.0, StatusCode::OK);
+    assert_eq!(world.prove(&birnen, his).await.0, StatusCode::OK);
     let as_game = |game| [("recharged-game", game)];
     let (status, _) = world
         .send_with(
@@ -582,24 +580,7 @@ async fn a_set_pairs_only_players_on_one_version(pool: PgPool) {
         .await;
     assert_eq!(lists["online"][0]["game"], "R4QP", "{lists}");
 
-    // A challenge: refused, saying why.
-    let (status, body) = world
-        .send_with(
-            "POST",
-            "/api/v1/matches",
-            &mario,
-            &as_game("R4QE"),
-            json!({"opponent": "birnen", "rule_set": 2}),
-        )
-        .await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
-    let error = body["error"].as_str().unwrap();
-    assert!(
-        error.contains("the European version") && error.contains("the American version"),
-        "{error}"
-    );
-
-    // A search: he isn't asked, though he has a US profile.
+    // A search asks him.
     let rules = json!({"tweaks": [], "limit": "time", "time": 120, "goals": 5, "games": 1,
                        "stadium": "random"});
     let (status, body) = world
@@ -612,18 +593,14 @@ async fn a_set_pairs_only_players_on_one_version(pool: PgPool) {
         )
         .await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["search"]["asked"], 0);
+    assert_eq!(body["search"]["asked"], 1);
     let (status, _) = world
         .send("DELETE", "/api/v1/search", &mario, Value::Null)
         .await;
     assert_eq!(status, StatusCode::NO_CONTENT);
 
-    // A request that doesn't say keeps the game known; then he plays the US
-    // game, and the challenge goes.
-    world
-        .send("GET", "/api/v1/matches/current", &birnen, Value::Null)
-        .await;
-    let (status, _) = world
+    // A challenge goes; accepted, the two games are paired in RANKED.
+    let (status, challenge) = world
         .send_with(
             "POST",
             "/api/v1/matches",
@@ -632,33 +609,49 @@ async fn a_set_pairs_only_players_on_one_version(pool: PgPool) {
             json!({"opponent": "birnen", "rule_set": 2}),
         )
         .await;
-    assert_eq!(status, StatusCode::CONFLICT);
-    world
-        .send_with(
-            "GET",
-            "/api/v1/matches/current",
-            &birnen,
-            &as_game("R4QE"),
-            Value::Null,
-        )
-        .await;
+    assert_eq!(status, StatusCode::CREATED, "{challenge}");
+    let id = challenge["id"].as_i64().unwrap();
     let (status, body) = world
         .send_with(
             "POST",
-            "/api/v1/matches",
-            &mario,
-            &as_game("R4QE"),
-            json!({"opponent": "birnen", "rule_set": 2}),
+            &format!("/api/v1/matches/{id}/accept"),
+            &birnen,
+            &as_game("R4QP"),
+            Value::Null,
         )
         .await;
-    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let ready = |pid: i32| json!({"profile_id": pid, "rules_hash": challenge["rules_hash"]});
+    let (status, answer) = world
+        .send(
+            "POST",
+            &format!("/api/v1/matches/{id}/ready"),
+            &mario,
+            ready(mine),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_eq!(answer["paired"], false);
+    let (status, answer) = world
+        .send(
+            "POST",
+            &format!("/api/v1/matches/{id}/ready"),
+            &birnen,
+            ready(his),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_eq!(answer["paired"], true);
+    assert_eq!(world.pairings.visible_to(mine), Visible::Only(his));
+    assert_eq!(world.pairings.visible_to(his), Visible::Only(mine));
 }
 
 #[sqlx::test]
 async fn a_search_asks_players_open_to_challenges(pool: PgPool) {
     let world = World::new(pool);
     // Mario searches; Peach and Luigi are open to challenges and play the
-    // US game; Daisy isn't open; Wario is, with the European game.
+    // US game; Daisy isn't open; Wario is, with the European game, and is
+    // asked as well.
     let names = ["Mario", "Peach", "Luigi", "Daisy", "Wario"];
     let mut tokens = Vec::new();
     for (n, name) in names.iter().enumerate() {
@@ -728,7 +721,7 @@ async fn a_search_asks_players_open_to_challenges(pool: PgPool) {
                 .1
         }
     };
-    let now = current(mario.clone()).await;
+    let mut now = current(mario.clone()).await;
     assert_eq!(now["search"]["asked"], 1);
     assert_eq!(now["match"]["random"], true);
     assert_eq!(now["match"]["state"], "challenged");
@@ -738,27 +731,35 @@ async fn a_search_asks_players_open_to_challenges(pool: PgPool) {
         .as_str()
         .unwrap()
         .to_owned();
-    assert!(first == "Peach" || first == "Luigi", "{first}");
-    let other = if first == "Peach" { "Luigi" } else { "Peach" };
+    let mut asked = vec![first];
 
-    // They decline: the other one is asked.
-    let id = now["match"]["id"].as_i64().unwrap();
-    let (status, _) = world
-        .send(
-            "POST",
-            &format!("/api/v1/matches/{id}/decline"),
-            &token_of(&first),
-            Value::Null,
-        )
-        .await;
-    assert_eq!(status, StatusCode::OK);
-    let now = current(mario.clone()).await;
-    assert_eq!(now["search"]["asked"], 2);
-    assert_eq!(now["match"]["opponent"]["name"], other);
+    // They decline: another one is asked, until all three were.
+    for count in 2..=3 {
+        let id = now["match"]["id"].as_i64().unwrap();
+        let (status, _) = world
+            .send(
+                "POST",
+                &format!("/api/v1/matches/{id}/decline"),
+                &token_of(asked.last().unwrap()),
+                Value::Null,
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        now = current(mario.clone()).await;
+        assert_eq!(now["search"]["asked"], count);
+        asked.push(
+            now["match"]["opponent"]["name"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        );
+    }
+    asked.sort();
+    assert_eq!(asked, ["Luigi", "Peach", "Wario"]);
     let id = now["match"]["id"].as_i64().unwrap();
 
-    // No answer in time: nobody left to ask (Daisy isn't open, Wario plays
-    // another game), the search waits.
+    // No answer in time: nobody left to ask (Daisy isn't open), the search
+    // waits.
     sqlx::query!(
         "UPDATE matches SET created_at = now() - interval '1 minute' WHERE match_id = $1",
         id
@@ -772,7 +773,7 @@ async fn a_search_asks_players_open_to_challenges(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(state, "expired");
-    assert_eq!(now["search"]["asked"], 2);
+    assert_eq!(now["search"]["asked"], 3);
     assert_ne!(now["match"]["state"], "challenged");
 
     // Stop, and search again: a challenge again, which its player accepts:
