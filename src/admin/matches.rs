@@ -1,6 +1,7 @@
 //! The Matches page: the series Recharged builds report (docs/reports.md),
 //! in progress first, then the newest; and a match's detail: both sides,
-//! the games as each side saw them, and the reports as they came.
+//! the games as each side saw them, the reports as they came, and whether
+//! the NAT relay carried its games (src/relay_store.rs).
 
 use serde::Serialize;
 use sqlx::{PgConnection, PgPool};
@@ -9,6 +10,7 @@ use time::OffsetDateTime;
 use super::page::snapshot;
 use crate::{
     accounts,
+    relay_store::{self, Relayed},
     reports::{
         self,
         outcome::{self, Compared, Reporter},
@@ -23,6 +25,9 @@ const SHOWN: i64 = 100;
 pub struct Matches {
     totals: Totals,
     matches: Vec<Listed>,
+    /// The days the server keeps the NAT relay's matches: an older match
+    /// shows none.
+    relay_kept_days: i32,
 }
 
 #[derive(Serialize)]
@@ -60,6 +65,9 @@ pub struct Listed {
     last_report_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339::option")]
     ended_at: Option<OffsetDateTime>,
+    /// Whether the NAT relay carried a reporting side's game while the match
+    /// ran.
+    relayed: bool,
 }
 
 #[derive(Serialize)]
@@ -81,6 +89,12 @@ pub struct Detail {
     games: Vec<Compared>,
     /// The reports, as they came.
     events: Vec<Event>,
+    /// The NAT relay's matches of the reporting sides' profiles that ran
+    /// while this one did, the first first: none when their games reached
+    /// each other directly.
+    relayed: Vec<Relayed>,
+    /// The days the server keeps them: an older match shows none.
+    relay_kept_days: i32,
 }
 
 #[derive(Serialize)]
@@ -141,6 +155,7 @@ pub async fn read(pool: &PgPool) -> Result<Matches, sqlx::Error> {
     let matches = Matches {
         totals: totals(&mut tx).await?,
         matches: listed(&mut tx, None, SHOWN).await?,
+        relay_kept_days: relay_store::KEPT_DAYS,
     };
     tx.commit().await?;
     Ok(matches)
@@ -175,7 +190,12 @@ async fn listed(
         r#"SELECT m.match_id, m.mode, m.release, m.best_of, m.state, m.winner, m.home_mii,
                   m.away_mii, m.home_captain, m.away_captain, m.home_wins, m.away_wins,
                   m.started_at, m.last_report_at, m.ended_at,
-                  home.profile_id AS "home_profile?", away.profile_id AS "away_profile?"
+                  home.profile_id AS "home_profile?", away.profile_id AS "away_profile?",
+                  EXISTS (SELECT 1 FROM relay_sessions r
+                          WHERE (r.first_profile IN (home.profile_id, away.profile_id)
+                                 OR r.second_profile IN (home.profile_id, away.profile_id))
+                            AND r.started_at <= m.last_report_at
+                            AND (r.ended_at IS NULL OR r.ended_at >= m.started_at)) AS "relayed!"
            FROM online_matches m
            LEFT JOIN online_match_sides home ON home.match_id = m.match_id AND home.side = 'home'
            LEFT JOIN online_match_sides away ON away.match_id = m.match_id AND away.side = 'away'
@@ -213,6 +233,7 @@ async fn listed(
             started_at: row.started_at,
             last_report_at: row.last_report_at,
             ended_at: row.ended_at,
+            relayed: row.relayed,
         })
         .collect())
 }
@@ -237,6 +258,17 @@ pub async fn detail(pool: &PgPool, match_id: i64) -> Result<Option<Detail>, sqlx
         match_id,
     )
     .fetch_all(&mut *tx)
+    .await?;
+    let profiles: Vec<i32> = [summary.home.profile_id, summary.away.profile_id]
+        .into_iter()
+        .flatten()
+        .collect();
+    let relayed = relay_store::during(
+        &mut tx,
+        &profiles,
+        summary.started_at,
+        summary.last_report_at,
+    )
     .await?;
     tx.commit().await?;
 
@@ -279,6 +311,8 @@ pub async fn detail(pool: &PgPool, match_id: i64) -> Result<Option<Detail>, sqlx
         sides,
         games,
         events,
+        relayed,
+        relay_kept_days: relay_store::KEPT_DAYS,
     }))
 }
 
@@ -500,6 +534,69 @@ pub(crate) mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[sqlx::test]
+    async fn a_match_shows_whether_the_relay_carried_it(pool: PgPool) {
+        use crate::relay_store::tests::{opened, write};
+
+        let games = Games::new(pool).await;
+        let relayed = games
+            .send(&games.report(games.anosch, 100, "home", "start"))
+            .await;
+        games
+            .send(&games.report(games.sam, 200, "away", "start"))
+            .await;
+        // An earlier series of Anosch's, two hours ago.
+        let direct = games
+            .send(&games.report(games.anosch, 50, "home", "start"))
+            .await;
+        sqlx::query!(
+            "UPDATE online_matches SET started_at = now() - interval '2 hours',
+                                       last_report_at = now() - interval '110 minutes'
+             WHERE match_id = $1",
+            direct
+        )
+        .execute(&games.pool)
+        .await
+        .unwrap();
+        // The relay has carried Sam's game for five minutes; the other
+        // game's profile is unknown.
+        let start = OffsetDateTime::now_utc() - time::Duration::minutes(5);
+        write(&games.pool, vec![opened(9, [None, Some(games.sam)], start)]).await;
+
+        let page = read(&games.pool).await.unwrap();
+        let listed: Vec<_> = page
+            .matches
+            .iter()
+            .map(|listed| (listed.id, listed.relayed))
+            .collect();
+        assert_eq!(listed, [(relayed, true), (direct, false)]);
+        let detail = detail(&games.pool, relayed).await.unwrap().unwrap();
+        let [relaying] = &detail.relayed[..] else {
+            panic!("one: {:?}", detail.relayed);
+        };
+        assert_eq!(
+            (
+                relaying.cookie.as_str(),
+                relaying.games[1].mii_name.as_deref()
+            ),
+            ("00000009", Some("Sam"))
+        );
+        assert!(
+            super::detail(&games.pool, direct)
+                .await
+                .unwrap()
+                .unwrap()
+                .relayed
+                .is_empty()
+        );
+        // Sam's page links it to the match.
+        let mut conn = games.pool.acquire().await.unwrap();
+        let sams = relay_store::of_profile(&mut conn, games.sam, 10)
+            .await
+            .unwrap();
+        assert_eq!(sams[0].match_id, Some(relayed));
     }
 
     #[sqlx::test]

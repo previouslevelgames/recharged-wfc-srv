@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE relay_sessions\n         SET ended_at = GREATEST($2, started_at), ended_why = $3, packets = $4, bytes = $5\n         WHERE relay_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Timestamptz",
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "72f093a1722a5872c8327a1745b4b80f49a936fbaa2830022dbcbb08a0e1e682"
+}

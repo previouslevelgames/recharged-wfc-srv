@@ -10,6 +10,7 @@
 //!
 //! A relayed game is known by the address its game socket's INIT came from.
 //! Packets from it go to the other game of its negotiation, and nowhere else.
+//! Each relayed pair goes to the database (src/relay_store.rs), for `/admin`.
 
 use std::{
     collections::HashMap,
@@ -19,7 +20,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+use time::OffsetDateTime;
 use tracing::{info, warn};
+
+use crate::relay_store::{Record, Recorder};
 
 /// The variables the relay reads.
 pub const VARIABLES: [&str; 3] = ["NATNEG_RELAY", "NATNEG_RELAY_ADDRESS", "NATNEG_RELAY_MAX"];
@@ -42,6 +46,71 @@ pub enum Mode {
     Auto,
     /// Every pair, to try the relay out.
     Always,
+}
+
+/// Why the relay takes a pair.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Reason {
+    /// `NATNEG_RELAY=always`.
+    Always,
+    /// A game's router gives it a new port per address.
+    NewPort,
+    /// The two public addresses failed without the relay lately.
+    FailedBefore,
+}
+
+impl Reason {
+    /// As the log says it.
+    pub fn text(self) -> &'static str {
+        match self {
+            Reason::Always => "always",
+            Reason::NewPort => "new port per address",
+            Reason::FailedBefore => "failed without it before",
+        }
+    }
+
+    /// As `relay_sessions` keeps it.
+    pub fn code(self) -> &'static str {
+        match self {
+            Reason::Always => "always",
+            Reason::NewPort => "new_port",
+            Reason::FailedBefore => "failed_before",
+        }
+    }
+}
+
+/// Why the relay lets a pair go.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum End {
+    /// Nothing came for [`IDLE`].
+    Idle,
+    /// One of its games began another relayed negotiation.
+    Replaced,
+}
+
+impl End {
+    /// As the log says it.
+    fn text(self) -> &'static str {
+        match self {
+            End::Idle => "idle",
+            End::Replaced => "a new one",
+        }
+    }
+
+    /// As `relay_sessions` keeps it.
+    pub fn code(self) -> &'static str {
+        match self {
+            End::Idle => "idle",
+            End::Replaced => "replaced",
+        }
+    }
+}
+
+/// A pair the relay takes: why, and the profiles that play, by client index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Taken {
+    pub reason: Reason,
+    pub profiles: [Option<i32>; 2],
 }
 
 /// The relay's settings, from the environment.
@@ -121,6 +190,9 @@ struct State {
     matches: HashMap<u32, Relayed>,
     /// Each relayed game's address, and the cookie of its match.
     games: HashMap<SocketAddr, u32>,
+    /// Where each match's start and end go, in that order: both are sent
+    /// under the state's lock.
+    recorder: Option<Recorder>,
 }
 
 struct Relayed {
@@ -137,10 +209,14 @@ struct Relayed {
 pub(crate) struct Full;
 
 impl Relays {
-    pub fn new(config: Config) -> Self {
+    /// With a `recorder`, each relayed match goes to the database.
+    pub fn new(config: Config, recorder: Option<Recorder>) -> Self {
         Self {
             config,
-            state: Mutex::default(),
+            state: Mutex::new(State {
+                recorder,
+                ..State::default()
+            }),
             resolved: Mutex::default(),
         }
     }
@@ -179,14 +255,15 @@ impl Relays {
     }
 
     /// Relays the games of the negotiation `cookie`, by client index, from
-    /// now on. A match either game was relayed in before ends.
-    pub fn open(&self, cookie: u32, games: [SocketAddr; 2]) -> Result<(), Full> {
+    /// now on, for the reason and the profiles `taken` tells. A match either
+    /// game was relayed in before ends.
+    pub fn open(&self, cookie: u32, games: [SocketAddr; 2], taken: Taken) -> Result<(), Full> {
         let mut state = self.state.lock().unwrap();
         let now = Instant::now();
         state.end_idle(now);
         for game in games {
             if let Some(old) = state.games.get(&game).copied() {
-                state.end(old, "a new one");
+                state.end(old, End::Replaced);
             }
         }
         if state.matches.len() >= self.config.max {
@@ -205,6 +282,15 @@ impl Relays {
                 bytes: 0,
             },
         );
+        if let Some(recorder) = &state.recorder {
+            recorder.send(Record::Opened {
+                cookie,
+                reason: taken.reason,
+                games,
+                profiles: taken.profiles,
+                at: OffsetDateTime::now_utc(),
+            });
+        }
         Ok(())
     }
 
@@ -264,11 +350,11 @@ impl State {
             .map(|(&cookie, _)| cookie)
             .collect();
         for cookie in idle {
-            self.end(cookie, "idle");
+            self.end(cookie, End::Idle);
         }
     }
 
-    fn end(&mut self, cookie: u32, why: &str) {
+    fn end(&mut self, cookie: u32, why: End) {
         let Some(relayed) = self.matches.remove(&cookie) else {
             return;
         };
@@ -280,12 +366,22 @@ impl State {
         info!(
             target: "natneg",
             cookie = format!("{cookie:08x}"),
-            why,
+            why = why.text(),
             seconds = relayed.last.duration_since(relayed.started).as_secs(),
             packets = relayed.packets,
             kib = relayed.bytes / 1024,
             "relay ended"
         );
+        if let Some(recorder) = &self.recorder {
+            recorder.send(Record::Ended {
+                cookie,
+                why,
+                // The last packet it passed on.
+                at: OffsetDateTime::now_utc() - relayed.last.elapsed(),
+                packets: relayed.packets,
+                bytes: relayed.bytes,
+            });
+        }
     }
 }
 
@@ -302,13 +398,21 @@ mod tests {
     }
 
     fn relays(max: usize) -> Relays {
-        Relays::new(Config {
-            mode: Mode::Auto,
-            address: "198.51.100.1".into(),
-            max,
-            port: GAME_PORT,
-        })
+        Relays::new(
+            Config {
+                mode: Mode::Auto,
+                address: "198.51.100.1".into(),
+                max,
+                port: GAME_PORT,
+            },
+            None,
+        )
     }
+
+    const TAKEN: Taken = Taken {
+        reason: Reason::Always,
+        profiles: [None, None],
+    };
 
     fn address(text: &str) -> SocketAddr {
         text.parse().unwrap()
@@ -360,7 +464,7 @@ mod tests {
     fn each_game_reaches_the_other() {
         let relays = relays(4);
         let (one, two) = (address("203.0.113.7:21982"), address("198.51.100.9:65116"));
-        relays.open(7, [one, two]).unwrap();
+        relays.open(7, [one, two], TAKEN).unwrap();
         assert_eq!(relays.destination(one, 20), Some(two));
         assert_eq!(relays.destination(two, 20), Some(one));
         assert_eq!(relays.destination(address("203.0.113.7:21983"), 20), None);
@@ -374,8 +478,8 @@ mod tests {
             address("198.51.100.9:65116"),
             address("192.0.2.5:50000"),
         );
-        relays.open(7, [one, two]).unwrap();
-        relays.open(8, [three, one]).unwrap();
+        relays.open(7, [one, two], TAKEN).unwrap();
+        relays.open(8, [three, one], TAKEN).unwrap();
         assert_eq!(relays.active(), 1);
         assert_eq!(relays.destination(one, 20), Some(three));
         assert_eq!(relays.destination(two, 20), None);
@@ -385,10 +489,14 @@ mod tests {
     fn at_most_max_matches() {
         let relays = relays(1);
         relays
-            .open(7, [address("203.0.113.7:1"), address("198.51.100.9:2")])
+            .open(
+                7,
+                [address("203.0.113.7:1"), address("198.51.100.9:2")],
+                TAKEN,
+            )
             .unwrap();
         assert_eq!(
-            relays.open(8, [address("192.0.2.5:3"), address("192.0.2.6:4")]),
+            relays.open(8, [address("192.0.2.5:3"), address("192.0.2.6:4")], TAKEN),
             Err(Full)
         );
     }
@@ -397,7 +505,7 @@ mod tests {
     fn a_game_whose_pings_take_another_port_moves() {
         let relays = relays(4);
         let (one, two) = (address("203.0.113.7:21982"), address("198.51.100.9:65116"));
-        relays.open(7, [one, two]).unwrap();
+        relays.open(7, [one, two], TAKEN).unwrap();
         let moved = address("203.0.113.7:21990");
         assert!(!relays.moved(8, moved), "another negotiation");
         assert!(!relays.moved(7, address("192.0.2.5:21990")), "another IP");
@@ -409,7 +517,11 @@ mod tests {
         // Two games behind one IP: which one moved is unknown.
         let relays = self::relays(4);
         relays
-            .open(9, [address("203.0.113.7:1"), address("203.0.113.7:2")])
+            .open(
+                9,
+                [address("203.0.113.7:1"), address("203.0.113.7:2")],
+                TAKEN,
+            )
             .unwrap();
         assert!(!relays.moved(9, address("203.0.113.7:3")));
     }

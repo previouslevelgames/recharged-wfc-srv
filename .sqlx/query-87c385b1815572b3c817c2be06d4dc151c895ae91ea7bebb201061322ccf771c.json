@@ -1,0 +1,198 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT r.relay_id, r.server, r.cookie, r.reason, r.first_address, r.second_address,\n                  r.first_profile, r.second_profile, first.ingamesn AS \"first_mii?\",\n                  second.ingamesn AS \"second_mii?\", r.started_at, r.ended_at, r.ended_why,\n                  r.packets, r.bytes\n           FROM relay_sessions r\n           LEFT JOIN profiles first ON first.profile_id = r.first_profile\n           LEFT JOIN profiles second ON second.profile_id = r.second_profile\n           WHERE (r.first_profile = ANY($1) OR r.second_profile = ANY($1))\n             AND r.started_at <= $3 AND (r.ended_at IS NULL OR r.ended_at >= $2)\n           ORDER BY r.started_at",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "relay_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "relay_sessions",
+            "name": "relay_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "server",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "relay_sessions",
+            "name": "server"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "cookie",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "relay_sessions",
+            "name": "cookie"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "relay_sessions",
+            "name": "reason"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "first_address",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "relay_sessions",
+            "name": "first_address"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "second_address",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "relay_sessions",
+            "name": "second_address"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "first_profile",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "relay_sessions",
+            "name": "first_profile"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "second_profile",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "relay_sessions",
+            "name": "second_profile"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "first_mii?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "profiles",
+            "name": "ingamesn"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "second_mii?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "profiles",
+            "name": "ingamesn"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "started_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "relay_sessions",
+            "name": "started_at"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "ended_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "relay_sessions",
+            "name": "ended_at"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "ended_why",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "relay_sessions",
+            "name": "ended_why"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "packets",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "relay_sessions",
+            "name": "packets"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "bytes",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "relay_sessions",
+            "name": "bytes"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4Array",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "87c385b1815572b3c817c2be06d4dc151c895ae91ea7bebb201061322ccf771c"
+}

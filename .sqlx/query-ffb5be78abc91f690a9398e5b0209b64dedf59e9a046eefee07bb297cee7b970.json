@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE relay_sessions SET ended_at = now(), ended_why = 'restart'\n         WHERE server = $1 AND ended_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ffb5be78abc91f690a9398e5b0209b64dedf59e9a046eefee07bb297cee7b970"
+}
