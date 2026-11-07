@@ -2,8 +2,9 @@
 //! match between two players is accepted, each player's game says it is
 //! ready, logged in to WFC as one of the player's profiles. A ranked search
 //! by a ready game then lists only the other one, as soon as it is ready
-//! too, and nobody else's search lists either of them. Games of different
-//! releases can't play each other, so they are never paired.
+//! too, and nobody else's search lists either of them, whichever releases
+//! the two games are: Recharged plays a match between two by the European
+//! one's rules.
 //!
 //! Readiness lives in memory and lasts [`READY_TTL`]: the port says it again
 //! while the game is online, so a game that went away stops being kept.
@@ -69,8 +70,6 @@ pub enum Pairing {
     Waiting,
     /// Both are: they find each other in RANKED.
     Paired,
-    /// Both are, but of different releases.
-    OtherRelease,
     /// Another game of this player took its side: this one plays no part.
     Replaced,
 }
@@ -78,7 +77,7 @@ pub enum Pairing {
 /// A match's games as they stand, for diagnosing (`/admin`).
 #[derive(Debug, Serialize)]
 pub struct View {
-    /// `paired`, `waiting` or `other_release`.
+    /// `paired` or `waiting`.
     pub pairing: &'static str,
     /// The challenger's side, then the challenged's.
     pub sides: [SideView; 2],
@@ -230,7 +229,6 @@ impl Pairings {
         View {
             pairing: match pairing(&sides.ready, now) {
                 Pairing::Paired => "paired",
-                Pairing::OtherRelease => "other_release",
                 Pairing::Waiting | Pairing::Replaced => "waiting",
             },
             sides: [0, 1].map(|side| SideView {
@@ -248,13 +246,7 @@ impl Pairings {
 
 fn pairing(sides: &[Option<Ready>; 2], now: Instant) -> Pairing {
     match sides {
-        [Some(home), Some(away)] if home.live(now) && away.live(now) => {
-            if home.game == away.game {
-                Pairing::Paired
-            } else {
-                Pairing::OtherRelease
-            }
-        }
+        [Some(home), Some(away)] if home.live(now) && away.live(now) => Pairing::Paired,
         _ => Pairing::Waiting,
     }
 }
@@ -298,12 +290,12 @@ mod tests {
     }
 
     #[test]
-    fn releases_are_never_paired() {
+    fn two_releases_are_paired() {
         let pairings = Pairings::default();
         pairings.ready(7, 0, 1, "R4QE");
-        assert_eq!(pairings.ready(7, 1, 2, "R4QP"), Pairing::OtherRelease);
-        assert_eq!(pairings.visible_to(1), Visible::Nobody);
-        assert_eq!(pairings.visible_to(2), Visible::Nobody);
+        assert_eq!(pairings.ready(7, 1, 2, "R4QP"), Pairing::Paired);
+        assert_eq!(pairings.visible_to(1), Visible::Only(2));
+        assert_eq!(pairings.visible_to(2), Visible::Only(1));
     }
 
     #[test]

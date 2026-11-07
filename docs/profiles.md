@@ -214,10 +214,11 @@ for screens this server doesn't know and from games that don't say).
 Launchers and games from Recharged 1.2.0 (builds since 2026-11-02) say which
 game they play in a `Recharged-Game` header: the first four characters of its
 id (`R4QE`, `R4QP`, `R4QJ`, `R4QK`). `players.game` keeps the last one said (a
-request without the header keeps it). A set's games meet in RANKED, which never
-pairs games of two versions, so a challenge between players whose Recharged
-plays different versions is refused (409, saying which), and a search asks
-only players of its game.
+request without the header keeps it). Players of two versions can play a set
+and be asked by a search: Recharged 1.2 plays a match between two versions by
+the rules of the European version (revision 2). Only Recharged 1.2 and later
+use sets and searches; Recharged 1.1, which has no such fallback, keeps its own
+version in the game's online matchmaking and never meets another version.
 
 Errors are JSON, `{"error": "<what went wrong>"}`. Every response is
 `no-store`; the pages allow no scripts and no framing.
@@ -292,9 +293,8 @@ the new rules; `DELETE /api/v1/search` stops (204), withdrawing the
 challenge that waits for an answer (`cancelled`).
 
 The server sends the searcher's rules as a challenge (`"random": true`) to a
-player who has Recharged open, is open to challenges or searching too, has
-plays the same game (the game their Recharged says it plays, or for one that
-doesn't say a WFC profile of the same id), isn't in a match
+player who has Recharged open, is open to challenges or searching too, of
+any version of the game, isn't in a match
 (nor in the game's own online matchmaking or match: a WFC profile of theirs
 with DWC's status 2 to 6) and has no set to play, at random among them; the
 oldest search asks first,
@@ -611,7 +611,7 @@ Once the match is accepted, the port says every 10 seconds that its game is
 ready: logged in to WFC as `profile_id`, one of the player's profiles, and
 applying the rules with `rules_hash`. Readiness lasts 30 seconds without being
 said again, so a game that went away stops being kept. The answer is
-`{"paired", "other_release", "replaced"}`: `paired` once both games are ready,
+`{"paired", "replaced"}`: `paired` once both games are ready,
 and the set's stage is then `playing`. A player has one game in a set: when
 another of their games (another WFC profile) says it is ready while the first
 still is, the newer one takes the set, and the one it replaced is answered
@@ -624,8 +624,8 @@ in a restart, while the match goes on).
 While a game is ready, RANKED in WFC Central works differently for it
 ([login.md](login.md), "Server browser"): its search lists only its
 opponent's game once that one is ready too (whatever region group the game
-puts it in), and nobody else's search lists either of them. A US and a
-European game are never paired: their releases can't play each other. A set's
+puts it in, and whichever version it is), and nobody else's search lists
+either of them. A set's
 games don't count on the RANKED boards ([gamestats2.md](gamestats2.md),
 "`put2.asp`").
 

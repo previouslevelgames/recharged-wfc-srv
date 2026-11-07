@@ -1,9 +1,10 @@
 //! Searches for a random opponent (docs/profiles.md, "Random opponents"). The
 //! searcher chooses the rules; the server sends them as a random challenge to
 //! a player who is open to challenges or searching too (the one who searched
-//! first decides), has Recharged open, plays the same game and has no set to
-//! play. A decline, or [`RANDOM_ANSWER_SECS`] without an answer, and it asks
-//! another player, until the search stops or a challenge is accepted.
+//! first decides), has Recharged open and has no set to play, whichever
+//! version of the game they play. A decline, or [`RANDOM_ANSWER_SECS`]
+//! without an answer, and it asks another player, until the search stops or
+//! a challenge is accepted.
 
 use serde::Serialize;
 use sqlx::PgPool;
@@ -25,8 +26,8 @@ pub struct Search {
     pub asked: i64,
 }
 
-/// `player_id` searches by `rule_set` for an opponent playing `game` (the
-/// first four characters of its id, R4QE), starting over if they searched
+/// `player_id`, playing `game` (the first four characters of its id, R4QE),
+/// searches by `rule_set` for an opponent, starting over if they searched
 /// already. The search asks its first player at once when it can.
 /// `busy`: the WFC profiles in the game's own online matchmaking or match
 /// now (GPCM's DWC status), whose players are not asked.
@@ -122,7 +123,7 @@ pub async fn advance(pool: &PgPool, busy: &[i32]) -> Result<Vec<i64>, sqlx::Erro
     .execute(pool)
     .await?;
     let waiting = sqlx::query!(
-        "SELECT player_id, rule_set, rules, rules_hash, game, asked FROM searches
+        "SELECT player_id, rule_set, rules, rules_hash, asked FROM searches
          WHERE match_id IS NULL
             OR NOT EXISTS (SELECT 1 FROM matches
                            WHERE matches.match_id = searches.match_id AND matches.state = 'challenged')
@@ -135,8 +136,9 @@ pub async fn advance(pool: &PgPool, busy: &[i32]) -> Result<Vec<i64>, sqlx::Erro
         let Ok(rules) = Rules::from_json(&search.rules) else {
             continue;
         };
-        // Someone free, open to challenges or searching, who plays the same
-        // game: now, as their Recharged says, or else by a profile of it.
+        // Someone free, open to challenges or searching, of any version of
+        // the game: Recharged plays a match between two by the European one's
+        // rules.
         let opponent = sqlx::query_scalar!(
             "SELECT players.player_id FROM players
              WHERE players.player_id <> $1 AND NOT (players.player_id = ANY($2))
@@ -144,22 +146,16 @@ pub async fn advance(pool: &PgPool, busy: &[i32]) -> Result<Vec<i64>, sqlx::Erro
                AND coalesce(players.activity, '') <> 'match'
                AND (players.available
                     OR EXISTS (SELECT 1 FROM searches WHERE searches.player_id = players.player_id))
-               AND (players.game = $4
-                    OR players.game IS NULL
-                       AND EXISTS (SELECT 1 FROM player_wfc_profiles JOIN profiles USING (profile_id)
-                                   WHERE player_wfc_profiles.player_id = players.player_id
-                                     AND left(profiles.gsbrcd, 4) = $4))
                AND NOT EXISTS (SELECT 1 FROM matches
                                WHERE matches.state IN ('challenged', 'accepted')
                                  AND players.player_id IN (matches.home, matches.away))
                AND NOT EXISTS (SELECT 1 FROM player_wfc_profiles
                                WHERE player_wfc_profiles.player_id = players.player_id
-                                 AND player_wfc_profiles.profile_id = ANY($5))
+                                 AND player_wfc_profiles.profile_id = ANY($4))
              ORDER BY random() LIMIT 1",
             search.player_id,
             &search.asked,
             f64::from(HEARTBEAT_TIMEOUT_SECS),
-            search.game,
             busy,
         )
         .fetch_optional(pool)
