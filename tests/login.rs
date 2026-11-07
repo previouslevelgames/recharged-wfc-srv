@@ -582,13 +582,12 @@ async fn nat_negotiation_gives_each_game_the_others_address() {
     assert_eq!(ack[7], 0x0E);
 }
 
-#[tokio::test]
-async fn the_relay_carries_the_pings_and_the_match() {
+#[sqlx::test]
+async fn the_relay_carries_the_pings_and_the_match(pool: PgPool) {
     use recharged_wfc_srv::relay::{Config, Mode};
     use tokio::net::UdpSocket;
 
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .connect_lazy_with(sqlx::postgres::PgConnectOptions::new());
+    let db = pool.clone();
     let server = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let natneg = server.local_addr().unwrap();
     let relay = Config {
@@ -672,6 +671,28 @@ async fn the_relay_carries_the_pings_and_the_match() {
         .await
         .unwrap();
     assert_eq!(recv(negotiate).await.0[7], 0x0E);
+
+    // The relayed match is in the database, for /admin.
+    let mut stored = None;
+    for _ in 0..50 {
+        stored = sqlx::query!(
+            "SELECT reason, first_address, ended_at FROM relay_sessions WHERE cookie = 'c0ffee01'"
+        )
+        .fetch_optional(&db)
+        .await
+        .unwrap();
+        if stored.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let stored = stored.expect("the relayed match stored");
+    assert_eq!(stored.reason, "always");
+    assert_eq!(
+        stored.first_address,
+        first.local_addr().unwrap().to_string()
+    );
+    assert!(stored.ended_at.is_none(), "still relayed");
 }
 
 /// The master server on a local UDP port with its server browser on a TCP

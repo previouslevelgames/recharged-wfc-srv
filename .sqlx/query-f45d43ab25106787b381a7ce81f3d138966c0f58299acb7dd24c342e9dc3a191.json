@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO relay_sessions (server, cookie, reason, first_address, second_address,\n                                     first_profile, second_profile, started_at)\n         VALUES ($1, $2, $3, $4, $5,\n                 (SELECT profile_id FROM profiles WHERE profile_id = $6),\n                 (SELECT profile_id FROM profiles WHERE profile_id = $7), $8)\n         RETURNING relay_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "relay_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "relay_sessions",
+            "name": "relay_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int4",
+        "Int4",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f45d43ab25106787b381a7ce81f3d138966c0f58299acb7dd24c342e9dc3a191"
+}

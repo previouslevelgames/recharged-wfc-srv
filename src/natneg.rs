@@ -17,8 +17,10 @@ use tracing::{debug, info, trace, warn};
 
 use crate::{
     activity::Activity,
+    gpcm::Gpcm,
     master::Master,
-    relay::{self, Mode, Relays},
+    relay::{self, Mode, Reason, Relays, Taken},
+    relay_store::Recorder,
 };
 
 /// Every packet starts with this, then the version, the type and the cookie
@@ -56,8 +58,11 @@ const RELAY_SWEEP: Duration = Duration::from_secs(10);
 pub struct Natneg {
     sessions: Mutex<HashMap<u32, Session>>,
     activity: Arc<Activity>,
-    /// Its sessions tell where each game socket's heartbeats come from.
+    /// Its sessions tell where each game socket's heartbeats come from, and
+    /// the profile that plays there.
     master: Arc<Master>,
+    /// Its logins tell the profile at a game's IP when no heartbeats do.
+    gpcm: Option<Arc<Gpcm>>,
     relays: Option<Relays>,
     /// The pairs of IPs whose games failed without the relay, and when.
     failed: Mutex<HashMap<(IpAddr, IpAddr), Instant>>,
@@ -115,12 +120,20 @@ impl fmt::Display for Mapping {
 }
 
 impl Natneg {
-    pub fn new(activity: Arc<Activity>, master: Arc<Master>, relay: Option<relay::Config>) -> Self {
+    /// With a `recorder`, the relayed matches go to the database.
+    pub fn new(
+        activity: Arc<Activity>,
+        master: Arc<Master>,
+        gpcm: Option<Arc<Gpcm>>,
+        relay: Option<relay::Config>,
+        recorder: Option<Recorder>,
+    ) -> Self {
         Self {
             sessions: Mutex::default(),
             activity,
             master,
-            relays: relay.map(Relays::new),
+            gpcm,
+            relays: relay.map(|config| Relays::new(config, recorder)),
             failed: Mutex::default(),
         }
     }
@@ -344,16 +357,14 @@ impl Natneg {
         ];
         let reason = match &self.relays {
             None => None,
-            Some(relays) if relays.config.mode == Mode::Always => Some("always"),
-            Some(_) if self.failed_before(first.ip(), second.ip()) => {
-                Some("failed without it before")
-            }
+            Some(relays) if relays.config.mode == Mode::Always => Some(Reason::Always),
+            Some(_) if self.failed_before(first.ip(), second.ip()) => Some(Reason::FailedBefore),
             Some(_)
                 if mappings
                     .iter()
                     .any(|mapping| matches!(mapping, Mapping::Changes(_))) =>
             {
-                Some("new port per address")
+                Some(Reason::NewPort)
             }
             Some(_) => None,
         };
@@ -365,13 +376,20 @@ impl Natneg {
             first_nat = %mappings[0],
             %second,
             second_nat = %mappings[1],
-            relay = reason.unwrap_or("no"),
+            relay = reason.map_or("no", Reason::text),
             "connect"
         );
         let relays = self.relays.as_ref()?;
-        reason?;
+        let reason = reason?;
         let address = relays.address().await?;
-        if relays.open(cookie, [first, second]).is_err() {
+        let taken = Taken {
+            reason,
+            profiles: [
+                self.profile(first, &mappings[0]),
+                self.profile(second, &mappings[1]),
+            ],
+        };
+        if relays.open(cookie, [first, second], taken).is_err() {
             warn!(target: "natneg", cookie = cookie_text, max = relays.config.max, "relay full: the games try without it");
             return None;
         }
@@ -392,6 +410,24 @@ impl Natneg {
             Some(heard) if heard == game => Mapping::Kept,
             Some(heard) => Mapping::Changes(heard),
         }
+    }
+
+    /// The profile that plays at the game socket `game`: the one its
+    /// master-server session names (`dwc_pid`, from where its heartbeats
+    /// come), else the only GPCM login from its IP.
+    fn profile(&self, game: SocketAddr, mapping: &Mapping) -> Option<i32> {
+        let heartbeats = match mapping {
+            Mapping::Changes(heard) => *heard,
+            Mapping::Kept | Mapping::Unknown => game,
+        };
+        self.master
+            .session(heartbeats)
+            .and_then(|session| session.field("dwc_pid")?.parse().ok())
+            .filter(|&profile_id: &i32| profile_id > 0)
+            .or_else(|| match self.gpcm.as_ref()?.logged_in_at(game.ip())[..] {
+                [profile_id] => Some(profile_id),
+                _ => None,
+            })
     }
 
     /// A game's report on the negotiation `cookie`: a failure without the
@@ -594,12 +630,14 @@ mod tests {
         Natneg::new(
             Arc::default(),
             Arc::default(),
+            None,
             mode.map(|mode| relay::Config {
                 mode,
                 address: "192.0.2.1".into(),
                 max: 4,
                 port: 27901,
             }),
+            None,
         )
     }
 
@@ -704,6 +742,72 @@ mod tests {
         ));
         negotiate(&natneg, COOKIE + 1, GAMES);
         assert!(natneg.relay_for(COOKIE + 1).await.is_some());
+    }
+
+    #[sqlx::test]
+    async fn a_relayed_match_is_recorded_with_the_profiles_that_play(pool: sqlx::PgPool) {
+        use crate::relay_store::Record;
+
+        let gpcm = Arc::new(Gpcm::new(pool, Arc::default(), Arc::default()));
+        let (recorder, mut records) = Recorder::new();
+        let natneg = Natneg::new(
+            Arc::default(),
+            Arc::default(),
+            Some(gpcm.clone()),
+            Some(relay::Config {
+                mode: Mode::Always,
+                address: "192.0.2.1".into(),
+                max: 4,
+                port: 27901,
+            }),
+            Some(recorder),
+        );
+        // The first game's heartbeats name its profile; the second sends
+        // none, but only one profile is logged in from its IP.
+        let mut heartbeat = b"\x03KEY!".to_vec();
+        heartbeat.extend_from_slice(
+            b"localip0\x00192.168.1.131\x00localport\x0051021\x00gamename\x00mschargedwii\x00dwc_pid\x001000000007\x00\x00",
+        );
+        assert!(
+            natneg
+                .master
+                .answer(&heartbeat, address(GAMES[0].0))
+                .is_some()
+        );
+        gpcm.fake_login(1_000_000_009, "198.51.100.9".parse().unwrap());
+        negotiate(&natneg, COOKIE, GAMES);
+        assert!(natneg.relay_for(COOKIE).await.is_some());
+        let Ok(Record::Opened {
+            cookie,
+            reason,
+            games,
+            profiles,
+            ..
+        }) = records.try_recv()
+        else {
+            panic!("the start");
+        };
+        assert_eq!((cookie, reason), (COOKIE, Reason::Always));
+        assert_eq!(games, [address(GAMES[0].0), address(GAMES[1].0)]);
+        assert_eq!(profiles, [Some(1_000_000_007), Some(1_000_000_009)]);
+
+        // Two logins from that IP: which one plays is unknown.
+        gpcm.fake_login(1_000_000_010, "198.51.100.9".parse().unwrap());
+        negotiate(&natneg, COOKIE + 1, GAMES);
+        assert!(natneg.relay_for(COOKIE + 1).await.is_some());
+        // The new negotiation of the same games ends the first.
+        assert!(matches!(
+            records.try_recv(),
+            Ok(Record::Ended {
+                cookie: COOKIE,
+                why: relay::End::Replaced,
+                ..
+            })
+        ));
+        let Ok(Record::Opened { profiles, .. }) = records.try_recv() else {
+            panic!("the second start");
+        };
+        assert_eq!(profiles, [Some(1_000_000_007), None]);
     }
 
     #[tokio::test]
