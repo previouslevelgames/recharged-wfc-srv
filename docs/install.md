@@ -5,13 +5,14 @@ one database, PostgreSQL gets a container of its own instead
 ([Several servers on one database](#several-servers-on-one-database)). The
 image is `ghcr.io/previouslevelgames/recharged-wfc-srv`; `stable` is the latest
 release.
-`GET /status` returns `{"status":"ok","revision":"<Git commit SHA>"}`.
+`GET /status` returns `{"status":"ok","revision":"<Git commit SHA>"}`;
+`GET /api/v1/online` the players online ([Players online](#players-online)).
 
 The game reaches the server on five ports:
 
 | Port | Service |
 |---|---|
-| TCP 80 | NAS (registration and login), gamestats2 (leaderboards) and Recharged's match reports, plus `/status` and `/admin` |
+| TCP 80 | NAS (registration and login), gamestats2 (leaderboards) and Recharged's match reports, plus `/status`, `/api/v1/online` and `/admin` |
 | TCP 29900 | GPCM: logins, friends and their status |
 | UDP 27900 | QR2 master: the games' heartbeats |
 | TCP 28910 | Server browser: finding a match |
@@ -125,6 +126,29 @@ on the router, or run the container on a server with its own public address.
 The traffic is plain HTTP and GameSpy's own protocols, so it cannot go through a
 Cloudflare Tunnel. On its first login the game registers the console and keeps
 the userid in `data/shared2/DWC_AUTHDATA`.
+
+## Players online
+
+`GET /api/v1/online`, on TCP 80 like the game's own requests, needs no
+session and tells how many players are online now, for the launcher and the
+game to show:
+
+```json
+{"wfc": 12, "playing": 4, "recharged": 3}
+```
+
+- `wfc`: logged in to Nintendo WFC on this server, from any game: Recharged,
+  a Wii or Dolphin. A game logs in when it goes online, not when it starts.
+- `playing`: of them, in an online match (DWC's status 2).
+- `recharged`: Recharged open, on any server of the database: a launcher or
+  game that signed in to a profile (Recharged 1.2) asked in the last minute.
+  Recharged 1.1 never counts here.
+
+These are the numbers of the Monitoring page's chart, of this second rather
+than the last minute. `wfc` and `playing` count this server's players only,
+the ones who can meet there ([Several servers on one database](#several-servers-on-one-database)).
+The server counts at most once in 10 seconds and answers that count until then
+(`Cache-Control: public, max-age=10`), however often it is asked.
 
 ## NAT relay
 

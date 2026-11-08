@@ -69,9 +69,10 @@ impl App {
         }
     }
 
-    /// The HTTP routes: status, NAS, gamestats2, match reports, and `/admin`
-    /// and the profile service with their configurations. NAS, gamestats2 and
-    /// the reports need the caller's address: serve them with
+    /// The HTTP routes: status, players online, NAS, gamestats2, match
+    /// reports, and `/admin` and the profile service with their
+    /// configurations. NAS, gamestats2 and the reports need the caller's
+    /// address: serve them with
     /// `into_make_service_with_connect_info::<SocketAddr>()`.
     pub fn router(
         &self,
@@ -86,7 +87,8 @@ impl App {
                 self.gpcm.clone(),
                 self.pairings.clone(),
             ))
-            .merge(reports::router(self.pool.clone(), self.gpcm.clone()));
+            .merge(reports::router(self.pool.clone(), self.gpcm.clone()))
+            .merge(online::router(self.pool.clone(), self.gpcm.clone()));
         // The Maintenance page switches test sign-in while profiles run.
         let test_sign_in = profiles.as_ref().map(|config| config.test_sign_in);
         if let Some(config) = admin {
