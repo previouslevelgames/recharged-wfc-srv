@@ -30,39 +30,6 @@ reference, and runs as one Docker container with its own database.
 Not there yet: more moderation, such as kicking a player from a match. The
 server is made for Recharged; real Wii consoles are not supported.
 
-## Admin dashboard
-
-Sign in at `/admin` with a Google account to watch the server live: players
-online, matchmaking, matches, leaderboards, the database and the logs.
-
-<p align="center">
-  <a href="docs/screenshots/admin-overview-light.png"><picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/admin-overview-dark.png">
-    <img src="docs/screenshots/admin-overview-light.png" width="840" alt="The dashboard's overview: players online, matchmaking, leaderboards and the database, each in a few figures">
-  </picture></a>
-</p>
-
-More pages: [players](docs/screenshots/admin-players-light.png),
-[matchmaking](docs/screenshots/admin-matchmaking-light.png),
-[leaderboards](docs/screenshots/admin-leaderboards-light.png),
-[database](docs/screenshots/admin-database-light.png). The screenshots show
-made-up players and addresses.
-
-## Running a server
-
-The image is `ghcr.io/previouslevelgames/recharged-wfc-srv`, with PostgreSQL
-inside; several servers can also share one database container. Open five ports
-to the players' games, then point the game at the server in its
-`recharged.ini`:
-
-```ini
-[online]
-server = 203.0.113.10
-```
-
-[docs/install.md](docs/install.md) covers Unraid and Docker Compose, the
-settings, the dashboard's Google sign-in and updates.
-
 ## Disclaimer: AI assistance
 
 Recharged WFC is built with AI assistance. We want to be clear about how, and
@@ -103,6 +70,39 @@ tool's. And there will be bugs.
 We know AI is a contested topic. If you would rather not use software built
 this way, we respect that. If you enjoy playing online again, or want to
 contribute, you are very welcome.
+
+## Admin dashboard
+
+Sign in at `/admin` with a Google account to watch the server live: players
+online, matchmaking, matches, leaderboards, the database and the logs.
+
+<p align="center">
+  <a href="docs/screenshots/admin-overview-light.png"><picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/admin-overview-dark.png">
+    <img src="docs/screenshots/admin-overview-light.png" width="840" alt="The dashboard's overview: players online, matchmaking, leaderboards and the database, each in a few figures">
+  </picture></a>
+</p>
+
+More pages: [players](docs/screenshots/admin-players-light.png),
+[matchmaking](docs/screenshots/admin-matchmaking-light.png),
+[leaderboards](docs/screenshots/admin-leaderboards-light.png),
+[database](docs/screenshots/admin-database-light.png). The screenshots show
+made-up players and addresses.
+
+## Running a server
+
+The image is `ghcr.io/previouslevelgames/recharged-wfc-srv`, with PostgreSQL
+inside; several servers can also share one database container. Open five ports
+to the players' games, then point the game at the server in its
+`recharged.ini`:
+
+```ini
+[online]
+server = 203.0.113.10
+```
+
+[docs/install.md](docs/install.md) covers Unraid and Docker Compose, the
+settings, the dashboard's Google sign-in and updates.
 
 ## Documentation
 
