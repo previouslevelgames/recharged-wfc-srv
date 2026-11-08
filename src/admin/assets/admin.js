@@ -267,6 +267,27 @@ const DWC_KINDS = {
   610: 'transfer header',
   620: 'transfer body',
 };
+// The login's NAS step (dwc_auth_interface.c): it shows 20100 when it cannot
+// reach NAS, 20000 + the returncd NAS refused it with (docs/login.md), 23000 +
+// an HTTP status other than 200, and 29000 or 29001 when the console's storage
+// failed it. This server's NAS refuses with 103 and 120, never 110.
+const NAS_ERRORS = {
+  20100: 'NAS unreachable',
+  20101: 'NAS answer unreadable',
+  20103: 'NAS refused: bad request',
+  20110: 'Service ended: another server’s NAS',
+  20120: 'Console banned',
+  29000: 'Console storage (NAND) failed',
+  29001: 'Console storage (NAND) corrupt',
+};
+// The codes the game shows as the Wii not getting online
+// (GetOnlineErrorPopup), its own connection's.
+const NETWORK_ERRORS = [
+  [50100, 50499],
+  [51000, 51099],
+  [51300, 51499],
+  [52000, 52299],
+];
 // The game's session state when an error came (NetworkSession::mSessionState).
 const PHASES = {
   none: 'Menus',
@@ -1358,8 +1379,13 @@ function renderMatch(data, now) {
 
 // --- Monitoring ----------------------------------------------------------
 
-/** What a DWC error code means; null for other codes. */
+/** What an error code means, in a few words; null for a code not known. The
+ * game shows DWC's codes without their sign (GetOnlineErrorPopup). */
 function errorMeaning(code) {
+  if (NAS_ERRORS[code]) return NAS_ERRORS[code];
+  if (code > 20101 && code < 21000) return `NAS refused (returncd ${code - 20000})`;
+  if (code >= 23000 && code < 24000) return `NAS answered HTTP ${code - 23000}`;
+  if (NETWORK_ERRORS.some(([low, high]) => code >= low && code <= high)) return 'Wii could not get online';
   if (code < 60000 || code > 99999) return null;
   const parts = [DWC_SEQUENCES[Math.floor(code / 10000)], DWC_PARTS[Math.floor((code % 10000) / 1000)], DWC_KINDS[code % 1000]];
   return parts.filter(Boolean).join(' · ') || null;
@@ -1620,6 +1646,15 @@ function timelineChart(timeline, now) {
     problemCross,
   );
 
+  // The error codes on the timeline, the lowest first, and what they mean:
+  // the readout names a column's codes, this key says what they are. It is
+  // outside the chart: pointing at it leaves the chart and shows it whole.
+  const keyEntries = new Map();
+  for (const code of [...new Set(columns.flatMap((column) => [...column.codes.keys()]))].sort((a, b) => a - b)) {
+    keyEntries.set(code, h('div', { class: 'tl-code' }, h('dt', null, String(code)), h('dd', null, errorMeaning(code) || 'unknown')));
+  }
+  const codeKey = keyEntries.size > 0 && h('dl', { class: 'tl-codes', 'data-kind': 'error' }, ...keyEntries.values());
+
   // Local time: a label every AXIS_HOURS hours, the day's name at midnight.
   const axis = h('div', { class: 'tl-x', 'aria-hidden': 'true' });
   const tick = new Date(start);
@@ -1674,6 +1709,8 @@ function timelineChart(timeline, now) {
   const show = () => {
     for (const node of columnNodes.values()) node.classList.remove('is-active');
     const column = columns.find((candidate) => candidate.at === timelineView.column);
+    // The picked column's codes stand out in the key.
+    for (const [code, entry] of keyEntries) entry.classList.toggle('is-dim', Boolean(column) && !column.codes.has(code));
     if (!column) {
       timelineView.column = null;
       chart.classList.remove('is-picking');
@@ -1769,7 +1806,7 @@ function timelineChart(timeline, now) {
     'section',
     { class: 'card' },
     h('header', { class: 'card-head' }, h('h2', null, `Last ${hours} hours`), h('p', null, `Players online, the matches Recharged builds reported, and what went wrong, by ${timeline.column_minutes} minutes; your local time`)),
-    h('div', { class: 'timeline' }, chart, details),
+    h('div', { class: 'timeline' }, chart, codeKey, details),
   );
 }
 

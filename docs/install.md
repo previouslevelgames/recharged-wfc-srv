@@ -204,8 +204,8 @@ every board, with its rank. **Monitoring** starts with the last 48 hours as a ti
 with the clock: the players online (logged in to WFC, and of them with
 Recharged open; the server counts them every minute and keeps 30 days), the
 matches in progress, and below them what went wrong in each half hour, with a
-table of the same numbers. Its by-day table shows each day's most players
-online. Then it shows how online matches
+key to its error codes and a table of the same numbers. Its by-day table
+shows each day's most players online. Then it shows how online matches
 go wrong over the last 14 days: games out of sync and lost connections by day, build and stadium, games
 that left WFC in the middle of a match, the error codes players saw, and the
 reports the server refused ([reports.md](reports.md#diagnostics)).

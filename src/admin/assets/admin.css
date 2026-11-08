@@ -1039,6 +1039,48 @@ h1 .server-label {
   font-size: 11px;
 }
 
+/* The key to the timeline's error codes, after the error codes' swatch; the
+   picked column's codes stand out. */
+.tl-codes {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 14px;
+  margin: 6px 0 0 var(--tl-gutter);
+  color: var(--ink-2);
+  font-size: 12px;
+}
+
+.tl-codes::before {
+  content: "";
+  flex: none;
+  align-self: center;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: var(--kind);
+}
+
+.tl-code {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.tl-code dt {
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.tl-code dd {
+  margin: 0;
+}
+
+.tl-code.is-dim {
+  opacity: 0.4;
+}
+
 .tl-table {
   margin-top: 8px;
 }
