@@ -3,47 +3,37 @@
 The online server for [**Recharged**](https://github.com/previouslevelgames/recharged),
 the native PC port of **Mario Strikers Charged**.
 
-Mario Strikers Charged played online through the Nintendo Wi-Fi Connection
-(WFC), which Nintendo shut down in 2014. This server brings those online modes
-back for Recharged: going online with your Mii, friends, friend battles, ranked
-matches and the leaderboards. It is written in Rust, with
+The game played online through the Nintendo Wi-Fi Connection (WFC), which
+Nintendo shut down in 2014. This server brings those online modes back for
+Recharged. It is written in Rust, with
 [WiiLink's wfc-server](https://github.com/WiiLink24/wfc-server) as its
-reference, and runs as a single Docker container with its own database.
+reference, and runs as one Docker container with its own database.
 
 ## What works
 
-- **Going online.** The first time a console connects, the server registers it.
-  Each Mii gets its own profile and friend code.
-- **Friends.** Add each other by friend code. Once both have added each other,
-  you see when your friends are online and what they are doing. Removing a
-  friend works too. The server has a friend of its own, **CPU**, who accepts
-  every request: friend code `1770-9365-9135` (US) or `0009-9999-9999` (EU).
-- **Friend battles.** Host a match and invite a friend, or join one.
-- **Ranked matches.** **RANKED** in WFC Central pairs players who search at the
-  same time, and helps the two games reach each other through home routers.
-- **Games that cannot reach each other.** Some internet connections, often
-  those that share one public address between many customers, keep two games
-  from reaching each other directly: the game shows error 86070. With the relay
-  switched on, the server passes the match on between the two itself.
-- **Leaderboards.** Ranked results count towards the season and *Striker of the
-  day* boards, plus the boards only the European release has. A score is only
-  accepted from the player who is signed in. As in the original game, seasons
-  restart every week; the dashboard keeps how the last one ended.
-- **Match reports.** Recharged builds report every series they play online,
-  ranked or with friends. The server pairs the two games' reports into one
-  match, and the games both saw the same make its result.
-- **Admin dashboard.** A web page for whoever runs the server, see below.
+- **Going online** with your Mii. Each Mii gets its own profile and friend code.
+- **Friends.** Add each other by friend code and see who is online. The
+  server's own friend, **CPU**, accepts every request: `1770-9365-9135` (US) or
+  `0009-9999-9999` (EU).
+- **Friend battles and ranked matches.** Invite a friend, or search in
+  **RANKED** in WFC Central.
+- **Relay.** When two games cannot reach each other (error 86070), the server
+  can pass the match on between them.
+- **Leaderboards.** The season and *Striker of the day* boards, plus the
+  European release's own. Seasons restart every week, as in the original game.
+- **Competitive play.** Players sign in from the Recharged launcher to play
+  sets by the server's rules.
+- **Match reports.** Both games report every series they play online; the
+  server pairs the reports into one match.
+- **Admin dashboard** for whoever runs the server, see below.
 
-Not there yet: moderation tools (banning a player, kicking one from a match,
-removing a score). The server is made for Recharged; real Wii consoles are not
-supported.
+Not there yet: more moderation, such as kicking a player from a match. The
+server is made for Recharged; real Wii consoles are not supported.
 
 ## Admin dashboard
 
-Whoever runs the server can sign in at `/admin` with a Google account and watch
-it live: who is online, who is searching for a match, the matches being
-played, the leaderboards, the health of the database and the server's logs. The page follows your system's
-light or dark mode.
+Sign in at `/admin` with a Google account to watch the server live: players
+online, matchmaking, matches, leaderboards, the database and the logs.
 
 <p align="center">
   <a href="docs/screenshots/admin-overview-light.png"><picture>
@@ -52,65 +42,74 @@ light or dark mode.
   </picture></a>
 </p>
 
-<table>
-<tr>
-<td width="50%">
-  <a href="docs/screenshots/admin-players-light.png"><picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/admin-players-dark.png">
-    <img src="docs/screenshots/admin-players-light.png" alt="Players: every profile with its Mii name, friend code, status and friends">
-  </picture></a>
-  <p align="center"><b>Players</b>: every Mii with its friend code, who is online and what they are doing</p>
-</td>
-<td width="50%">
-  <a href="docs/screenshots/admin-matchmaking-light.png"><picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/admin-matchmaking-dark.png">
-    <img src="docs/screenshots/admin-matchmaking-light.png" alt="Matchmaking: the games online and the latest searches, reservations and connections">
-  </picture></a>
-  <p align="center"><b>Matchmaking</b>: who is searching, hosting or joining, and how their matches came together</p>
-</td>
-</tr>
-<tr>
-<td width="50%">
-  <a href="docs/screenshots/admin-leaderboards-light.png"><picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/admin-leaderboards-dark.png">
-    <img src="docs/screenshots/admin-leaderboards-light.png" alt="Leaderboards: the top 10 of a board with wins and losses">
-  </picture></a>
-  <p align="center"><b>Leaderboards</b>: the top 10 of every board, with wins and losses</p>
-</td>
-<td width="50%">
-  <a href="docs/screenshots/admin-database-light.png"><picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/admin-database-dark.png">
-    <img src="docs/screenshots/admin-database-light.png" alt="Database: health, size, connections, tables and migrations">
-  </picture></a>
-  <p align="center"><b>Database</b>: health, load, tables and schema updates</p>
-</td>
-</tr>
-</table>
-
-<sub>The screenshots show made-up players and addresses.</sub>
+More pages: [players](docs/screenshots/admin-players-light.png),
+[matchmaking](docs/screenshots/admin-matchmaking-light.png),
+[leaderboards](docs/screenshots/admin-leaderboards-light.png),
+[database](docs/screenshots/admin-database-light.png). The screenshots show
+made-up players and addresses.
 
 ## Running a server
 
-The server ships as one container image,
-`ghcr.io/previouslevelgames/recharged-wfc-srv`, with its PostgreSQL database
-inside. Several servers can also share one database in a container of its own. It needs five ports reachable from the players' games, and the game is
-pointed at it with one line in its `recharged.ini`:
+The image is `ghcr.io/previouslevelgames/recharged-wfc-srv`, with PostgreSQL
+inside; several servers can also share one database container. Open five ports
+to the players' games, then point the game at the server in its
+`recharged.ini`:
 
 ```ini
 [online]
 server = 203.0.113.10
 ```
 
-**[docs/install.md](docs/install.md)** walks through the setup on Unraid or
-with Docker Compose, the settings, the admin dashboard's Google sign-in and
-updates.
+[docs/install.md](docs/install.md) covers Unraid and Docker Compose, the
+settings, the dashboard's Google sign-in and updates.
 
-## More
+## Disclaimer: AI assistance
 
-- [docs/install.md](docs/install.md): installing, configuring and updating the server
-- [docs/development.md](docs/development.md): building and testing it, and how releases work
-- [docs/login.md](docs/login.md) and [docs/gamestats2.md](docs/gamestats2.md):
-  what the game sends and what the server answers, for going online and for the leaderboards
-- [docs/reports.md](docs/reports.md): the match reports Recharged builds send, and how the
-  server pairs them into matches
-- [docs/profiles.md](docs/profiles.md): Recharged profiles, which the launcher signs in to for competitive play
+Recharged WFC is built with AI assistance. We want to be clear about how, and
+where we stand.
+
+We see AI as a power tool. Like a chainsaw, it is dangerous in careless hands
+and a huge multiplier in trained ones. This is a passion project, and AI does
+not change that: it lets a small team take on a project of this size and spend
+its care where it matters, on bringing the online modes of Mario Strikers
+Charged back.
+
+What AI cannot change is the protocol. The server has to answer exactly what
+the original game expects, with
+[WiiLink's wfc-server](https://github.com/WiiLink24/wfc-server) as our
+reference. The real game is the final judge of every answer.
+
+How we use it:
+
+- **Code.** The server (accounts, friends, matchmaking, the relay and the
+  leaderboards) is mostly crafted by hand. AI coding agents assist along the
+  way, for example with refactoring, tests and repetitive changes. They speed
+  up the work; they don't make the decisions. Design and architecture are ours,
+  every change is reviewed, and nothing ships until it passes formatting, lint
+  and tests and has been tried against the real game on a test server.
+- **Admin dashboard.** Our focus is the server: protocols, architecture, data
+  and operations. Most of the dashboard's HTML, CSS and JavaScript was built
+  with AI assistance, so our own time goes into the system behind it. Frontend
+  and design contributions are very welcome:
+  [open an issue](https://github.com/previouslevelgames/recharged-wfc-srv/issues).
+- **Debugging and analysis.** AI helps us read server logs faster and analyse
+  packet captures and protocol dumps in depth.
+- **Documentation.** English is not our first language. Much of the
+  documentation is corrected or rewritten with LLMs, from our notes and the code.
+
+The responsibility stays with us. Every bug in Recharged WFC is ours, not the
+tool's. And there will be bugs.
+
+We know AI is a contested topic. If you would rather not use software built
+this way, we respect that. If you enjoy playing online again, or want to
+contribute, you are very welcome.
+
+## Documentation
+
+- [install.md](docs/install.md): installing, configuring and updating the server
+- [development.md](docs/development.md): building, testing and releases
+- [login.md](docs/login.md) and [gamestats2.md](docs/gamestats2.md): what the
+  game sends and the server answers, for going online and the leaderboards
+- [reports.md](docs/reports.md): match reports, and how they pair into matches
+- [profiles.md](docs/profiles.md): Recharged profiles for competitive play
+- [CONTRIBUTING.md](CONTRIBUTING.md): reporting problems, ideas and pull requests
