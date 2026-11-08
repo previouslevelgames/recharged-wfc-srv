@@ -119,7 +119,15 @@ pub async fn read(
         activity
             .iter()
             .flat_map(|event| match &event.what {
-                What::Search { profile_id, .. } => vec![*profile_id],
+                What::Search {
+                    profile_id,
+                    found_profiles,
+                    missed,
+                    ..
+                } => std::iter::once(*profile_id)
+                    .chain(found_profiles.iter().map(|&profile| Some(profile)))
+                    .chain(missed.iter().map(|miss| Some(miss.profile_id)))
+                    .collect(),
                 What::Command { from, to, .. } => vec![*from, *to],
                 What::Negotiation { games, .. } => {
                     games.iter().map(|party| party.profile_id).collect()
@@ -227,7 +235,14 @@ mod tests {
             (3, 1, 1)
         );
         let activity = Activity::default();
-        activity.search(Some(1000000001), "dwc_pid != 1000000001", 1);
+        activity.search(
+            Some(1000000001),
+            "dwc_pid != 1000000001",
+            crate::activity::Listed {
+                count: 1,
+                ..Default::default()
+            },
+        );
         activity.negotiation(1, "172.17.0.1:44719".parse().ok());
         let page = read(&pool, &master, &activity).await.unwrap();
         let [first, second, online] = &page.sessions[..] else {

@@ -267,6 +267,27 @@ const DWC_KINDS = {
   610: 'transfer header',
   620: 'transfer body',
 };
+// The login's NAS step (dwc_auth_interface.c): it shows 20100 when it cannot
+// reach NAS, 20000 + the returncd NAS refused it with (docs/login.md), 23000 +
+// an HTTP status other than 200, and 29000 or 29001 when the console's storage
+// failed it. This server's NAS refuses with 103 and 120, never 110.
+const NAS_ERRORS = {
+  20100: 'NAS unreachable',
+  20101: 'NAS answer unreadable',
+  20103: 'NAS refused: bad request',
+  20110: 'Service ended: another server’s NAS',
+  20120: 'Console banned',
+  29000: 'Console storage (NAND) failed',
+  29001: 'Console storage (NAND) corrupt',
+};
+// The codes the game shows as the Wii not getting online
+// (GetOnlineErrorPopup), its own connection's.
+const NETWORK_ERRORS = [
+  [50100, 50499],
+  [51000, 51099],
+  [51300, 51499],
+  [52000, 52299],
+];
 // The game's session state when an error came (NetworkSession::mSessionState).
 const PHASES = {
   none: 'Menus',
@@ -279,6 +300,8 @@ const PHASES = {
 };
 // Why a report was refused (src/reports/mod.rs).
 const REFUSALS = { elsewhere: 'From another address', invalid: 'Invalid report' };
+// A release by the first four characters of its game id (gsbrcd).
+const RELEASES = { R4QE: 'US', R4QP: 'Europe', R4QJ: 'Japan', R4QK: 'Korea' };
 // A match's state (docs/profiles.md, "Matches"), with its badge tone.
 const MATCH_STATES = {
   challenged: ['Challenged', 'warning'],
@@ -818,15 +841,18 @@ function renderPlayer(data, now) {
     if (data.error) return [unreachable(data.error)];
     return [banner({ level: 'warning', title: 'No such profile', detail: `No profile ${route.id} has signed in.` })];
   }
-  const { profile, stats, standing, matches, relayed, relay_kept_days: keptDays } = detail;
+  const { profile, stats, standing, matches, relayed, relay_kept_days: keptDays, technical } = detail;
   const opponent = (r) => (r.games[0].profile_id === profile.profile_id ? r.games[1] : r.games[0]);
   setHead(profile.mii_name || 'Unnamed', [`Profile ${profile.profile_id} · friend code `, h('code', null, profile.friend_code)]);
   const player = profile.player;
+  const client = technical.builds[0];
+  const relayedNow = relayed.find((r) => !r.ended_at);
+  const version = technical.sessions.find((session) => session.version)?.version;
 
   return [
     h(
       'section',
-      { class: 'tiles', 'aria-label': 'Key figures' },
+      { class: 'tiles words', 'aria-label': 'Key figures' },
       tile(
         'Status',
         profile.cpu_buddy ? 'Server' : profile.online ? statusOf(profile.online)[0] : 'Offline',
@@ -836,12 +862,23 @@ function renderPlayer(data, now) {
             ? [statusOf(profile.online)[2], ' · since ', ago(profile.online.status_since, now), ' · logged in to GPCM ', ago(profile.online.since, now)]
             : [statusOf(profile.online)[2], ' · logged in to GPCM ', ago(profile.online.since, now)],
       ),
-      tile('Release', profile.release, profile.gsbrcd),
-      tile('Account', h('code', null, `${profile.user_id}`), 'The console, registered with NAS'),
+      tile('Release', RELEASES[profile.release] ? `${RELEASES[profile.release]} · ${profile.release}` : profile.release, version ? versionText(version) : profile.gsbrcd),
+      tile(
+        'Client',
+        client?.build ? client.build.split('+')[0] : '—',
+        client ? [client.build ? h('code', null, client.build) : 'No build named', client.os ? ` · ${client.os}` : ''] : 'No series reported',
+      ),
+      tile(
+        'Relay',
+        relayedNow ? badge('warning', 'Relayed now') : relayed.length ? `${integer.format(relayed.length)} relayed` : 'Direct',
+        relayedNow ? `Since ${ago(relayedNow.started_at, now).textContent}: ${relayReasonText(relayedNow)}` : `Matches the NAT relay carried in ${keptDays} days`,
+      ),
       tile('Last sign-in', profile.cpu_buddy ? '—' : ago(profile.last_login_at, now), profile.last_ip || 'No address'),
       tile('Recharged player', player ? player.name : '—', player ? (player.discord ? `Discord ${player.discord} · player #${player.player_id}` : `Player #${player.player_id}`) : 'Not signed in from the launcher'),
     ),
     profile.cpu_buddy ? null : playerCard(profile),
+    profile.cpu_buddy ? null : connectionCard(profile, technical, now),
+    profile.cpu_buddy ? null : clientCard(technical, now),
     card(
       'Record',
       'The series its Recharged build reported, by mode; a game counts when both sides saw it the same, or only one reported it',
@@ -916,7 +953,182 @@ function renderPlayer(data, now) {
         `The relay carried none of its games in the last ${keptDays} days.`,
       ),
     ),
+    profile.cpu_buddy
+      ? null
+      : card(
+          'Matchmaking',
+          'Its searches (with why they left other searching games out), match commands and NAT negotiations among the server’s latest, in memory since the last start',
+          table(
+            [
+              { label: 'When', cell: (e) => [ago(e.last_at, now), h('span', { class: 'sub' }, `from ${clock.format(new Date(e.first_at))}`)] },
+              { label: 'What', cell: (e) => eventWhat(e) },
+              { label: 'Who', cell: (e) => eventWho(e, technical.names) },
+              { label: 'Filter', class: 'query', cell: (e) => eventDetail(e, technical.names) },
+            ],
+            technical.events,
+            'No matchmaking of its games since the server started.',
+          ),
+        ),
+    profile.cpu_buddy
+      ? null
+      : card(
+          'Client errors',
+          `The error codes its game showed and sent, the latest first; kept ${technical.errors_kept_days} days`,
+          table(
+            [
+              { label: 'When', cell: (e) => [ago(e.received_at, now), h('span', { class: 'sub' }, dateTime.format(new Date(e.received_at)))] },
+              { label: 'Code', cell: (e) => [h('code', null, `${e.code}`), h('span', { class: 'sub' }, errorMeaning(e.code) || 'Not known')] },
+              { label: 'While', cell: (e) => (e.phase ? PHASES[e.phase] || e.phase : '—') },
+              { label: 'Build', cell: (e) => [e.build ? h('code', null, e.build) : '—', h('span', { class: 'sub' }, e.release)] },
+              { label: 'From', cell: (e) => h('code', null, e.address) },
+            ],
+            technical.errors,
+            'Its game sent no error codes.',
+          ),
+        ),
+    profile.cpu_buddy || !technical.refusals.length
+      ? null
+      : card(
+          'Refused reports',
+          'Its match reports the server did not take: its matches then show no report from its side',
+          table(
+            [
+              { label: 'Why', cell: (r) => [REFUSALS[r.kind] || r.kind, h('span', { class: 'sub' }, r.problem)] },
+              { label: 'Reports', num: true, cell: (r) => integer.format(r.count) },
+              { label: 'From', cell: (r) => h('code', null, r.address) },
+              { label: 'Last', cell: (r) => [ago(r.last_at, now), h('span', { class: 'sub' }, `first ${ago(r.first_at, now).textContent}`)] },
+            ],
+            technical.refusals,
+            'No report was refused.',
+          ),
+        ),
   ];
+}
+
+/** A game's network version (`AP`) in a few words. */
+function versionText(version) {
+  if (version.kind === 'original') {
+    const region = { US: 'US', EU: 'European', JP: 'Japanese', KR: 'Korean' }[version.region] || 'Unknown';
+    return `${region} game, build 0x${version.build.toString(16).toUpperCase()}`;
+  }
+  if (version.kind === 'recharged') return `Recharged online protocol ${version.protocol}`;
+  return `Unknown version ${version.word}`;
+}
+
+/** Why the relay carried a match, in a few words. */
+function relayReasonText(relayed) {
+  return { always: 'the relay takes every match', new_port: 'a router gives a new port per address', failed_before: 'the two failed without it before' }[relayed.reason] || relayed.reason;
+}
+
+// The sessions whose heartbeat fields are open, by address: each poll draws
+// the page again.
+const openHeartbeats = new Set();
+
+/** Its WFC login, its games' master-server sessions now and how a set keeps
+ * it: what decides whom its RANKED search meets. */
+function connectionCard(profile, technical, now) {
+  const online = profile.online;
+  const facts = [
+    ['GPCM connection', technical.gpcm_from ? h('code', null, technical.gpcm_from) : 'Not logged in'],
+    ['NAS login', technical.nas_from ? h('code', null, technical.nas_from) : '—'],
+    ['Last sign-in from', profile.last_ip ? h('code', null, profile.last_ip) : '—'],
+    ['DWC status', online ? `${statusOf(online)[0]}${online.status_since ? ` · ${ago(online.status_since, now).textContent}` : ''}` : 'Offline'],
+    ['Friends this login', online ? `${online.mutual_friends} mutual of ${online.friend_requests} asked` : '—'],
+    ['Console (NAS account)', h('code', null, `${profile.user_id}`)],
+    ['Login id', technical.login_id ? h('code', null, technical.login_id) : '—'],
+    ['Nick', h('code', null, technical.unique_nick)],
+    ['Game id', h('code', null, profile.gsbrcd)],
+    [
+      'Sets',
+      technical.sees === 'everyone'
+        ? 'No set keeps its game'
+        : technical.sees === 'only'
+          ? `Kept for a set: lists only profile ${technical.opponent}`
+          : 'Kept for a set: lists nobody until the opponent’s game is ready',
+    ],
+  ];
+  const sessions = table(
+    [
+      {
+        label: 'Address',
+        cell: (g) => [h('code', null, g.address), h('span', { class: 'sub' }, g.fields.localip0 ? `local ${g.fields.localip0}:${g.fields.localport}` : 'no local address')],
+      },
+      {
+        label: 'Heard',
+        cell: (g) => [`${Math.round(g.quiet_secs)} s ago`, h('span', { class: 'sub' }, g.listed ? 'answered the challenge' : 'no challenge answer yet')],
+      },
+      { label: 'Matchmaking', cell: (g) => matchState({ match_type: num(g.fields.dwc_mtype), players: num(g.fields.numplayers), max_players: num(g.fields.maxplayers), reserved_with: reserved(g.fields) }) },
+      { label: 'Version', cell: (g) => (g.version ? [versionText(g.version), h('span', { class: 'sub' }, `AP ${g.version.word}`)] : h('span', { class: 'sub' }, 'No AP: not searching')) },
+      { label: 'Mode', cell: (g) => matchMode({ mode: num(g.fields.GT), region_group: g.fields.CO }) },
+      { label: 'Points', num: true, cell: (g) => g.fields.PT ?? '—' },
+      { label: 'NAT negotiation', cell: (g) => (g.fields.natneg && g.fields.natneg !== '0' ? 'Yes' : 'No') },
+    ],
+    technical.sessions,
+    'Its game sends no heartbeats now: it is offline, or its UDP does not reach the master server.',
+  );
+  return card(
+    'Connection now',
+    'Where its login came from and what its game tells the master server, live: a RANKED search meets only games of the same version, mode and region group',
+    [
+      h('dl', { class: 'facts' }, facts.map(([label, value]) => h('div', null, h('dt', null, label), h('dd', null, value)))),
+      sessions,
+      ...technical.sessions.map((g) =>
+        h(
+          'details',
+          {
+            class: 'heartbeats',
+            open: openHeartbeats.has(g.address),
+            ontoggle: (event) => (event.target.open ? openHeartbeats.add(g.address) : openHeartbeats.delete(g.address)),
+          },
+          h('summary', null, `All ${Object.keys(g.fields).length} heartbeat fields of ${g.address}`),
+          h('code', { class: 'fields' }, Object.entries(g.fields).map(([name, value]) => `${name} = ${value}`).join('\n')),
+        ),
+      ),
+    ],
+  );
+}
+
+/** The builds and systems its game reported, and its Recharged launcher's
+ * last word. */
+function clientCard(technical, now) {
+  const recharged = technical.recharged;
+  const facts = recharged && [
+    ['Plays', recharged.game ? `${RELEASES[recharged.game] || recharged.game} · ${recharged.game}` : 'Not said'],
+    ['Screen', recharged.screen || '—'],
+    ['Activity', [recharged.activity || '—', recharged.match_kind ? ` · ${recharged.match_kind}` : '', recharged.set_game ? ` · set game ${recharged.set_game}` : ''].join('')],
+    ['Open to challenges', recharged.available ? 'Yes' : 'No'],
+    ['Country', recharged.country || '—'],
+    ['Last heartbeat', recharged.heartbeat_at ? ago(recharged.heartbeat_at, now) : '—'],
+  ];
+  return card(
+    'Client',
+    'The Recharged builds and systems its game reported with its series, the latest first, and what its Recharged launcher or game said last',
+    [
+      facts && h('dl', { class: 'facts' }, facts.map(([label, value]) => h('div', null, h('dt', null, label), h('dd', null, value)))),
+      table(
+        [
+          { label: 'Build', cell: (b) => (b.build ? h('code', null, b.build) : h('span', { class: 'sub' }, 'Not named')) },
+          { label: 'System', cell: (b) => b.os || '—' },
+          { label: 'Release', cell: (b) => `${RELEASES[b.release] || b.release} · ${b.release}` },
+          { label: 'Series', num: true, cell: (b) => integer.format(b.series) },
+          { label: 'Last', cell: (b) => ago(b.last_at, now) },
+        ],
+        technical.builds,
+        'Its game named no build or system in a report.',
+      ),
+    ],
+  );
+}
+
+/** A heartbeat field as a number; null when missing. */
+function num(value) {
+  return value == null || value === '' ? null : Number(value);
+}
+
+/** `dwc_mresv` when it names another profile. */
+function reserved(fields) {
+  const with_ = num(fields.dwc_mresv);
+  return with_ && String(with_) !== fields.dwc_pid ? with_ : null;
 }
 
 // --- Matchmaking ---------------------------------------------------------
@@ -982,11 +1194,16 @@ function eventWho(event, names) {
   );
 }
 
-// The game's own part of a search filter, in its parentheses.
-function eventDetail(event) {
+// The game's own part of a search filter, in its parentheses, and why it
+// left out the other games in a ranked search.
+function eventDetail(event, names) {
   if (event.kind !== 'search') return '—';
   const own = event.filter.match(/\((.*)\)\s*$/);
-  return h('code', { title: event.filter }, own ? own[1] : event.filter);
+  const filter = h('code', { title: event.filter }, own ? own[1] : event.filter);
+  const missed = (event.missed || []).map((miss) =>
+    h('span', { class: 'sub', title: `Profile ${miss.profile_id}` }, `Left out ${names[miss.profile_id] || miss.profile_id}: ${miss.why}`),
+  );
+  return missed.length ? [filter, ...missed] : filter;
 }
 
 function renderMatchmaking(data, now) {
@@ -1040,7 +1257,7 @@ function renderMatchmaking(data, now) {
           },
           { label: 'What', cell: (e) => eventWhat(e) },
           { label: 'Who', cell: (e) => eventWho(e, names) },
-          { label: 'Filter', class: 'query', cell: (e) => eventDetail(e) },
+          { label: 'Filter', class: 'query', cell: (e) => eventDetail(e, names) },
         ],
         activity,
         'Nothing yet. Searches, reservations and NAT negotiations appear here as games make them.',
@@ -1358,8 +1575,13 @@ function renderMatch(data, now) {
 
 // --- Monitoring ----------------------------------------------------------
 
-/** What a DWC error code means; null for other codes. */
+/** What an error code means, in a few words; null for a code not known. The
+ * game shows DWC's codes without their sign (GetOnlineErrorPopup). */
 function errorMeaning(code) {
+  if (NAS_ERRORS[code]) return NAS_ERRORS[code];
+  if (code > 20101 && code < 21000) return `NAS refused (returncd ${code - 20000})`;
+  if (code >= 23000 && code < 24000) return `NAS answered HTTP ${code - 23000}`;
+  if (NETWORK_ERRORS.some(([low, high]) => code >= low && code <= high)) return 'Wii could not get online';
   if (code < 60000 || code > 99999) return null;
   const parts = [DWC_SEQUENCES[Math.floor(code / 10000)], DWC_PARTS[Math.floor((code % 10000) / 1000)], DWC_KINDS[code % 1000]];
   return parts.filter(Boolean).join(' · ') || null;
@@ -1620,6 +1842,15 @@ function timelineChart(timeline, now) {
     problemCross,
   );
 
+  // The error codes on the timeline, the lowest first, and what they mean:
+  // the readout names a column's codes, this key says what they are. It is
+  // outside the chart: pointing at it leaves the chart and shows it whole.
+  const keyEntries = new Map();
+  for (const code of [...new Set(columns.flatMap((column) => [...column.codes.keys()]))].sort((a, b) => a - b)) {
+    keyEntries.set(code, h('div', { class: 'tl-code' }, h('dt', null, String(code)), h('dd', null, errorMeaning(code) || 'unknown')));
+  }
+  const codeKey = keyEntries.size > 0 && h('dl', { class: 'tl-codes', 'data-kind': 'error' }, ...keyEntries.values());
+
   // Local time: a label every AXIS_HOURS hours, the day's name at midnight.
   const axis = h('div', { class: 'tl-x', 'aria-hidden': 'true' });
   const tick = new Date(start);
@@ -1674,6 +1905,8 @@ function timelineChart(timeline, now) {
   const show = () => {
     for (const node of columnNodes.values()) node.classList.remove('is-active');
     const column = columns.find((candidate) => candidate.at === timelineView.column);
+    // The picked column's codes stand out in the key.
+    for (const [code, entry] of keyEntries) entry.classList.toggle('is-dim', Boolean(column) && !column.codes.has(code));
     if (!column) {
       timelineView.column = null;
       chart.classList.remove('is-picking');
@@ -1769,7 +2002,7 @@ function timelineChart(timeline, now) {
     'section',
     { class: 'card' },
     h('header', { class: 'card-head' }, h('h2', null, `Last ${hours} hours`), h('p', null, `Players online, the matches Recharged builds reported, and what went wrong, by ${timeline.column_minutes} minutes; your local time`)),
-    h('div', { class: 'timeline' }, chart, details),
+    h('div', { class: 'timeline' }, chart, codeKey, details),
   );
 }
 

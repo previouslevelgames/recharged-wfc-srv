@@ -22,7 +22,7 @@ use super::report::RELEASES;
 const PER_WINDOW: u32 = 30;
 const WINDOW: Duration = Duration::from_secs(10 * 60);
 /// Days of errors kept.
-const KEPT_DAYS: i32 = 30;
+pub const KEPT_DAYS: i32 = 30;
 /// The game's session states (`NetworkSession::mSessionState`).
 pub const PHASES: [&str; 7] = [
     "none",

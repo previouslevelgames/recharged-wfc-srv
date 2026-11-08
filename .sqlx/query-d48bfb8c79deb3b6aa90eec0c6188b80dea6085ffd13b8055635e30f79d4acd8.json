@@ -1,0 +1,124 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT game, screen, activity, match_kind, set_game, available, country,\n                        heartbeat_at, last_seen_at\n                 FROM players WHERE player_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "game",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "game"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "screen",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "screen"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "activity",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "activity"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "match_kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "match_kind"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "set_game",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "set_game"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "available",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "available"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "country",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "country"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "heartbeat_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "heartbeat_at"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "last_seen_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "last_seen_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "d48bfb8c79deb3b6aa90eec0c6188b80dea6085ffd13b8055635e30f79d4acd8"
+}

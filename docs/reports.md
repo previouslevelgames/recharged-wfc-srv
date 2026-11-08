@@ -118,7 +118,7 @@ game showed its player.
 | Field | |
 |---|---|
 | `release` | the game code, as in a report |
-| `code` | the number the error popup showed, 1 to 999999. DWC's codes say where: 6xxxx login, 7xxxx friends, 8xxxx matchmaking, 9xxxx other; the thousands the GameSpy part (1 GPCM, 2 persistent storage, 4 QR2, 5 server browser, 6 NAT negotiation, 7 peer connection); the rest the failure (420 repeated failures, 70 timeout…). 86420 is NAT negotiation failing in matchmaking |
+| `code` | the number the error popup showed, 1 to 999999. DWC's codes say where: 6xxxx login, 7xxxx friends, 8xxxx matchmaking, 9xxxx other; the thousands the GameSpy part (1 GPCM, 2 persistent storage, 4 QR2, 5 server browser, 6 NAT negotiation, 7 peer connection); the rest the failure (420 repeated failures, 70 timeout…). 86420 is NAT negotiation failing in matchmaking. 2xxxx come from the login's NAS step: 20100 NAS unreachable, 20000 + the `returncd` it refused with (20120 a banned console, [login.md](login.md)), 23000 + an HTTP status other than 200 |
 | `phase` | optional: the game's session state, `none`, `login`, `matchmaking`, `prestart`, `loading`, `in_game` or `game_end` |
 | `build` | optional, as in a report |
 | `profile_id` | optional: the WFC profile, when the game has one |

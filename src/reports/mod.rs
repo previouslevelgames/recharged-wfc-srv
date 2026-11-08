@@ -6,7 +6,7 @@
 //! [`outcome`]). They also tell what went wrong; with the error codes the
 //! games showed ([`errors`]), the Monitoring page of `/admin` shows it.
 
-mod errors;
+pub(crate) mod errors;
 pub(crate) mod outcome;
 pub(crate) mod report;
 mod store;

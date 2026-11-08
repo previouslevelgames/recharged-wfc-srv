@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT p.profile_id, p.user_id, p.gsbrcd, p.ingamesn, p.created_at, p.last_login_at,\n                  p.last_ip, players.player_id AS \"player_id?\", players.display_name AS \"player?\",\n                  discord.username AS \"discord?\"\n           FROM profiles p\n           LEFT JOIN player_wfc_profiles bound ON bound.profile_id = p.profile_id\n           LEFT JOIN players ON players.player_id = bound.player_id\n           LEFT JOIN player_identities discord\n                  ON discord.player_id = players.player_id AND discord.provider = 'discord'\n           WHERE p.profile_id = $1",
+  "query": "SELECT p.profile_id, p.user_id, p.gsbrcd, p.ingamesn, p.created_at, p.last_login_at,\n                  p.last_ip, p.unique_nick, p.lastname,\n                  players.player_id AS \"player_id?\", players.display_name AS \"player?\",\n                  discord.username AS \"discord?\"\n           FROM profiles p\n           LEFT JOIN player_wfc_profiles bound ON bound.profile_id = p.profile_id\n           LEFT JOIN players ON players.player_id = bound.player_id\n           LEFT JOIN player_identities discord\n                  ON discord.player_id = players.player_id AND discord.provider = 'discord'\n           WHERE p.profile_id = $1",
   "describe": {
     "columns": [
       {
@@ -82,6 +82,28 @@
       },
       {
         "ordinal": 7,
+        "name": "unique_nick",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "profiles",
+            "name": "unique_nick"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "lastname",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "profiles",
+            "name": "lastname"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
         "name": "player_id?",
         "type_info": "Int8",
         "origin": {
@@ -92,7 +114,7 @@
         }
       },
       {
-        "ordinal": 8,
+        "ordinal": 10,
         "name": "player?",
         "type_info": "Text",
         "origin": {
@@ -103,7 +125,7 @@
         }
       },
       {
-        "ordinal": 9,
+        "ordinal": 11,
         "name": "discord?",
         "type_info": "Text",
         "origin": {
@@ -127,10 +149,12 @@
       false,
       false,
       true,
+      false,
+      false,
       true,
       true,
       true
     ]
   },
-  "hash": "db2df9c66b8c7d4a102e09cc65259ae5f16947aa1bf0446f77f206d916944e7f"
+  "hash": "9c456b05deb7ad75eb33d11aa34b2dd5b188cc665b370b09e1f6f7a2b79d95fd"
 }

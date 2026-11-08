@@ -10,9 +10,13 @@
 //! Comparisons of fields, numbers and quoted texts, joined by `and`, `or` and
 //! `not`, with parentheses. Two numbers compare as numbers, anything else as
 //! text; a comparison with a field the session lacks is false. An empty filter
-//! is every session.
+//! is every session. A session that fails a filter is told which part it
+//! failed and with which values ([`Failed`]), for diagnosing matchmaking.
 
-use std::cmp::Ordering;
+use std::{
+    cmp::Ordering,
+    fmt::{self, Display},
+};
 
 /// More nesting than this is no filter DWC writes.
 const MAX_DEPTH: usize = 16;
@@ -70,14 +74,74 @@ impl Filter {
     }
 
     /// Whether a session with these fields passes.
+    #[cfg(test)]
     pub fn matches<'f>(&self, field: impl Fn(&str) -> Option<&'f str>) -> bool {
-        self.0
-            .as_ref()
-            .is_none_or(|condition| condition.holds(&field))
+        self.failed(field).is_none()
+    }
+
+    /// The part of the filter a session with these fields fails first; none
+    /// when it passes.
+    pub fn failed<'f>(&self, field: impl Fn(&str) -> Option<&'f str>) -> Option<Failed<'_>> {
+        self.0.as_ref()?.failed(&field).map(Failed)
+    }
+}
+
+/// The part of a filter a session failed: a comparison, or an `or` or `not`
+/// as a whole.
+#[derive(Debug)]
+pub struct Failed<'c>(&'c Condition);
+
+impl Failed<'_> {
+    /// The part as the filter writes it, then the session's values of its
+    /// fields: `CO = 0 (CO is 1)`.
+    pub fn describe<'f>(&self, field: impl Fn(&str) -> Option<&'f str>) -> String {
+        let mut names = Vec::new();
+        self.0.fields(&mut names);
+        let values: Vec<String> = names
+            .iter()
+            .map(|name| match field(name) {
+                Some(value) => format!("{name} is {value}"),
+                None => format!("{name} is missing"),
+            })
+            .collect();
+        format!("{} ({})", self.0, values.join(", "))
     }
 }
 
 impl Condition {
+    /// The first part that fails: the first failing condition of an `and`,
+    /// a whole `or` none of whose conditions hold, a `not` whose condition
+    /// holds, a comparison that does not hold.
+    fn failed<'f>(&self, field: &impl Fn(&str) -> Option<&'f str>) -> Option<&Self> {
+        match self {
+            Self::All(conditions) => conditions
+                .iter()
+                .find_map(|condition| condition.failed(field)),
+            _ => (!self.holds(field)).then_some(self),
+        }
+    }
+
+    /// The fields it compares, each once, in the filter's order.
+    fn fields<'c>(&'c self, names: &mut Vec<&'c str>) {
+        match self {
+            Self::All(conditions) | Self::Any(conditions) => {
+                for condition in conditions {
+                    condition.fields(names);
+                }
+            }
+            Self::Not(condition) => condition.fields(names),
+            Self::Compare(left, _, right) => {
+                for operand in [left, right] {
+                    if let Operand::Field(name) = operand
+                        && !names.contains(&name.as_str())
+                    {
+                        names.push(name);
+                    }
+                }
+            }
+        }
+    }
+
     fn holds<'f>(&self, field: &impl Fn(&str) -> Option<&'f str>) -> bool {
         match self {
             Self::All(conditions) => conditions.iter().all(|condition| condition.holds(field)),
@@ -103,6 +167,61 @@ impl Operand {
             Self::Field(name) => field(name),
             Self::Value(value) => Some(value),
         }
+    }
+}
+
+/// As a filter writes it: `or`s inside an `and` and every `not`'s condition
+/// in parentheses.
+impl Display for Condition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::All(conditions) => {
+                for (at, condition) in conditions.iter().enumerate() {
+                    if at > 0 {
+                        f.write_str(" and ")?;
+                    }
+                    match condition {
+                        Self::Any(_) => write!(f, "({condition})")?,
+                        _ => write!(f, "{condition}")?,
+                    }
+                }
+                Ok(())
+            }
+            Self::Any(conditions) => {
+                for (at, condition) in conditions.iter().enumerate() {
+                    if at > 0 {
+                        f.write_str(" or ")?;
+                    }
+                    write!(f, "{condition}")?;
+                }
+                Ok(())
+            }
+            Self::Not(condition) => write!(f, "not ({condition})"),
+            Self::Compare(left, op, right) => write!(f, "{left} {op} {right}"),
+        }
+    }
+}
+
+impl Display for Operand {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Field(name) => f.write_str(name),
+            Self::Value(value) if value.parse::<i64>().is_ok() => f.write_str(value),
+            Self::Value(value) => write!(f, "'{value}'"),
+        }
+    }
+}
+
+impl Display for Op {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Eq => "=",
+            Self::Ne => "!=",
+            Self::Lt => "<",
+            Self::Gt => ">",
+            Self::Le => "<=",
+            Self::Ge => ">=",
+        })
     }
 }
 
@@ -335,6 +454,61 @@ mod tests {
             &[("CO", "1")],
         ] {
             assert!(!passes_with(RANKED, changes), "{changes:?}");
+        }
+    }
+
+    /// Why the session with `changes` fails `filter`; none when it passes.
+    fn failed_with(filter: &str, changes: &[(&str, &str)]) -> Option<String> {
+        let fields = with(changes);
+        let field = |name: &str| {
+            fields
+                .iter()
+                .find(|(field, _)| *field == name)
+                .map(|(_, value)| value.as_str())
+        };
+        let filter = Filter::parse(filter).unwrap();
+        filter.failed(field).map(|failed| failed.describe(field))
+    }
+
+    #[test]
+    fn a_failed_search_names_the_part_and_the_values() {
+        assert_eq!(failed_with(RANKED, &[]), None);
+        assert_eq!(
+            failed_with(RANKED, &[("CO", "1")]).as_deref(),
+            Some("CO = 0 (CO is 1)")
+        );
+        // The first part that fails, inside the game's parentheses too.
+        assert_eq!(
+            failed_with(RANKED, &[("AP", "467909557"), ("GT", "2")]).as_deref(),
+            Some("AP = 463715253 (AP is 467909557)")
+        );
+        assert_eq!(
+            failed_with(RANKED, &[("dwc_mresv", "1000000001")]).as_deref(),
+            Some("dwc_mresv != dwc_pid (dwc_mresv is 1000000001, dwc_pid is 1000000001)")
+        );
+        let turned_down = RANKED.replace("CO = 0)", "CO = 0 and PI != 1000000001)");
+        assert_eq!(
+            failed_with(&turned_down, &[]).as_deref(),
+            Some("PI != 1000000001 (PI is 1000000001)")
+        );
+        assert_eq!(
+            failed_with("missing = 'x' or not (GT = 0)", &[]).as_deref(),
+            Some("missing = 'x' or not (GT = 0) (missing is missing, GT is 0)")
+        );
+        assert_eq!(
+            failed_with("CO = 1 and (GT = 1 or GT = 2)", &[("CO", "1")]).as_deref(),
+            Some("GT = 1 or GT = 2 (GT is 0)")
+        );
+    }
+
+    #[test]
+    fn filters_write_back_as_they_read() {
+        for filter in [
+            "a = 1 and (b = 2 or c < 3) and not (d >= 'x')",
+            "a != b or c <= -4",
+        ] {
+            let parsed = Filter::parse(filter).unwrap();
+            assert_eq!(parsed.0.unwrap().to_string(), filter);
         }
     }
 

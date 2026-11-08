@@ -8,8 +8,11 @@ use axum::extract::Query;
 use time::{Date, Month};
 
 use super::{
-    GamestatsError, GamestatsState, Op, Params, codec::decode_data, leaderboard, process,
-    submission::Submission, token::token_hash,
+    GamestatsError, GamestatsState, Op, Params,
+    codec::decode_data,
+    leaderboard, process,
+    submission::{self, Submission},
+    token::token_hash,
 };
 
 /// put2 from pid 1000000004 ("Gold€nP2☆☆"): season (category 0), score 28,
@@ -89,6 +92,14 @@ fn decodes_the_captured_puts() {
                 losses: Some(losses),
             }
         );
+        // The game's digest holds under the key the server signs with, and
+        // still does once the server changes the record.
+        assert!(submission::signed(userdata), "{player}");
+        assert!(submission::signed(&submission::with_record(
+            userdata,
+            Some(wins + 5),
+            Some(losses + 5)
+        )));
     }
 }
 

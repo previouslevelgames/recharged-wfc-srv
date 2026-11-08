@@ -323,7 +323,11 @@ rest of its userdata), last updated when the latest of them was. Only rows
 of one season (or, on the daily boards, one day) add up, by the date in
 their userdata: a row of an ended season stays in `scores` until its
 profile's next put, and stays a row of its own, which the game drops by that
-date (FRIENDS). The caller's own profile stands for its player, so the game
+date (FRIENDS). Changing the wins and losses breaks the userdata's digest
+(0x70), and the game blanks a row whose digest fails, so the server makes
+the digest again with `sRankingHmacKey` (`src/gamestats/submission.rs`);
+userdata whose digest failed already stays as it was. The caller's own
+profile stands for its player, so the game
 finds itself (NEAR, ORDER) and shows its own Mii; in FRIENDS, a listed
 profile stands for its player before the others. Rows of profiles no
 launcher proved stay as they are. The launcher's Leaderboard and the admin
