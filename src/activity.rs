@@ -3,7 +3,8 @@
 //! through the server browser or GPCM, and whether the server browser's
 //! reached the game) and the NAT negotiations. In memory only, the last
 //! [`KEPT`] events; a search repeated every few seconds, or the same command
-//! again, is one event with a count.
+//! again, is one event with a count. A search keeps whom it found and, for
+//! diagnosing, the other games in a ranked search it left out and why.
 
 use std::{collections::VecDeque, net::SocketAddr, sync::Mutex, time::Duration};
 
@@ -15,6 +16,9 @@ use time::OffsetDateTime;
 const KEPT: usize = 1000;
 /// The same search or command again within this long is the same event.
 const REPEAT: Duration = Duration::from_secs(30);
+/// Profiles a search event keeps, found and left out: more than a busy
+/// server has searching at once.
+const KEPT_PROFILES: usize = 32;
 
 #[derive(Default)]
 pub struct Activity {
@@ -43,6 +47,11 @@ pub enum What {
         searches: u32,
         /// Sessions the last one found.
         found: usize,
+        /// The profiles its searches found, each once.
+        found_profiles: Vec<i32>,
+        /// The other games in a ranked search (`dwc_mtype` 0) its searches
+        /// left out, each once with the latest reason.
+        missed: Vec<Miss>,
     },
     /// A DWC match command (`dwc_match.h`) from one game to another.
     Command {
@@ -67,6 +76,23 @@ pub enum What {
         relayed: bool,
         reports: Vec<Report>,
     },
+}
+
+/// What one search listed: how many sessions, the profiles among them, and
+/// the other games in a ranked search it left out.
+#[derive(Debug, Default)]
+pub struct Listed {
+    pub count: usize,
+    pub profiles: Vec<i32>,
+    pub missed: Vec<Miss>,
+}
+
+/// A game a search left out, and why: the part of the filter its session
+/// failed with its values, or how a set keeps the games.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Miss {
+    pub profile_id: i32,
+    pub why: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize)]
@@ -97,7 +123,29 @@ impl Activity {
         self.events.lock().unwrap().iter().rev().cloned().collect()
     }
 
-    pub fn search(&self, profile_id: Option<i32>, filter: &str, found: usize) {
+    pub fn search(&self, profile_id: Option<i32>, filter: &str, listed: Listed) {
+        let Listed {
+            count,
+            profiles,
+            missed,
+        } = listed;
+        let remember = |found: &mut Vec<i32>, left_out: &mut Vec<Miss>| {
+            for profile in &profiles {
+                if !found.contains(profile) && found.len() < KEPT_PROFILES {
+                    found.push(*profile);
+                }
+            }
+            for miss in &missed {
+                match left_out
+                    .iter()
+                    .position(|was| was.profile_id == miss.profile_id)
+                {
+                    Some(at) => left_out[at].why.clone_from(&miss.why),
+                    None if left_out.len() < KEPT_PROFILES => left_out.push(miss.clone()),
+                    None => {}
+                }
+            }
+        };
         self.record(
             |what| {
                 let What::Search {
@@ -105,6 +153,8 @@ impl Activity {
                     filter: was_filter,
                     searches,
                     found: was_found,
+                    found_profiles,
+                    missed,
                 } = what
                 else {
                     return false;
@@ -113,14 +163,21 @@ impl Activity {
                     return false;
                 }
                 *searches += 1;
-                *was_found = found;
+                *was_found = count;
+                remember(found_profiles, missed);
                 true
             },
-            || What::Search {
-                profile_id,
-                filter: filter.to_owned(),
-                searches: 1,
-                found,
+            || {
+                let (mut found_profiles, mut left_out) = (Vec::new(), Vec::new());
+                remember(&mut found_profiles, &mut left_out);
+                What::Search {
+                    profile_id,
+                    filter: filter.to_owned(),
+                    searches: 1,
+                    found: count,
+                    found_profiles,
+                    missed: left_out,
+                }
             },
         );
     }
@@ -278,13 +335,21 @@ mod tests {
 
     const RANKED: &str = "dwc_mver = 3 and dwc_pid != 1000000000 and (GT = 0)";
 
+    /// A search that found `count` sessions without profiles.
+    fn found(count: usize) -> Listed {
+        Listed {
+            count,
+            ..Listed::default()
+        }
+    }
+
     #[test]
     fn a_repeated_search_is_one_event() {
         let activity = Activity::default();
-        activity.search(Some(1000000000), RANKED, 0);
-        activity.search(Some(1000000000), RANKED, 0);
-        activity.search(Some(1000000001), RANKED, 0);
-        activity.search(Some(1000000000), RANKED, 1);
+        activity.search(Some(1000000000), RANKED, found(0));
+        activity.search(Some(1000000000), RANKED, found(0));
+        activity.search(Some(1000000001), RANKED, found(0));
+        activity.search(Some(1000000000), RANKED, found(1));
 
         let events = activity.events();
         let [latest, other] = &events[..] else {
@@ -297,6 +362,8 @@ mod tests {
                 filter: RANKED.to_owned(),
                 searches: 3,
                 found: 1,
+                found_profiles: Vec::new(),
+                missed: Vec::new(),
             }
         );
         assert!(latest.first_at <= latest.last_at);
@@ -308,6 +375,48 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn a_search_keeps_whom_it_found_and_why_it_left_others_out() {
+        let activity = Activity::default();
+        let miss = |profile_id: i32, why: &str| Miss {
+            profile_id,
+            why: why.to_owned(),
+        };
+        activity.search(
+            Some(1),
+            RANKED,
+            Listed {
+                count: 1,
+                profiles: vec![2],
+                missed: vec![miss(3, "CO = 0 (CO is 1)"), miss(4, "kept")],
+            },
+        );
+        activity.search(
+            Some(1),
+            RANKED,
+            Listed {
+                count: 1,
+                profiles: vec![3],
+                missed: vec![miss(4, "GT = 0 (GT is 2)")],
+            },
+        );
+        let What::Search {
+            found,
+            found_profiles,
+            missed,
+            ..
+        } = &activity.events()[0].what
+        else {
+            panic!("a search");
+        };
+        assert_eq!(*found, 1);
+        assert_eq!(found_profiles, &[2, 3]);
+        assert_eq!(
+            missed,
+            &[miss(3, "CO = 0 (CO is 1)"), miss(4, "GT = 0 (GT is 2)")]
+        );
     }
 
     #[test]
@@ -417,7 +526,7 @@ mod tests {
     fn only_the_latest_events_are_kept() {
         let activity = Activity::default();
         for profile in 0..(KEPT as i32 + 10) {
-            activity.search(Some(profile), RANKED, 0);
+            activity.search(Some(profile), RANKED, found(0));
         }
         let events = activity.events();
         assert_eq!(events.len(), KEPT);

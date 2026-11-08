@@ -25,6 +25,7 @@ mod logs;
 mod maintenance;
 mod matches;
 mod matchmaking;
+mod matchup;
 mod merge;
 mod monitoring;
 mod overview;
@@ -175,6 +176,7 @@ pub(crate) fn router(
         .route("/admin/api/players", get(api_players))
         .route("/admin/api/players/{id}", get(api_player))
         .route("/admin/api/matchmaking", get(api_matchmaking))
+        .route("/admin/api/matchmaking/profiles/{id}", get(api_matchup))
         .route("/admin/api/matches", get(api_matches))
         .route("/admin/api/matches/{id}", get(api_match))
         .route("/admin/api/monitoring", get(api_monitoring))
@@ -456,7 +458,16 @@ async fn api_player(
         .page_data(
             &jar,
             &headers,
-            players::detail(&state.pool, &state.gpcm, id),
+            players::detail(
+                &state.pool,
+                &state.gpcm,
+                &players::Now {
+                    master: &state.master,
+                    activity: &state.activity,
+                    pairings: &state.pairings,
+                },
+                id,
+            ),
         )
         .await
 }
@@ -471,6 +482,32 @@ async fn api_matchmaking(
             &jar,
             &headers,
             matchmaking::read(&state.pool, &state.master, &state.activity),
+        )
+        .await
+}
+
+/// A profile's matchmaking now, and with `?with=<profile>` whether each
+/// one's ranked search lists the other's game, for diagnosing.
+async fn api_matchup(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Path(id): Path<i32>,
+    Query(with): Query<matchup::With>,
+) -> Response {
+    state
+        .page_data(
+            &jar,
+            &headers,
+            matchup::read(
+                &state.pool,
+                &state.gpcm,
+                &state.master,
+                &state.activity,
+                &state.pairings,
+                id,
+                with,
+            ),
         )
         .await
 }

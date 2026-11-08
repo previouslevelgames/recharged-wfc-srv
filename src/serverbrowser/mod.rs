@@ -9,6 +9,10 @@
 //! Games kept for a Recharged match ([`crate::pairing`]) change what a ranked
 //! search lists: a kept game's search lists only its opponent's game, and
 //! nobody else's lists a kept game (docs/profiles.md, "Meeting in RANKED").
+//!
+//! For diagnosing, a search tells the activity and the log whom it found and
+//! why it left out each other game in a ranked search; [`explain`] says the
+//! same for a search and a session the admin asks about.
 
 mod crypt;
 mod filter;
@@ -25,12 +29,12 @@ use tokio::{
 use tracing::{debug, info, trace};
 
 use crate::{
-    activity::{Activity, Via},
+    activity::{Activity, Listed, Miss, Via},
     master::{Master, Session},
     pairing::{Pairings, Visible},
 };
 use crypt::CHALLENGE_LEN;
-use filter::Filter;
+use filter::{Failed, Filter};
 
 /// The game's secret key, which also keys its QR2 challenges.
 const SECRET_KEY: &[u8] = b"B4LdGW";
@@ -49,6 +53,8 @@ const MATCH_COMMAND: &[u8; 4] = b"SBCM";
 const MATCH_COMMAND_HEADER: usize = 20;
 /// List request options.
 const NO_SERVER_LIST: u32 = 0x02;
+/// `dwc_mtype` of a game in a ranked search (`dwc_match.h`).
+const RANKED_SEARCH: &str = "0";
 
 /// Server flags in a list (`sb_internal.h`).
 const PRIVATE_IP: u8 = 0x02;
@@ -133,9 +139,9 @@ fn answer(
                 None => Steering::None,
                 Some(profile_id) => Steering::search(pairings, profile_id, &sessions),
             };
-            let (reply, found) = list.reply(&sessions, peer, &steering)?;
+            let (reply, listed) = list.reply(&sessions, peer, &steering, searcher.flatten())?;
             if let Some(profile_id) = searcher {
-                activity.search(profile_id, &list.filter, found);
+                activity.search(profile_id, &list.filter, listed);
             }
             Some(crypt::encrypt(
                 SECRET_KEY,
@@ -248,7 +254,6 @@ impl Steering {
         searcher: Option<i32>,
         sessions: &[(SocketAddr, Session)],
     ) -> Self {
-        let profile = |session: &Session| session.field("dwc_pid")?.parse::<i32>().ok();
         match searcher.map(|profile_id| pairings.visible_to(profile_id)) {
             Some(Visible::Only(opponent)) => Self::Only {
                 opponent,
@@ -308,14 +313,16 @@ impl ListRequest {
     }
 
     /// The list, before encryption: the client's own address, the fields'
-    /// names, no popular values, the matching sessions, and the end; and how
-    /// many sessions it holds.
+    /// names, no popular values, the matching sessions, and the end; and
+    /// what it holds, with the other games in a ranked search that a search
+    /// by `searcher` left out.
     fn reply(
         &self,
         sessions: &[(SocketAddr, Session)],
         peer: SocketAddr,
         steering: &Steering,
-    ) -> Option<(Vec<u8>, usize)> {
+        searcher: Option<i32>,
+    ) -> Option<(Vec<u8>, Listed)> {
         if self.game != crate::GAME_NAME {
             debug!(target: "serverbrowser", %peer, game = self.game, "list of another game");
             return None;
@@ -326,7 +333,7 @@ impl ListRequest {
         let mut out = client.ip().octets().to_vec();
         out.extend_from_slice(&client.port().to_be_bytes());
         if self.options & NO_SERVER_LIST != 0 {
-            return Some((out, 0));
+            return Some((out, Listed::default()));
         }
 
         // The addresses are in the server's own bytes, not fields.
@@ -347,8 +354,22 @@ impl ListRequest {
         }
         out.push(0); // No popular values.
 
-        let found = self.matches(sessions, steering);
-        info!(target: "serverbrowser", %peer, filter = self.filter, found = found.len(), "list");
+        let Selection { found, missed } = self.select(sessions, steering, searcher);
+        let mut profiles: Vec<i32> = found
+            .iter()
+            .filter_map(|(_, session)| profile(session))
+            .collect();
+        profiles.sort_unstable();
+        profiles.dedup();
+        info!(
+            target: "serverbrowser",
+            %peer,
+            filter = self.filter,
+            found = found.len(),
+            profiles = ?profiles,
+            missed = %Misses(&missed),
+            "list"
+        );
         let count = found.len();
         for (address, session) in found {
             if let Some(server) = server(address, session, &fields) {
@@ -356,46 +377,184 @@ impl ListRequest {
             }
         }
         out.extend_from_slice(&LAST_SERVER);
-        Some((out, count))
+        Some((
+            out,
+            Listed {
+                count,
+                profiles,
+                missed,
+            },
+        ))
     }
 
     /// The game's sessions that pass the filter and the steering; none for a
     /// filter it does not understand.
+    #[cfg(test)]
     fn matches<'a>(
         &self,
         sessions: &'a [(SocketAddr, Session)],
         steering: &Steering,
     ) -> Vec<(SocketAddr, &'a Session)> {
-        let Some(filter) = Filter::parse(&self.filter) else {
-            debug!(target: "serverbrowser", filter = self.filter, "filter not understood");
-            return Vec::new();
-        };
-        let profile = |session: &Session| session.field("dwc_pid")?.parse::<i32>().ok();
-        sessions
-            .iter()
-            .filter(|(_, session)| {
-                if session.field("gamename") != Some(crate::GAME_NAME) {
-                    return false;
-                }
-                match steering {
-                    Steering::None => filter.matches(|name| session.field(name)),
-                    Steering::Unkept(kept) => {
-                        profile(session).is_none_or(|profile_id| !kept.contains(&profile_id))
-                            && filter.matches(|name| session.field(name))
-                    }
-                    Steering::Only { opponent, region } => {
-                        profile(session) == Some(*opponent)
-                            && filter.matches(|name| match (name, region) {
-                                ("CO", Some(region)) => Some(region.as_str()),
-                                _ => session.field(name),
-                            })
-                    }
-                    Steering::Nothing => false,
-                }
-            })
-            .map(|(address, session)| (*address, session))
-            .collect()
+        self.select(sessions, steering, None).found
     }
+
+    /// The game's sessions that pass the filter and the steering (none for a
+    /// filter it does not understand), and for a search by `searcher` each
+    /// other profile in a ranked search that none of them is, with why.
+    fn select<'a>(
+        &self,
+        sessions: &'a [(SocketAddr, Session)],
+        steering: &Steering,
+        searcher: Option<i32>,
+    ) -> Selection<'a> {
+        let filter = Filter::parse(&self.filter);
+        if filter.is_none() {
+            debug!(target: "serverbrowser", filter = self.filter, "filter not understood");
+        }
+        let mut found = Vec::new();
+        let mut missed: Vec<Miss> = Vec::new();
+        for (address, session) in sessions {
+            if session.field("gamename") != Some(crate::GAME_NAME) {
+                continue;
+            }
+            let Some(skip) = skip(filter.as_ref(), steering, session) else {
+                found.push((*address, session));
+                continue;
+            };
+            if let (Some(searcher), Some(profile_id)) = (searcher, profile(session))
+                && profile_id != searcher
+                && session.field("dwc_mtype") == Some(RANKED_SEARCH)
+                && !missed.iter().any(|miss| miss.profile_id == profile_id)
+            {
+                missed.push(Miss {
+                    profile_id,
+                    why: skip.describe(steering, session),
+                });
+            }
+        }
+        // A profile one of whose sessions is listed is not left out.
+        missed.retain(|miss| {
+            !found
+                .iter()
+                .any(|(_, session)| profile(session) == Some(miss.profile_id))
+        });
+        Selection { found, missed }
+    }
+}
+
+/// What a list holds, and the games in a ranked search it left out.
+struct Selection<'a> {
+    found: Vec<(SocketAddr, &'a Session)>,
+    missed: Vec<Miss>,
+}
+
+/// Why a search leaves out a session of this game.
+enum Skip<'f> {
+    /// The server does not understand the filter: it lists nothing.
+    NotUnderstood,
+    /// The searching game is kept for a set whose other game is not ready.
+    Waiting,
+    /// The searching game is kept for a set against this profile's game.
+    KeptFor(i32),
+    /// This game is kept for a set.
+    Kept,
+    /// The session fails this part of the filter.
+    Filter(Failed<'f>),
+}
+
+impl Skip<'_> {
+    fn describe(&self, steering: &Steering, session: &Session) -> String {
+        match self {
+            Self::NotUnderstood => "the server does not understand the filter".to_owned(),
+            Self::Waiting => {
+                "the searching game is kept for a set whose other game is not ready".to_owned()
+            }
+            Self::KeptFor(opponent) => {
+                format!("the searching game is kept for a set against {opponent}")
+            }
+            Self::Kept => "kept for a set: only its opponent's search lists it".to_owned(),
+            Self::Filter(failed) => failed.describe(seen(steering, session)),
+        }
+    }
+}
+
+/// Why a search with `filter` (none: not understood) and `steering` leaves
+/// out a session of this game; none when it lists it.
+fn skip<'f>(
+    filter: Option<&'f Filter>,
+    steering: &Steering,
+    session: &Session,
+) -> Option<Skip<'f>> {
+    let Some(filter) = filter else {
+        return Some(Skip::NotUnderstood);
+    };
+    match steering {
+        Steering::Nothing => return Some(Skip::Waiting),
+        Steering::Only { opponent, .. } if profile(session) != Some(*opponent) => {
+            return Some(Skip::KeptFor(*opponent));
+        }
+        Steering::Unkept(kept) if profile(session).is_some_and(|p| kept.contains(&p)) => {
+            return Some(Skip::Kept);
+        }
+        _ => {}
+    }
+    filter.failed(seen(steering, session)).map(Skip::Filter)
+}
+
+/// A session's fields as a search sees them: a kept game's search takes its
+/// opponent's game as in its own region group (`CO`).
+fn seen<'s>(steering: &'s Steering, session: &'s Session) -> impl Fn(&str) -> Option<&'s str> {
+    move |name| match (name, steering) {
+        (
+            "CO",
+            Steering::Only {
+                region: Some(region),
+                ..
+            },
+        ) => Some(region.as_str()),
+        _ => session.field(name),
+    }
+}
+
+/// A session's profile, from its heartbeat's `dwc_pid`.
+fn profile(session: &Session) -> Option<i32> {
+    session.field("dwc_pid")?.parse().ok()
+}
+
+/// Left-out games for the log: `<pid>: <why>; …`, `none` for none.
+struct Misses<'m>(&'m [Miss]);
+
+impl std::fmt::Display for Misses<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.0.is_empty() {
+            return f.write_str("none");
+        }
+        for (at, miss) in self.0.iter().enumerate() {
+            if at > 0 {
+                f.write_str("; ")?;
+            }
+            write!(f, "{}: {}", miss.profile_id, miss.why)?;
+        }
+        Ok(())
+    }
+}
+
+/// Whether a ranked search by `searcher` with `filter` lists `session` now,
+/// as the server browser would answer it with the games' `sessions` and
+/// the sets' `pairings`: `None` when it does, else why not.
+pub fn explain(
+    pairings: &Pairings,
+    sessions: &[(SocketAddr, Session)],
+    searcher: i32,
+    filter: &str,
+    session: &Session,
+) -> Option<String> {
+    if session.field("gamename") != Some(crate::GAME_NAME) {
+        return Some("a session of another game".to_owned());
+    }
+    let steering = Steering::search(pairings, Some(searcher), sessions);
+    let filter = Filter::parse(filter);
+    skip(filter.as_ref(), &steering, session).map(|skip| skip.describe(&steering, session))
 }
 
 /// Takes a NUL-terminated text off the front of `rest`.
@@ -480,9 +639,9 @@ mod tests {
         master.answer(HOSTING, host());
         let (reply, found) = ListRequest::parse(LOOKUP)
             .unwrap()
-            .reply(&master.sessions(), client(), &Steering::None)
+            .reply(&master.sessions(), client(), &Steering::None, None)
             .unwrap();
-        assert_eq!(found, 1);
+        assert_eq!((found.count, found.profiles), (1, vec![1000000000]));
 
         let mut expected = vec![172, 17, 0, 1, 0x92, 0x2A, 7];
         for field in [
@@ -611,6 +770,55 @@ mod tests {
     }
 
     #[test]
+    fn a_search_says_why_it_left_out_the_other_searching_games() {
+        let master = Master::default();
+        master.answer(
+            &replace(SEARCHING, b"CO\x000", b"CO\x001"),
+            "192.168.1.131:53103".parse().unwrap(),
+        );
+        // A host is in no ranked search: no reason for it.
+        master.answer(HOSTING, host());
+        let sessions = master.sessions();
+        let request = ListRequest {
+            filter: RANKED.to_owned(),
+            ..ListRequest::parse(LOOKUP).unwrap()
+        };
+        let listed = |steering: &Steering| {
+            request
+                .reply(&sessions, client(), steering, Some(1000000000))
+                .unwrap()
+                .1
+        };
+
+        let free = listed(&Steering::Unkept(Vec::new()));
+        assert_eq!((free.count, free.profiles.len()), (0, 0));
+        assert_eq!(
+            free.missed,
+            [Miss {
+                profile_id: 1000000001,
+                why: "CO = 0 (CO is 1)".to_owned(),
+            }]
+        );
+        let kept = listed(&Steering::Unkept(vec![1000000001]));
+        assert_eq!(
+            kept.missed[0].why,
+            "kept for a set: only its opponent's search lists it"
+        );
+        let waiting = listed(&Steering::Nothing);
+        assert_eq!(
+            waiting.missed[0].why,
+            "the searching game is kept for a set whose other game is not ready"
+        );
+
+        // A lookup of one host says nothing about the others.
+        let lookup = ListRequest::parse(LOOKUP).unwrap();
+        let (_, found) = lookup
+            .reply(&sessions, client(), &Steering::None, None)
+            .unwrap();
+        assert!(found.missed.is_empty());
+    }
+
+    #[test]
     fn searches_are_by_the_profile_they_leave_out() {
         assert_eq!(searcher(RANKED), Some(Some(1000000000)));
         assert_eq!(searcher("dwc_pid = 1000000000"), None);
@@ -641,7 +849,7 @@ mod tests {
                 ..ListRequest::parse(LOOKUP).unwrap()
             };
             let (reply, _) = request
-                .reply(&master.sessions(), client(), &Steering::None)
+                .reply(&master.sessions(), client(), &Steering::None, None)
                 .unwrap();
             assert!(reply.ends_with(&[0, 0, 0xFF, 0xFF, 0xFF, 0xFF]), "{filter}");
             assert_eq!(
@@ -655,7 +863,9 @@ mod tests {
             ..request
         };
         assert_eq!(
-            other_game.reply(&master.sessions(), client(), &Steering::None),
+            other_game
+                .reply(&master.sessions(), client(), &Steering::None, None)
+                .map(|(reply, _)| reply),
             None
         );
     }

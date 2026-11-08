@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO client_errors (code, phase, release, build, profile_id, address)\n             VALUES (86420, 'matchmaking', 'R4QE', '1.1.0+g0123456789ab', $1, '10.0.0.1')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "550ac8a89c90e7f8764b7dee9dea0ab7ae963feb0b4bb3497f4233a17adc23b4"
+}

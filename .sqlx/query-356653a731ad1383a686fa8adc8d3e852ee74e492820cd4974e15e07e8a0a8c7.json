@@ -1,0 +1,88 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT kind, count, problem, address, first_at, last_at FROM report_refusals\n         WHERE profile_id = $1 ORDER BY last_at DESC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "report_refusals",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "count",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "report_refusals",
+            "name": "count"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "problem",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "report_refusals",
+            "name": "problem"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "address",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "report_refusals",
+            "name": "address"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "first_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "report_refusals",
+            "name": "first_at"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "last_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "report_refusals",
+            "name": "last_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "356653a731ad1383a686fa8adc8d3e852ee74e492820cd4974e15e07e8a0a8c7"
+}

@@ -363,6 +363,14 @@ and parentheses; two numbers compare as numbers, anything else as text, and a
 comparison with a missing field is false. A filter the server does not
 understand lists nothing.
 
+`AP` keeps the versions apart: the game's own word is `0x1B?30000` with the
+disc's build in the low half and its region in the `?` (10 US, 14 EU, 15 JP,
+13 KR), so a US and a European game never list each other. Recharged 1.2's
+port sends one word for every release instead, `0x52430001` (`RC` and its
+protocol), which no original word can be, so it meets only games of the same
+protocol. For a search the server notes why it left out each other game in a
+ranked search ([install.md](install.md#diagnosing-matchmaking)).
+
 ### Messages to a host
 
 With the host's address the friend sends it messages through the server

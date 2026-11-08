@@ -1,8 +1,12 @@
 //! The Players page: the accounts consoles registered, their profiles (one per
 //! Mii slot) with their friend codes, and who is logged in to GPCM. A
 //! profile's own page adds its record in the matches Recharged builds report
-//! (docs/reports.md), its standing on the leaderboards, its matches and the
-//! NAT relay's matches of its games (src/relay_store.rs).
+//! (docs/reports.md), its standing on the leaderboards, its matches, the
+//! NAT relay's matches of its games (src/relay_store.rs), and the technical
+//! details for diagnosing: its login's addresses, its games' master-server
+//! sessions now with their version, the builds and systems its game
+//! reported, its launcher's last word, the errors its client sent, its
+//! refused reports and its latest matchmaking events.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -10,11 +14,15 @@ use serde::{Deserialize, Serialize};
 use sqlx::{PgConnection, PgPool};
 use time::OffsetDateTime;
 
-use super::page::snapshot;
+use super::{matchup, page::snapshot};
 use crate::{
-    accounts, bans,
+    accounts,
+    activity::{Activity, Event},
+    bans,
     gamestats::submission::Submission,
     gpcm::{Gpcm, Matchmaking, Presence},
+    master::Master,
+    pairing::Pairings,
     relay_store::{self, Relayed},
     reports::{
         self,
@@ -29,6 +37,11 @@ const SHOWN: i64 = 200;
 const MATCHES_SHOWN: i64 = 100;
 /// A profile's relayed matches shown, the newest first.
 const RELAYED_SHOWN: i64 = 50;
+/// A profile's builds, client errors and matchmaking events shown, the
+/// latest first.
+const BUILDS_SHOWN: i64 = 10;
+const ERRORS_SHOWN: i64 = 50;
+const EVENTS_SHOWN: usize = 50;
 /// The modes of a match, as reports name them.
 const MODES: [&str; 2] = ["ranked", "friends"];
 
@@ -267,6 +280,95 @@ pub struct Detail {
     relayed: Vec<Relayed>,
     /// The days the server keeps them.
     relay_kept_days: i32,
+    technical: Technical,
+}
+
+/// What the server holds in memory about the games now, for a profile's
+/// technical details.
+pub struct Now<'a> {
+    pub master: &'a Master,
+    pub activity: &'a Activity,
+    pub pairings: &'a Pairings,
+}
+
+/// Everything the server knows about a profile's game and connection.
+#[derive(Serialize)]
+struct Technical {
+    /// The GPCM profile's nick and DWC's login id (its `lastname`).
+    unique_nick: String,
+    login_id: Option<String>,
+    /// While logged in: where GPCM's connection and the NAS login came from.
+    gpcm_from: Option<String>,
+    nas_from: Option<String>,
+    /// Its games now, as the master server and the sets see them.
+    #[serde(flatten)]
+    live: matchup::Live,
+    /// The builds and systems its game reported with its series (older builds say
+    /// neither), the latest first.
+    builds: Vec<Build>,
+    /// What the launcher or game of its Recharged player said last.
+    recharged: Option<Recharged>,
+    /// The errors its client sent, the latest first, and the days the
+    /// server keeps them.
+    errors: Vec<ClientError>,
+    errors_kept_days: i32,
+    /// Its reports the server did not take.
+    refusals: Vec<Refusal>,
+    /// Its latest matchmaking events among the server's (in memory), and
+    /// the Mii names of the profiles in them.
+    events: Vec<Event>,
+    names: HashMap<i32, String>,
+}
+
+#[derive(Serialize)]
+struct Build {
+    build: Option<String>,
+    os: Option<String>,
+    /// The release the series were of.
+    release: String,
+    series: i64,
+    #[serde(with = "time::serde::rfc3339")]
+    last_at: OffsetDateTime,
+}
+
+#[derive(Serialize)]
+struct Recharged {
+    /// The release it says it plays (`Recharged-Game`), its screen and
+    /// activity, the set game, whether it is open to challenges.
+    game: Option<String>,
+    screen: Option<String>,
+    activity: Option<String>,
+    match_kind: Option<String>,
+    set_game: Option<i16>,
+    available: bool,
+    country: Option<String>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    heartbeat_at: Option<OffsetDateTime>,
+    #[serde(with = "time::serde::rfc3339")]
+    last_seen_at: OffsetDateTime,
+}
+
+#[derive(Serialize)]
+struct ClientError {
+    #[serde(with = "time::serde::rfc3339")]
+    received_at: OffsetDateTime,
+    code: i32,
+    phase: Option<String>,
+    release: String,
+    build: Option<String>,
+    address: String,
+}
+
+#[derive(Serialize)]
+struct Refusal {
+    kind: String,
+    count: i64,
+    problem: String,
+    address: String,
+    #[serde(with = "time::serde::rfc3339")]
+    first_at: OffsetDateTime,
+    #[serde(with = "time::serde::rfc3339")]
+    last_at: OffsetDateTime,
 }
 
 #[derive(Serialize)]
@@ -395,14 +497,21 @@ struct Opponent {
 pub async fn detail(
     pool: &PgPool,
     gpcm: &Gpcm,
+    now: &Now<'_>,
     profile_id: i32,
 ) -> Result<Option<Detail>, sqlx::Error> {
     let online = gpcm.presence().get(&profile_id).map(Online::from);
+    let addresses = gpcm.login_addresses(profile_id);
+    let sessions = now.master.sessions();
+    let live = matchup::live(&sessions, now.pairings, profile_id);
+    let mut events = matchup::events_of(now.activity.events(), &sessions, &[profile_id]);
+    events.truncate(EVENTS_SHOWN);
     reports::settle_idle(pool).await?;
     let mut tx = snapshot(pool).await?;
     let Some(row) = sqlx::query!(
         r#"SELECT p.profile_id, p.user_id, p.gsbrcd, p.ingamesn, p.created_at, p.last_login_at,
-                  p.last_ip, players.player_id AS "player_id?", players.display_name AS "player?",
+                  p.last_ip, p.unique_nick, p.lastname,
+                  players.player_id AS "player_id?", players.display_name AS "player?",
                   discord.username AS "discord?"
            FROM profiles p
            LEFT JOIN player_wfc_profiles bound ON bound.profile_id = p.profile_id
@@ -462,6 +571,52 @@ pub async fn detail(
     let standing = standing(&mut tx, profile_id).await?;
     let (stats, matches) = record(&mut tx, profile_id).await?;
     let relayed = relay_store::of_profile(&mut tx, profile_id, RELAYED_SHOWN).await?;
+    let builds = sqlx::query_as!(
+        Build,
+        r#"SELECT s.build, s.os, m.release, count(*) AS "series!",
+                  max(s.last_report_at) AS "last_at!"
+           FROM online_match_sides s JOIN online_matches m USING (match_id)
+           WHERE s.profile_id = $1 AND (s.build IS NOT NULL OR s.os IS NOT NULL)
+           GROUP BY s.build, s.os, m.release
+           ORDER BY max(s.last_report_at) DESC
+           LIMIT $2"#,
+        profile_id,
+        BUILDS_SHOWN,
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    let recharged = match row.player_id {
+        Some(player_id) => {
+            sqlx::query_as!(
+                Recharged,
+                "SELECT game, screen, activity, match_kind, set_game, available, country,
+                        heartbeat_at, last_seen_at
+                 FROM players WHERE player_id = $1",
+                player_id,
+            )
+            .fetch_optional(&mut *tx)
+            .await?
+        }
+        None => None,
+    };
+    let errors = sqlx::query_as!(
+        ClientError,
+        "SELECT received_at, code, phase, release, build, address FROM client_errors
+         WHERE profile_id = $1 ORDER BY received_at DESC LIMIT $2",
+        profile_id,
+        ERRORS_SHOWN,
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    let refusals = sqlx::query_as!(
+        Refusal,
+        "SELECT kind, count, problem, address, first_at, last_at FROM report_refusals
+         WHERE profile_id = $1 ORDER BY last_at DESC",
+        profile_id,
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    let names = matchup::names(&mut tx, &events).await?;
     tx.commit().await?;
     Ok(Some(Detail {
         profile,
@@ -470,6 +625,22 @@ pub async fn detail(
         matches,
         relayed,
         relay_kept_days: relay_store::KEPT_DAYS,
+        technical: Technical {
+            unique_nick: row.unique_nick,
+            login_id: Some(row.lastname).filter(|id| !id.is_empty()),
+            gpcm_from: addresses
+                .as_ref()
+                .map(|addresses| addresses.gpcm.to_string()),
+            nas_from: addresses.map(|addresses| addresses.nas.to_string()),
+            live,
+            builds,
+            recharged,
+            errors,
+            errors_kept_days: reports::errors::KEPT_DAYS,
+            refusals,
+            events,
+            names,
+        },
     }))
 }
 
@@ -702,7 +873,9 @@ mod tests {
 
         let games = Games::new(pool).await;
         // Anosch wins a ranked series 2-1 against Sam, both reporting.
-        let home = games.report(games.anosch, 100, "home", "start");
+        let mut home = games.report(games.anosch, 100, "home", "start");
+        home["build"] = serde_json::json!("1.1.0+g0123456789ab");
+        home["os"] = serde_json::json!("Linux (SteamOS), x86_64");
         let away = games.report(games.sam, 200, "away", "start");
         let won = games.send(&home).await;
         games.send(&away).await;
@@ -728,15 +901,64 @@ mod tests {
         .await
         .unwrap();
 
+        sqlx::query!(
+            "INSERT INTO client_errors (code, phase, release, build, profile_id, address)
+             VALUES (86420, 'matchmaking', 'R4QE', '1.1.0+g0123456789ab', $1, '10.0.0.1')",
+            games.anosch,
+        )
+        .execute(&games.pool)
+        .await
+        .unwrap();
+
         let gpcm = Gpcm::new(
             games.pool.clone(),
             Arc::new(Tickets::default()),
             Arc::default(),
         );
-        let detail = detail(&games.pool, &gpcm, games.anosch)
+        // Its game searches RANKED with the US disc.
+        let master = Master::default();
+        let mut heartbeat = b"\x03\x01\x02\x03\x04".to_vec();
+        for part in [
+            "localip0",
+            "10.0.0.2",
+            "localport",
+            "40000",
+            "gamename",
+            "mschargedwii",
+            "dwc_pid",
+            &games.anosch.to_string(),
+            "dwc_mtype",
+            "0",
+            "AP",
+            "463715253",
+        ] {
+            heartbeat.extend_from_slice(part.as_bytes());
+            heartbeat.push(0);
+        }
+        heartbeat.extend_from_slice(&[0; 3]);
+        master.answer(&heartbeat, "203.0.113.5:40000".parse().unwrap());
+        let (activity, pairings) = (Activity::default(), Pairings::default());
+        let now = Now {
+            master: &master,
+            activity: &activity,
+            pairings: &pairings,
+        };
+        let detail = detail(&games.pool, &gpcm, &now, games.anosch)
             .await
             .unwrap()
             .unwrap();
+        let technical = &detail.technical;
+        let [build] = &technical.builds[..] else {
+            panic!("one build: {:?}", technical.builds.len());
+        };
+        assert_eq!(build.build.as_deref(), Some("1.1.0+g0123456789ab"));
+        assert_eq!(build.os.as_deref(), Some("Linux (SteamOS), x86_64"));
+        assert_eq!((build.release.as_str(), build.series), ("R4QE", 1));
+        assert_eq!(technical.errors[0].code, 86420);
+        assert!(technical.refusals.is_empty());
+        let json = serde_json::to_value(technical).unwrap();
+        assert_eq!(json["sessions"][0]["version"]["region"], "US");
+        assert_eq!(json["sees"], "everyone");
         assert_eq!(detail.profile.mii_name.as_deref(), Some("Anosch"));
         assert_eq!(detail.profile.friend_code, "0868-9934-5920");
         assert_eq!(
@@ -789,7 +1011,7 @@ mod tests {
         assert_eq!(sam.stats[0].series.lost, 1);
         assert_eq!(sam.stats[0].games.goals_for, 5);
         assert!(
-            super::detail(&games.pool, &gpcm, 1_234_567_890)
+            super::detail(&games.pool, &gpcm, &now, 1_234_567_890)
                 .await
                 .unwrap()
                 .is_none()
@@ -802,7 +1024,14 @@ mod tests {
             Arc::new(Tickets::default()),
             Arc::default(),
         );
-        detail(&games.pool, &gpcm, profile_id)
+        let (master, activity, pairings) =
+            (Master::default(), Activity::default(), Pairings::default());
+        let now = Now {
+            master: &master,
+            activity: &activity,
+            pairings: &pairings,
+        };
+        detail(&games.pool, &gpcm, &now, profile_id)
             .await
             .unwrap()
             .unwrap()

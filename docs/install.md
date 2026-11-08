@@ -194,9 +194,19 @@ opens its own page (e.g. `/admin/matches/12`) with both players, whether the
 [NAT relay](#nat-relay) carried their games, each game as both sides saw it,
 and the reports as they came. A profile on **Players** opens
 its own page too (e.g. `/admin/players/1000000000`): its friend code and
-console, its record in the reported matches by mode (series and games won,
-lost and drawn, goals, captains), its standing on the leaderboards, its
-matches and the ones the relay carried. The search box of **Players** finds profiles by any part of their
+console, its release and the Recharged build and system its game reported
+last, whether the relay carries it now, its record in the reported matches by
+mode (series and games won, lost and drawn, goals, captains), its standing on
+the leaderboards, its matches and the ones the relay carried. For diagnosing,
+**Connection now** shows where its WFC login came from (GPCM and NAS), its
+DWC status, login id and game id, whether a set keeps it, and each
+master-server session of its game with the network version (`AP`: the disc's
+region and build, or the Recharged protocol), mode, region group, points and
+every heartbeat field; **Client** the builds and systems it reported and what
+its Recharged launcher said last; **Matchmaking** its latest searches (with
+why they left other games out), match commands and NAT negotiations;
+**Client errors** the codes its game sent, and **Refused reports** its
+reports the server did not take. The search box of **Players** finds profiles by any part of their
 Mii, Recharged player, profile number, friend code, console or address
 ("laso" finds RAULASO, "0868" a friend code), beyond the 200 the list shows;
 the one of **Leaderboards** finds a Mii, player, profile or friend code on
@@ -259,6 +269,28 @@ listed, last heartbeat), the reports, and the matchmaking events of those
 profiles since the set began: searches and how many games they found, match
 commands and whether they reached the other game, NAT negotiations and
 whether the relay carried them. The server keeps the last 1000 events.
+
+### Diagnosing matchmaking
+
+When two players search RANKED at the same time and never meet,
+`GET /admin/api/matchmaking/profiles/<pid>?with=<pid>` shows both WFC
+profiles as the server sees them right now: the WFC login with its DWC status
+and since when, every master-server session of the profile's games with all
+its heartbeat fields and its network version (`AP`, decoded: `original` with
+the disc's region and build, or `recharged` with the port's protocol), and
+whether a set keeps it. `searches` then takes each one's latest ranked search
+and says whether it lists the other's game now (`lists`), and if not, why:
+the part of the filter the other's session fails, with its value (such as
+`AP = 1380122625 (AP is 467902516)`: two versions that never meet), a set
+that keeps one of the games, or no session at all (the other game's
+heartbeats don't arrive). `events` holds the two profiles' latest
+matchmaking events. Without `with`, it shows one profile.
+
+Each search event (here and on the **Matchmaking** page) also keeps the
+profiles it found and, for every other game in a ranked search it left out,
+the latest reason (`found_profiles`, `missed`). The server browser's `list`
+line in the log has the same, so a search still explains itself after a
+restart.
 
 `GET /admin/api/leaderboards?top=1000` reads the whole RANKED boards (each
 Recharged player's WFC profiles one row, with their `profile_ids`; `top`
