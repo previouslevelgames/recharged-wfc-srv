@@ -151,6 +151,8 @@ mod tests {
         for (unit, at) in name.encode_utf16().zip((0x0E..).step_by(2)) {
             userdata[at..at + 2].copy_from_slice(&unit.to_le_bytes());
         }
+        // Signed, as the game puts it.
+        submission::sign(&mut userdata);
         userdata
     }
 
@@ -210,6 +212,11 @@ mod tests {
                 (50, 2, 60, "Mario".into(), 3, 3, 5, vec![50]),
             ]
         );
+        // The game shows every row: Birnen's merged one too, whose record
+        // the server changed.
+        for line in &merged {
+            assert!(submission::signed(&line.userdata), "{}", line.profile_id);
+        }
     }
 
     #[test]
