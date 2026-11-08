@@ -283,6 +283,16 @@ impl Gpcm {
         sessions.get(&profile_id).map(|session| session.address)
     }
 
+    /// The profiles whose GPCM connection comes from `address`.
+    pub fn logged_in_at(&self, address: IpAddr) -> Vec<i32> {
+        let sessions = self.sessions.lock().unwrap();
+        sessions
+            .iter()
+            .filter(|(_, session)| session.address == address)
+            .map(|(&profile_id, _)| profile_id)
+            .collect()
+    }
+
     /// Where `profile_id`'s login came from, GPCM's connection and its NAS
     /// login, if it is logged in.
     pub fn login_addresses(&self, profile_id: i32) -> Option<LoginAddresses> {

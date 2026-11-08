@@ -629,27 +629,6 @@ pub fn game_from_headers(headers: &axum::http::HeaderMap) -> Option<String> {
     .then(|| value.to_owned())
 }
 
-/// The game `player_id`'s Recharged plays now, as far as it said.
-pub async fn game(pool: &PgPool, player_id: i64) -> Result<Option<String>, sqlx::Error> {
-    Ok(
-        sqlx::query_scalar!("SELECT game FROM players WHERE player_id = $1", player_id)
-            .fetch_optional(pool)
-            .await?
-            .flatten(),
-    )
-}
-
-/// A game id's version, as players call it: "the European version".
-pub fn version_name(game: &str) -> String {
-    match game {
-        "R4QE" => "the American version".to_owned(),
-        "R4QP" => "the European version".to_owned(),
-        "R4QJ" => "the Japanese version".to_owned(),
-        "R4QK" => "the Korean version".to_owned(),
-        other => other.to_owned(),
-    }
-}
-
 /// Whether `player_id` has Recharged open.
 pub async fn is_online(pool: &PgPool, player_id: i64) -> Result<bool, sqlx::Error> {
     Ok(sqlx::query_scalar!(

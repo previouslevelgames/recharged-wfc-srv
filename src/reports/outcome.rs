@@ -147,6 +147,8 @@ pub struct Reporter {
     pub cause: Option<String>,
     /// The build that reported, when it said.
     pub build: Option<String>,
+    /// The operating system it ran on, when it said.
+    pub os: Option<String>,
     /// When its game's GPCM login ended before the end came, and how.
     pub left_at: Option<OffsetDateTime>,
     pub left_how: Option<String>,
@@ -286,6 +288,7 @@ mod tests {
             reason: None,
             cause: None,
             build: None,
+            os: None,
             left_at: None,
             left_how: None,
             opened_at: now,

@@ -46,7 +46,7 @@ pub const CAUSES: [&str; 4] = ["decided", "desync", "disconnect", "offline"];
 /// (`InputRouter::CheckSyncMismatch`): both machines on the same frame, the
 /// same state checksum, the same random seed.
 pub const SYNC_CHECKS: [&str; 3] = ["frame", "checksum", "seed"];
-/// A build's name at most, in characters.
+/// A build's or an operating system's name at most, in characters.
 const MAX_BUILD: usize = 64;
 /// A captain or a stadium the game does not know.
 pub const UNKNOWN: &str = "unknown";
@@ -144,6 +144,9 @@ pub struct Report {
     pub event: Event,
     /// The build that sent it, e.g. `1.4.2 (abc1234)`, when it says.
     pub build: Option<String>,
+    /// The operating system it runs on, e.g. `Windows 11 (26100), x86_64`,
+    /// when it says.
+    pub os: Option<String>,
     /// For an end, why the series ended: one of [`CAUSES`], when it says.
     pub cause: Option<&'static str>,
 }
@@ -236,6 +239,8 @@ struct RawReport {
     #[serde(default)]
     build: Option<Value>,
     #[serde(default)]
+    os: Option<Value>,
+    #[serde(default)]
     cause: Option<Value>,
 }
 
@@ -323,7 +328,8 @@ impl RawReport {
                 _ => None,
             },
             event,
-            build: self.build.as_ref().and_then(build),
+            build: self.build.as_ref().and_then(printable),
+            os: self.os.as_ref().and_then(printable),
         })
     }
 }
@@ -386,13 +392,14 @@ fn known(value: &Value, names: &[&'static str]) -> Option<&'static str> {
         .copied()
 }
 
-/// A build's name: printable, up to [`MAX_BUILD`] characters.
-fn build(value: &Value) -> Option<String> {
-    let build = value.as_str()?.trim();
-    let printable = !build.is_empty()
-        && build.chars().count() <= MAX_BUILD
-        && !build.chars().any(char::is_control);
-    printable.then(|| build.to_owned())
+/// A build's or an operating system's name: printable, up to [`MAX_BUILD`]
+/// characters.
+fn printable(value: &Value) -> Option<String> {
+    let name = value.as_str()?.trim();
+    let printable = !name.is_empty()
+        && name.chars().count() <= MAX_BUILD
+        && !name.chars().any(char::is_control);
+    printable.then(|| name.to_owned())
 }
 
 /// `{"check": "checksum", "frame": 4812}`; the frame may be left out.
@@ -505,11 +512,13 @@ pub(crate) mod tests {
     fn diagnostics_are_read_and_a_bad_one_is_dropped() {
         let desync = with(game_event(), |body| {
             body["build"] = json!("1.4.2 (abc1234)");
+            body["os"] = json!("Windows 11 (26100), x86_64");
             body["game"]["ending"] = json!("desync");
             body["game"]["sync"] = json!({"check": "checksum", "frame": 4812});
         });
         let report = parse(&desync).unwrap();
         assert_eq!(report.build.as_deref(), Some("1.4.2 (abc1234)"));
+        assert_eq!(report.os.as_deref(), Some("Windows 11 (26100), x86_64"));
         let Event::Game(game) = &report.event else {
             panic!("a game");
         };
@@ -531,11 +540,13 @@ pub(crate) mod tests {
         // Diagnostics the server cannot read go; the report stays.
         let odd = with(desync, |body| {
             body["build"] = json!(42);
+            body["os"] = json!("Linux\t(SteamOS)");
             body["cause"] = json!("desync");
             body["game"]["sync"] = json!({"check": "cosmic rays", "frame": 1});
         });
         let report = parse(&odd).unwrap();
         assert_eq!(report.build, None);
+        assert_eq!(report.os, None);
         assert_eq!(report.cause, None, "a cause is for an end");
         let Event::Game(game) = report.event else {
             panic!("a game");
