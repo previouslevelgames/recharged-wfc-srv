@@ -212,6 +212,18 @@ const LEFT_HOW = {
   replaced: 'another login took over',
   banned: 'its console was banned',
 };
+// Why the NAT relay took a pair of games (docs/install.md, "NAT relay").
+const RELAY_REASONS = {
+  always: ['Every match', 'The relay is set to carry every match (NATNEG_RELAY=always)'],
+  new_port: ['New port per address', "A game's router gives it a new public port for every address, so the other game's packets would not arrive"],
+  failed_before: ['Failed without it', 'The same two addresses failed to reach each other directly in the last 24 hours'],
+};
+// How the NAT relay let a pair go.
+const RELAY_ENDS = {
+  idle: 'nothing came for a minute',
+  replaced: 'a game began another match',
+  restart: 'the server restarted',
+};
 // A Monitoring incident, with its badge tone.
 const INCIDENTS = {
   desync: ['Out of sync', 'serious'],
@@ -806,7 +818,8 @@ function renderPlayer(data, now) {
     if (data.error) return [unreachable(data.error)];
     return [banner({ level: 'warning', title: 'No such profile', detail: `No profile ${route.id} has signed in.` })];
   }
-  const { profile, stats, standing, matches } = detail;
+  const { profile, stats, standing, matches, relayed, relay_kept_days: keptDays } = detail;
+  const opponent = (r) => (r.games[0].profile_id === profile.profile_id ? r.games[1] : r.games[0]);
   setHead(profile.mii_name || 'Unnamed', [`Profile ${profile.profile_id} · friend code `, h('code', null, profile.friend_code)]);
   const player = profile.player;
 
@@ -885,6 +898,22 @@ function renderPlayer(data, now) {
         ],
         matches,
         'No matches reported yet. They appear here when its Recharged build plays online.',
+      ),
+    ),
+    card(
+      'Relay',
+      `The matches of its games the NAT relay carried, because they could not reach the other game directly, the newest first; kept ${keptDays} days`,
+      table(
+        [
+          { label: 'Started', cell: (r) => [ago(r.started_at, now), h('span', { class: 'sub' }, dateTime.format(new Date(r.started_at)))] },
+          { label: 'Opponent', cell: (r) => relayedGame(opponent(r)) },
+          { label: 'Why', cell: (r) => relayReason(r) },
+          { label: 'Length', cell: (r) => relayLength(r, now) },
+          { label: 'Traffic', num: true, cell: (r) => relayTraffic(r) },
+          { label: 'Match', cell: (r) => (r.match_id == null ? h('span', { class: 'sub' }, 'none reported') : h('a', { href: matchPath({ id: r.match_id }) }, `Match ${r.match_id}`)) },
+        ],
+        relayed,
+        `The relay carried none of its games in the last ${keptDays} days.`,
       ),
     ),
   ];
@@ -1053,11 +1082,40 @@ function matchPath(match) {
   return `/admin/matches/${match.id}`;
 }
 
+/** A game the NAT relay carried: its Mii (to its profile) and address. */
+function relayedGame(game) {
+  const who = game.profile_id == null ? h('span', { class: 'sub' }, 'Profile unknown') : miiLink(game.mii_name || `Profile ${game.profile_id}`, game.profile_id);
+  return [who, h('span', { class: 'sub' }, h('code', null, game.address))];
+}
+
+/** Why the relay took a pair, the reason's explanation on hover. */
+function relayReason(relayed) {
+  const [name, why] = RELAY_REASONS[relayed.reason] || [relayed.reason, ''];
+  return h('span', { title: why }, name);
+}
+
+/** How long the relay carried a pair, and how it ended. */
+function relayLength(relayed, now) {
+  if (!relayed.ended_at) return [badge('accent', 'Relaying'), h('span', { class: 'sub' }, ['for ', duration(since(relayed.started_at, now))])];
+  const length = duration(since(relayed.started_at, now) - since(relayed.ended_at, now));
+  return [length, h('span', { class: 'sub' }, RELAY_ENDS[relayed.ended_why] || relayed.ended_why || 'ended')];
+}
+
+/** What the relay passed on, both ways; nothing is counted until the end. */
+function relayTraffic(relayed) {
+  if (!relayed.ended_at) return h('span', { class: 'sub' }, 'counted at the end');
+  return [bytes(relayed.bytes), h('span', { class: 'sub' }, `${integer.format(relayed.packets)} packets`)];
+}
+
 function renderMatches(data, now) {
   const content = data.content;
   if (!content) return [unreachable(data.error)];
-  const { totals, matches } = content;
+  const { totals, matches, relay_kept_days: keptDays } = content;
   const ended = totals.finished + totals.disputed + totals.abandoned;
+  const connection = (m) => {
+    if (m.relayed) return badge('accent', 'Relayed');
+    return h('span', { class: 'sub' }, since(m.started_at, now) > keptDays * 86400 ? '—' : 'Direct');
+  };
 
   return [
     h(
@@ -1081,6 +1139,7 @@ function renderMatches(data, now) {
           { label: 'Score', num: true, cell: (m) => h('a', { href: matchPath(m) }, `${m.score.home} – ${m.score.away}`) },
           { label: 'Away', cell: (m) => matchTeam(m.away, m.winner === 'away') },
           { label: 'State', cell: (m) => onlineState(m, now) },
+          { label: 'Connection', cell: connection },
           { label: '', class: 'actions', cell: (m) => h('a', { class: 'button', href: matchPath(m) }, 'Open') },
         ],
         matches,
@@ -1198,7 +1257,7 @@ function renderMatch(data, now) {
     if (data.error) return [unreachable(data.error)];
     return [banner({ level: 'warning', title: 'No such match', detail: `No game reported a match ${route.id}.` })];
   }
-  const { match, sides, games, events } = detail;
+  const { match, sides, games, events, relayed, relay_kept_days: keptDays } = detail;
   setHead(`${match.home.mii} vs ${match.away.mii}`, [
     `${MODES[match.mode] || match.mode} · ${match.release} · best of ${match.best_of} · started `,
     ago(match.started_at, now),
@@ -1223,6 +1282,28 @@ function renderMatch(data, now) {
         ],
         sides,
         'No sides.',
+      ),
+    ),
+    card(
+      'Connection',
+      relayed.length
+        ? "The NAT relay carried the games: they could not reach each other directly, so every packet went through the server"
+        : 'Whether the NAT relay carried the games',
+      table(
+        [
+          { label: 'Started', cell: (r) => [ago(r.started_at, now), h('span', { class: 'sub' }, dateTime.format(new Date(r.started_at)))] },
+          { label: 'Why', cell: (r) => relayReason(r) },
+          { label: 'Games', cell: (r) => [relayedGame(r.games[0]), relayedGame(r.games[1])].flat() },
+          { label: 'Length', cell: (r) => relayLength(r, now) },
+          { label: 'Traffic', num: true, cell: (r) => relayTraffic(r) },
+          { label: 'Server', cell: (r) => [r.server || '—', h('span', { class: 'sub' }, `cookie ${r.cookie}`)] },
+        ],
+        relayed,
+        since(match.started_at, now) > keptDays * 86400
+          ? `Unknown: the server keeps the relay's matches ${keptDays} days.`
+          : match.home.profile_id == null && match.away.profile_id == null
+            ? 'Unknown: no side reported its profile.'
+            : 'Direct: the relay carried no game of these players while the match ran.',
       ),
     ),
     card(

@@ -150,6 +150,14 @@ negotiation (`connect`, with each game's `nat` and the `relay` decision) and
 one per relayed match when it ends (`relay ended`, with its `packets` and
 `kib`); the dashboard's **Matchmaking** shows "through the relay".
 
+The server also keeps each relayed match 30 days (`relay_sessions`): why the
+relay took it, the two games' addresses and the profiles that played there
+(the master server's session at the game's socket, else the only GPCM login
+from its IP), how long it ran and its traffic. **Matches** marks the matches
+it carried (Connection "Relayed"), a match's page shows them under
+**Connection**, and a player's page lists its relayed matches under **Relay**,
+each with the match it reported.
+
 ## Admin dashboard
 
 `/admin` shows the server to admins who sign in with Google: an **Overview**,
@@ -158,12 +166,13 @@ then **Players**, **Matchmaking**, **Matches**, **Leaderboards** and
 System, each at its own address (e.g.
 `/admin/database`), refreshed every 5 seconds. **Matches** lists the series
 Recharged builds report ([reports.md](reports.md)), in progress first; a match
-opens its own page (e.g. `/admin/matches/12`) with both players, each game as
-both sides saw it, and the reports as they came. A profile on **Players** opens
+opens its own page (e.g. `/admin/matches/12`) with both players, whether the
+[NAT relay](#nat-relay) carried their games, each game as both sides saw it,
+and the reports as they came. A profile on **Players** opens
 its own page too (e.g. `/admin/players/1000000000`): its friend code and
 console, its record in the reported matches by mode (series and games won,
-lost and drawn, goals, captains), its standing on the leaderboards and its
-matches. The search box of **Players** finds profiles by any part of their
+lost and drawn, goals, captains), its standing on the leaderboards, its
+matches and the ones the relay carried. The search box of **Players** finds profiles by any part of their
 Mii, Recharged player, profile number, friend code, console or address
 ("laso" finds RAULASO, "0868" a friend code), beyond the 200 the list shows;
 the one of **Leaderboards** finds a Mii, player, profile or friend code on

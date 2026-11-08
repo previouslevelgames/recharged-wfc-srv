@@ -1,0 +1,50 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT reason, first_address, ended_at FROM relay_sessions WHERE cookie = 'c0ffee01'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "reason",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "relay_sessions",
+            "name": "reason"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "first_address",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "relay_sessions",
+            "name": "first_address"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "ended_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "relay_sessions",
+            "name": "ended_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "977989d29633daa7a5134f4db526eefd435ff2191ce5cd65d7de6362502f4214"
+}

@@ -19,6 +19,7 @@ mod online;
 mod pairing;
 pub mod profiles;
 pub mod relay;
+mod relay_store;
 mod reports;
 mod serverbrowser;
 mod switches;
@@ -129,16 +130,23 @@ impl App {
     }
 
     /// NAT negotiation on `socket` (UDP 27901), with the relay for games
-    /// that cannot reach each other if `relay` has its settings.
+    /// that cannot reach each other if `relay` has its settings. The relayed
+    /// matches go to the database, for `/admin`.
     pub async fn serve_natneg(
         &self,
         socket: UdpSocket,
         relay: Option<relay::Config>,
     ) -> std::io::Result<()> {
+        // Started without the relay too: it ends the matches a run with the
+        // relay left open.
+        let (recorder, records) = relay_store::Recorder::new();
+        tokio::spawn(relay_store::run(self.pool.clone(), records));
         Arc::new(natneg::Natneg::new(
             self.activity.clone(),
             self.master.clone(),
+            Some(self.gpcm.clone()),
             relay,
+            Some(recorder),
         ))
         .serve(socket)
         .await

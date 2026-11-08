@@ -1,7 +1,8 @@
 //! The Players page: the accounts consoles registered, their profiles (one per
 //! Mii slot) with their friend codes, and who is logged in to GPCM. A
 //! profile's own page adds its record in the matches Recharged builds report
-//! (docs/reports.md), its standing on the leaderboards and its matches.
+//! (docs/reports.md), its standing on the leaderboards, its matches and the
+//! NAT relay's matches of its games (src/relay_store.rs).
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -14,6 +15,7 @@ use crate::{
     accounts, bans,
     gamestats::submission::Submission,
     gpcm::{Gpcm, Matchmaking, Presence},
+    relay_store::{self, Relayed},
     reports::{
         self,
         outcome::{self, Compared},
@@ -25,6 +27,8 @@ use crate::{
 const SHOWN: i64 = 200;
 /// A profile's matches shown, the newest first; its record counts them all.
 const MATCHES_SHOWN: i64 = 100;
+/// A profile's relayed matches shown, the newest first.
+const RELAYED_SHOWN: i64 = 50;
 /// The modes of a match, as reports name them.
 const MODES: [&str; 2] = ["ranked", "friends"];
 
@@ -258,6 +262,11 @@ pub struct Detail {
     standing: Vec<Standing>,
     /// Its latest [`MATCHES_SHOWN`] matches, the newest first.
     matches: Vec<Played>,
+    /// The NAT relay's latest [`RELAYED_SHOWN`] matches of its games, the
+    /// newest first, each with the match it reported then.
+    relayed: Vec<Relayed>,
+    /// The days the server keeps them.
+    relay_kept_days: i32,
 }
 
 #[derive(Serialize)]
@@ -452,12 +461,15 @@ pub async fn detail(
     };
     let standing = standing(&mut tx, profile_id).await?;
     let (stats, matches) = record(&mut tx, profile_id).await?;
+    let relayed = relay_store::of_profile(&mut tx, profile_id, RELAYED_SHOWN).await?;
     tx.commit().await?;
     Ok(Some(Detail {
         profile,
         stats,
         standing,
         matches,
+        relayed,
+        relay_kept_days: relay_store::KEPT_DAYS,
     }))
 }
 
