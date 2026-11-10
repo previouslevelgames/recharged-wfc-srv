@@ -885,6 +885,37 @@ pub(super) async fn report(
     }
 }
 
+#[derive(Deserialize)]
+pub(super) struct Forfeit {
+    /// The games played to the end before the forfeit; none during the
+    /// first.
+    #[serde(default)]
+    games: Vec<Game>,
+}
+
+/// The player gives up the set their game plays: the opponent wins it
+/// (docs/profiles.md, "Forfeit").
+pub(super) async fn forfeit(
+    State(state): State<Arc<ProfilesState>>,
+    headers: HeaderMap,
+    Path(id): Path<i64>,
+    Json(request): Json<Forfeit>,
+) -> Response {
+    let player = match state.signed_in(&headers).await {
+        Ok(player) => player,
+        Err(response) => return response,
+    };
+    match matches::forfeit(&state.pool, id, player.id, &request.games).await {
+        Ok(Ok(found)) => {
+            info!(target: "profiles", match_id = id, player_id = player.id, games = request.games.len(), "forfeited");
+            state.pairings.end(id);
+            state.respond(StatusCode::OK, &found, &player).await
+        }
+        Ok(Err(refusal)) => refused(refusal),
+        Err(error) => database_error(error),
+    }
+}
+
 impl ProfilesState {
     /// Ends the sets that waited too long or lost a player, and their
     /// pairings.
@@ -936,6 +967,13 @@ impl ProfilesState {
             ("finished", None) => json!("draw"),
             _ => Value::Null,
         };
+        let forfeited_by = found.forfeited_by.map(|forfeiter| {
+            if forfeiter == player.id {
+                "you"
+            } else {
+                "opponent"
+            }
+        });
         let side = found.side(player.id).unwrap_or(0);
         let unix = |time: Option<OffsetDateTime>| time.map(OffsetDateTime::unix_timestamp);
         let stage = found.stage();
@@ -969,6 +1007,8 @@ impl ProfilesState {
             "playing_at": unix(found.playing_at),
             "rematch_of": found.rematch_of,
             "random": found.random,
+            "forfeited_by": forfeited_by,
+            "forfeited_at": unix(found.forfeited_at),
         }))
     }
 }

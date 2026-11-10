@@ -42,6 +42,10 @@ pub const SIDEKICKS: [&str; 8] = [
 /// `offline`: the game's online session ended without a result (a disc
 /// error, the HOME menu); a network match has no pause menu to quit from.
 pub const CAUSES: [&str; 4] = ["decided", "desync", "disconnect", "offline"];
+/// An end's `cause` when its player left the match on purpose: the other
+/// side wins (docs/reports.md, "Forfeit"). Not one of [`CAUSES`]: the side
+/// keeps it as when it came.
+pub const FORFEIT: &str = "forfeit";
 /// The game's checks of a network match, in the order it runs them
 /// (`InputRouter::CheckSyncMismatch`): both machines on the same frame, the
 /// same state checksum, the same random seed.
@@ -149,6 +153,8 @@ pub struct Report {
     pub os: Option<String>,
     /// For an end, why the series ended: one of [`CAUSES`], when it says.
     pub cause: Option<&'static str>,
+    /// An end whose `cause` is [`FORFEIT`]: its player gave the match up.
+    pub forfeit: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -327,6 +333,8 @@ impl RawReport {
                 Event::End(_) => self.cause.as_ref().and_then(|cause| known(cause, &CAUSES)),
                 _ => None,
             },
+            forfeit: matches!(event, Event::End(_))
+                && self.cause.as_ref().and_then(Value::as_str) == Some(FORFEIT),
             event,
             build: self.build.as_ref().and_then(printable),
             os: self.os.as_ref().and_then(printable),
@@ -561,6 +569,25 @@ pub(crate) mod tests {
         assert_eq!(game.sync, None, "a sync error is for a desync");
         let long = with(start(), |body| body["build"] = json!("x".repeat(65)));
         assert_eq!(parse(&long).unwrap().build, None);
+    }
+
+    #[test]
+    fn a_forfeit_is_an_ends_cause() {
+        let end = with(start(), |body| {
+            body["event"] = json!("end");
+            body["reason"] = json!("abandoned");
+            body["cause"] = json!("forfeit");
+        });
+        let report = parse(&end).unwrap();
+        assert!(report.forfeit);
+        assert_eq!(report.cause, None, "not one of the four the side keeps");
+        assert!(
+            !parse(&with(end, |body| body["cause"] = json!("offline")))
+                .unwrap()
+                .forfeit
+        );
+        let start = with(start(), |body| body["cause"] = json!("forfeit"));
+        assert!(!parse(&start).unwrap().forfeit, "only an end forfeits");
     }
 
     #[test]

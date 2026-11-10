@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT match_id, state, home, away, rule_set, rules, rules_hash, winner, created_at,\n                home_ready_at, away_ready_at, go_at, playing_at, rematch_of, random\n         FROM matches WHERE match_id = $1 AND (home = $2 OR away = $2)",
+  "query": "SELECT match_id, state, home, away, rule_set, rules, rules_hash, winner, created_at,\n                home_ready_at, away_ready_at, go_at, playing_at, rematch_of, random,\n                forfeited_by, forfeited_at\n         FROM matches WHERE match_id = $1 AND (home = $2 OR away = $2)",
   "describe": {
     "columns": [
       {
@@ -167,6 +167,28 @@
             "name": "random"
           }
         }
+      },
+      {
+        "ordinal": 15,
+        "name": "forfeited_by",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "forfeited_by"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "forfeited_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "forfeited_at"
+          }
+        }
       }
     ],
     "parameters": {
@@ -190,8 +212,10 @@
       true,
       true,
       true,
-      false
+      false,
+      true,
+      true
     ]
   },
-  "hash": "30f6d0b6609bde319fb102940b62c5e998ca8f03d06ead560fa24bd9c7831d2d"
+  "hash": "5df4663e8a3fbc829a50f0b0fdf459d9dc0c41a85fbb8004731f5f5768ad4d23"
 }

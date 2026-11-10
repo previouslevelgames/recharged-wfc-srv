@@ -1284,7 +1284,8 @@ function captainName(captain) {
 function onlineState(match, now) {
   const [name, tone] = ONLINE_STATES[match.state] || [match.state, null];
   const sub = match.ended_at ? ['ended ', ago(match.ended_at, now)] : ['last report ', ago(match.last_report_at, now)];
-  return [badge(tone, name), h('span', { class: 'sub' }, sub)];
+  const forfeit = match.forfeited_by && h('span', { class: 'sub' }, `forfeit by ${match[match.forfeited_by].mii}`);
+  return [badge(tone, name), forfeit, h('span', { class: 'sub' }, sub)];
 }
 
 function playerPath(profileId) {
@@ -1378,6 +1379,10 @@ function renderMatches(data, now) {
 /** What a finished match came to, for its banner. */
 function matchResult(match) {
   const score = `${match.score.home} – ${match.score.away}`;
+  if (match.forfeited_by) {
+    const forfeiter = match[match.forfeited_by].mii;
+    return `${match.winner === 'home' ? match.home.mii : match.away.mii} won, forfeit by ${forfeiter} at ${score}`;
+  }
   if (!match.winner) return `A draw, ${score}`;
   return `${match.winner === 'home' ? match.home.mii : match.away.mii} won, ${score}`;
 }
@@ -1430,6 +1435,7 @@ function sideEnd(side, now) {
   if (!reporter) return '—';
   const left = reporter.left_at && h('span', { class: 'sub' }, `Left WFC ${ago(reporter.left_at, now).textContent}: ${LEFT_HOW[reporter.left_how] || reporter.left_how}`);
   if (!reporter.reason) return [badge(null, 'No end yet'), h('span', { class: 'sub' }, ['last report ', ago(reporter.last_report_at, now)]), left];
+  if (reporter.forfeit) return [badge('warning', 'Forfeit'), h('span', { class: 'sub' }, ago(reporter.ended_at, now))];
   const [name, tone] = reporter.reason === 'decided' ? ['Decided', 'good'] : ['Abandoned', null];
   const cause = reporter.reason === 'abandoned' && CAUSES[reporter.cause];
   return [badge(tone, name), cause && h('span', { class: 'sub' }, cause[0]), h('span', { class: 'sub' }, ago(reporter.ended_at, now))];
@@ -2753,7 +2759,13 @@ function renderCompetitive(data, now) {
             return badge(tone, text);
           },
         },
-        { label: 'Winner', cell: (match) => match.winner || (match.state === 'finished' ? 'Draw' : h('span', { class: 'sub' }, '–')) },
+        {
+          label: 'Winner',
+          cell: (match) => {
+            if (match.forfeited_by) return [match.winner || '–', h('span', { class: 'sub' }, `forfeit by ${match.forfeited_by}`)];
+            return match.winner || (match.state === 'finished' ? 'Draw' : h('span', { class: 'sub' }, '–'));
+          },
+        },
       ],
       matches,
       'No matches yet.',

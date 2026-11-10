@@ -287,6 +287,13 @@ pub async fn merge(
     .execute(&mut *tx)
     .await?;
     sqlx::query!(
+        "UPDATE matches SET forfeited_by = $2 WHERE forfeited_by = $1",
+        from,
+        into
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query!(
         "UPDATE match_reports SET player_id = $2 WHERE player_id = $1",
         from,
         into
@@ -415,18 +422,24 @@ mod tests {
         .await;
         let us = profile(&pool, 1, "R4QEaaaaaaa").await;
         let eu = profile(&pool, 2, "R4QPbbbbbbb").await;
-        run(&pool, &format!(
-            "INSERT INTO player_identities (provider, external_id, player_id, username) VALUES
+        run(
+            &pool,
+            &format!(
+                "INSERT INTO player_identities (provider, external_id, player_id, username) VALUES
                  ('discord', 'd1', 1, 'birnen'), ('wfc', '{eu}', 2, 'fc');
              INSERT INTO player_wfc_profiles (profile_id, player_id) VALUES ({us}, 1), ({eu}, 2);
-             INSERT INTO matches (kind, state, home, away, rule_set, rules, rules_hash, winner) VALUES
-                 ('test', 'finished', 2, 3, 'x', '{{}}', 'h', 2),
-                 ('test', 'finished', 1, 2, 'x', '{{}}', 'h', 1);
+             INSERT INTO matches (kind, state, home, away, rule_set, rules, rules_hash, winner,
+                                  forfeited_by) VALUES
+                 ('test', 'finished', 2, 3, 'x', '{{}}', 'h', 2, NULL),
+                 ('test', 'finished', 1, 2, 'x', '{{}}', 'h', 1, NULL),
+                 ('test', 'finished', 3, 2, 'x', '{{}}', 'h', 3, 2);
              INSERT INTO friends (player_id, friend_id) VALUES (2, 3), (3, 2), (2, 1);
              INSERT INTO chat_messages (sender, recipient, body) VALUES (2, 3, 'hi'), (1, 2, 'me');
              INSERT INTO player_sessions (token_hash, player_id, expires_at)
                  VALUES (decode(repeat('ab', 32), 'hex'), 2, now() + interval '1 day');"
-        )).await;
+            ),
+        )
+        .await;
 
         assert!(plan(&pool, 1, 1).await.unwrap().is_err());
         assert!(plan(&pool, 2, 99).await.unwrap().is_err());
@@ -448,7 +461,7 @@ mod tests {
                 merged.between,
                 merged.friends
             ),
-            (1, 1, 1, 2)
+            (1, 2, 1, 2)
         );
         assert_eq!(merged.identities, ["wfc"]);
         assert_eq!(merged.into.name, "Birnen");
@@ -468,14 +481,18 @@ mod tests {
             [(i64::from(us), 1), (i64::from(eu), 1)]
         );
         assert_eq!(
-            pairs(&pool, "SELECT home, away FROM matches ORDER BY 1").await,
-            [(1, 3)]
+            pairs(&pool, "SELECT home, away FROM matches ORDER BY match_id").await,
+            [(1, 3), (3, 1)]
         );
-        let winner: Option<i64> = sqlx::query_scalar("SELECT winner FROM matches")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(winner, Some(1));
+        assert_eq!(
+            pairs(
+                &pool,
+                "SELECT winner, coalesce(forfeited_by, 0) FROM matches ORDER BY match_id"
+            )
+            .await,
+            [(1, 0), (3, 1)],
+            "a forfeit stays the forfeiter's"
+        );
         assert_eq!(
             pairs(
                 &pool,

@@ -41,6 +41,8 @@ struct Match {
     challenged: String,
     /// The winner's name; none for a draw or before a result.
     winner: Option<String>,
+    /// The name of the player who gave the set up, which the other won.
+    forfeited_by: Option<String>,
     #[serde(with = "time::serde::rfc3339")]
     created_at: OffsetDateTime,
     #[serde(with = "time::serde::rfc3339")]
@@ -79,11 +81,13 @@ pub async fn read(pool: &PgPool) -> Result<Competitive, sqlx::Error> {
         Match,
         r#"SELECT matches.match_id AS id, matches.state, matches.rule_set,
                   home.display_name AS challenger, away.display_name AS challenged,
-                  winner.display_name AS "winner?", matches.created_at, matches.updated_at
+                  winner.display_name AS "winner?", forfeiter.display_name AS "forfeited_by?",
+                  matches.created_at, matches.updated_at
            FROM matches
            JOIN players home ON home.player_id = matches.home
            JOIN players away ON away.player_id = matches.away
            LEFT JOIN players winner ON winner.player_id = matches.winner
+           LEFT JOIN players forfeiter ON forfeiter.player_id = matches.forfeited_by
            ORDER BY matches.created_at DESC
            LIMIT $1"#,
         SHOWN,

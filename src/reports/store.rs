@@ -7,6 +7,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use sqlx::{PgConnection, PgPool};
+use time::OffsetDateTime;
 use tracing::info;
 
 use super::{
@@ -17,6 +18,8 @@ use super::{
 /// A refusal's problem at most, in characters: a parser's message can quote
 /// the body.
 const MAX_PROBLEM: usize = 200;
+/// How long the opponent's game may still ask about a forfeit against it.
+pub const FORFEIT_ASKED_SECS: i32 = 180;
 
 /// What became of a report.
 #[derive(Debug, PartialEq)]
@@ -94,12 +97,15 @@ pub async fn record(pool: &PgPool, report: &Report, body: &str) -> Result<Record
         }
         Event::End(reason) => {
             sqlx::query!(
-                "UPDATE online_match_sides SET reason = $3, cause = $4, ended_at = now()
+                "UPDATE online_match_sides
+                 SET reason = $3, cause = $4, ended_at = now(),
+                     forfeited_at = CASE WHEN $5 THEN now() END
                  WHERE match_id = $1 AND side = $2",
                 match_id,
                 side.as_str(),
                 reason,
                 report.cause,
+                report.forfeit,
             )
             .execute(&mut *tx)
             .await?;
@@ -336,6 +342,11 @@ async fn settle(
         .remove(&match_id)
         .unwrap_or_default();
     let outcome = outcome::settle(&sides, best_of, idle);
+    // The forfeit that decided it: its profile and when its end came.
+    let forfeit = outcome
+        .forfeited
+        .and_then(|side| sides.get(side).as_ref())
+        .map(|forfeiter| (forfeiter.profile_id, forfeiter.forfeited_at));
     sqlx::query!(
         "UPDATE online_matches
          SET state = $2, winner = $3, home_wins = $4, away_wins = $5, home_mii = $6,
@@ -344,7 +355,8 @@ async fn settle(
              ended_at = CASE WHEN $2 = 'in_progress' THEN NULL
                              WHEN $10 AND $2 = 'abandoned' THEN last_report_at + interval '30 minutes'
                              WHEN $10 THEN last_report_at
-                             ELSE coalesce(ended_at, now()) END
+                             ELSE coalesce(ended_at, now()) END,
+             forfeited_by = $11, forfeited_at = $12
          WHERE match_id = $1",
         match_id,
         outcome.state,
@@ -356,10 +368,38 @@ async fn settle(
         outcome.captains.home,
         outcome.captains.away,
         idle,
+        forfeit.map(|(profile_id, _)| profile_id),
+        forfeit.and_then(|(_, at)| at),
     )
     .execute(conn)
     .await?;
     Ok(outcome.state)
+}
+
+/// The latest forfeit against `profile_id`, within [`FORFEIT_ASKED_SECS`]:
+/// the forfeiter's Mii name, as its own game showed it, and when its end
+/// came.
+pub async fn forfeit_against(
+    pool: &PgPool,
+    profile_id: i32,
+) -> Result<Option<(String, OffsetDateTime)>, sqlx::Error> {
+    let row = sqlx::query!(
+        r#"SELECT forfeiter.mii, m.forfeited_at AS "forfeited_at!"
+           FROM online_matches m
+           JOIN online_match_sides forfeiter
+             ON forfeiter.match_id = m.match_id AND forfeiter.profile_id = m.forfeited_by
+           JOIN online_match_sides opponent
+             ON opponent.match_id = m.match_id AND opponent.side <> forfeiter.side
+           WHERE m.forfeited_at > now() - make_interval(secs => $2)
+             AND opponent.profile_id = $1
+           ORDER BY m.forfeited_at DESC
+           LIMIT 1"#,
+        profile_id,
+        f64::from(FORFEIT_ASKED_SECS),
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|row| (row.mii, row.forfeited_at)))
 }
 
 /// The sides of the matches `match_ids` with the games they reported, by
@@ -370,8 +410,8 @@ pub async fn sides(
 ) -> Result<HashMap<i64, Teams<Option<Reporter>>>, sqlx::Error> {
     let rows = sqlx::query!(
         "SELECT match_id, side, profile_id, series, mii, opponent_mii, home_captain,
-                away_captain, home_sidekicks, away_sidekicks, reason, cause, build, os, left_at,
-                left_how, opened_at, last_report_at, ended_at
+                away_captain, home_sidekicks, away_sidekicks, reason, cause, forfeited_at, build,
+                os, left_at, left_how, opened_at, last_report_at, ended_at
          FROM online_match_sides
          WHERE match_id = ANY($1)",
         match_ids,
@@ -438,6 +478,7 @@ pub async fn sides(
             },
             reason: row.reason,
             cause: row.cause,
+            forfeited_at: row.forfeited_at,
             build: row.build,
             os: row.os,
             left_at: row.left_at,

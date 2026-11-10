@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE online_matches SET forfeited_at = now() - interval '181 seconds'\n             WHERE match_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8709192b741ec44911dc0480a3eb195f09fb023917df491cc0f2ff3a871bfeb4"
+}

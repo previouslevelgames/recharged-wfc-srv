@@ -325,6 +325,7 @@ async fn a_test_match_from_challenge_to_result(pool: PgPool) {
         .send("GET", "/api/v1/matches/current", &mario, Value::Null)
         .await;
     assert_eq!(current["match"]["winner"], "you");
+    assert_eq!(current["match"]["forfeited_by"], Value::Null, "no forfeit");
 }
 
 #[sqlx::test]
@@ -1882,4 +1883,171 @@ async fn a_player_chooses_the_flag_beside_their_name(pool: PgPool) {
         );
     }
     assert_eq!(choose("auto").await.1["country"], "CH");
+}
+
+#[sqlx::test]
+async fn a_player_who_forfeits_the_set_loses_it(pool: PgPool) {
+    let world = World::new(pool);
+    let mario = world.sign_in("Mario").await;
+    let bowser = world.sign_in("Bowser").await;
+    let luigi = world.sign_in("Luigi").await;
+    let (_, challenge) = world
+        .send(
+            "POST",
+            "/api/v1/matches",
+            &mario,
+            json!({"opponent": "bowser", "rule_set": 2}),
+        )
+        .await;
+    let id = challenge["id"].as_i64().unwrap();
+    let forfeit = async |token: &str, body: Value| {
+        world
+            .send(
+                "POST",
+                &format!("/api/v1/matches/{id}/forfeit"),
+                token,
+                body,
+            )
+            .await
+    };
+    let one_game = json!({"games": [
+        {"my_score": 3, "opponent_score": 1, "my_captain": "mario",
+         "opponent_captain": "bowser", "stadium": "the_palace"},
+    ]});
+
+    // Not before the set plays: a challenge, then a set whose games haven't
+    // met; nobody else's.
+    let (status, refused) = forfeit(&mario, json!({"games": []})).await;
+    assert_eq!(
+        (status, &refused["error"]),
+        (StatusCode::CONFLICT, &json!("the match is invited"))
+    );
+    world
+        .send(
+            "POST",
+            &format!("/api/v1/matches/{id}/accept"),
+            &bowser,
+            Value::Null,
+        )
+        .await;
+    let (status, refused) = forfeit(&bowser, json!({"games": []})).await;
+    assert_eq!(
+        (status, &refused["error"]),
+        (StatusCode::CONFLICT, &json!("the match is go"))
+    );
+    assert_eq!(
+        forfeit(&luigi, json!({"games": []})).await.0,
+        StatusCode::NOT_FOUND
+    );
+
+    let mut pids = Vec::new();
+    for (token, user, gsbrcd) in [(&mario, 1, "R4QEaaaaaaa"), (&bowser, 2, "R4QEbbbbbbb")] {
+        let pid = world.wfc_login(user, gsbrcd).await;
+        world.prove(token, pid).await;
+        pids.push(pid);
+    }
+    for (token, pid) in [(&mario, pids[0]), (&bowser, pids[1])] {
+        let body = json!({"profile_id": pid, "rules_hash": challenge["rules_hash"]});
+        world
+            .send("POST", &format!("/api/v1/matches/{id}/ready"), token, body)
+            .await;
+    }
+    assert_eq!(world.pairings.visible_to(pids[0]), Visible::Only(pids[1]));
+
+    // Mario won game 1 and leaves game 2 on purpose: Bowser wins the set.
+    let (status, gave_up) = forfeit(&mario, one_game.clone()).await;
+    assert_eq!(status, StatusCode::OK, "{gave_up}");
+    assert_eq!(
+        (
+            &gave_up["state"],
+            &gave_up["winner"],
+            &gave_up["forfeited_by"]
+        ),
+        (&json!("finished"), &json!("opponent"), &json!("you"))
+    );
+    assert_eq!(gave_up["games"], one_game["games"]);
+    assert!(gave_up["forfeited_at"].as_i64().is_some());
+    assert_eq!(world.pairings.visible_to(pids[0]), Visible::Everyone);
+    let (_, current) = world
+        .send("GET", "/api/v1/matches/current", &bowser, Value::Null)
+        .await;
+    assert_eq!(
+        (
+            &current["match"]["stage"],
+            &current["match"]["winner"],
+            &current["match"]["forfeited_by"]
+        ),
+        (&json!("finished"), &json!("you"), &json!("opponent"))
+    );
+
+    // Bowser's game reports the series as it saw it: kept, and it changes
+    // nothing, though it disagrees.
+    let bowser_saw = json!({"games": [
+        {"my_score": 1, "opponent_score": 3, "my_captain": "bowser",
+         "opponent_captain": "mario", "stadium": "the_palace"},
+        {"my_score": 0, "opponent_score": 2, "my_captain": "bowser",
+         "opponent_captain": "mario", "stadium": "lava_pit", "interrupted": true, "played": 0.5},
+    ]});
+    let (status, reported) = world
+        .send(
+            "POST",
+            &format!("/api/v1/matches/{id}/report"),
+            &bowser,
+            bowser_saw.clone(),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{reported}");
+    assert_eq!(
+        (
+            &reported["state"],
+            &reported["winner"],
+            &reported["reported"]
+        ),
+        (&json!("finished"), &json!("you"), &json!(true))
+    );
+    assert_eq!(reported["games"], bowser_saw["games"]);
+    let (_, current) = world
+        .send("GET", "/api/v1/matches/current", &mario, Value::Null)
+        .await;
+    assert_eq!(
+        (&current["match"]["state"], &current["match"]["winner"]),
+        (&json!("finished"), &json!("opponent"))
+    );
+
+    // Once over, neither forfeits or reports again.
+    for token in [&mario, &bowser] {
+        assert_eq!(
+            forfeit(token, json!({"games": []})).await.0,
+            StatusCode::CONFLICT
+        );
+    }
+    let (status, _) = world
+        .send(
+            "POST",
+            &format!("/api/v1/matches/{id}/report"),
+            &mario,
+            one_game,
+        )
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let row = sqlx::query!(
+        "SELECT state, winner, forfeited_by, forfeited_at FROM matches WHERE match_id = $1",
+        id
+    )
+    .fetch_one(&world.pool)
+    .await
+    .unwrap();
+    let (_, me) = world.send("GET", "/api/v1/me", &mario, Value::Null).await;
+    let (_, opponent) = world.send("GET", "/api/v1/me", &bowser, Value::Null).await;
+    assert_eq!(
+        (row.state.as_str(), row.winner, row.forfeited_by),
+        ("finished", opponent["id"].as_i64(), me["id"].as_i64())
+    );
+    assert!(row.forfeited_at.is_some());
+
+    // Bowser is free for the next set; the result counts among his recent.
+    let (_, players) = world
+        .send("GET", "/api/v1/players", &bowser, Value::Null)
+        .await;
+    assert_eq!(players["recent"][0]["name"], "Mario");
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT matches.match_id AS id, matches.state, matches.rule_set,\n                  home.display_name AS challenger, away.display_name AS challenged,\n                  winner.display_name AS \"winner?\", matches.created_at, matches.updated_at\n           FROM matches\n           JOIN players home ON home.player_id = matches.home\n           JOIN players away ON away.player_id = matches.away\n           LEFT JOIN players winner ON winner.player_id = matches.winner\n           ORDER BY matches.created_at DESC\n           LIMIT $1",
+  "query": "SELECT matches.match_id AS id, matches.state, matches.rule_set,\n                  home.display_name AS challenger, away.display_name AS challenged,\n                  winner.display_name AS \"winner?\", forfeiter.display_name AS \"forfeited_by?\",\n                  matches.created_at, matches.updated_at\n           FROM matches\n           JOIN players home ON home.player_id = matches.home\n           JOIN players away ON away.player_id = matches.away\n           LEFT JOIN players winner ON winner.player_id = matches.winner\n           LEFT JOIN players forfeiter ON forfeiter.player_id = matches.forfeited_by\n           ORDER BY matches.created_at DESC\n           LIMIT $1",
   "describe": {
     "columns": [
       {
@@ -71,6 +71,17 @@
       },
       {
         "ordinal": 6,
+        "name": "forfeited_by?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -81,7 +92,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "updated_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -105,8 +116,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "9b02f3b84173c6285d22e3481b298fc28c06711aabfd874ae181a5856b51e6d6"
+  "hash": "2e5f62ba10513f0ce9078e08ca4390f43ca6d2b87e7c135b190440dd68621a8b"
 }

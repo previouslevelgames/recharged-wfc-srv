@@ -175,6 +175,7 @@ pub(crate) fn router(
             get(play::chat_messages).post(play::send_chat),
         )
         .route("/api/v1/matches/{id}/report", post(play::report))
+        .route("/api/v1/matches/{id}/forfeit", post(play::forfeit))
         .route("/sign-in", get(sign_in_page))
         .route("/sign-in/test", post(page_test_sign_in))
         .route("/sign-in/sign-in.css", get(stylesheet))

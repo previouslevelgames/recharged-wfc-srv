@@ -531,6 +531,7 @@ terrain and Thunder Island walls; 3 minutes before 1.2.7).
 | `POST /api/v1/matches/<id>/ready-to-play` | `{"ready": true}` or `false`: the launcher's Ready to play!, see "Sets" |
 | `POST /api/v1/matches/<id>/ready` | `{"profile_id", "rules_hash"}`: the game's, see below |
 | `POST /api/v1/matches/<id>/report` | `{"games": [...]}`, see below |
+| `POST /api/v1/matches/<id>/forfeit` | `{"games": [...]}`: the player gives the playing set up, see "Forfeit" |
 | `POST /api/v1/matches/<id>/rematch` | After a set that ended (finished, disputed, or without a result): the same opponent and rules again, see "Sets" |
 
 A match as the player sees it:
@@ -543,8 +544,12 @@ A match as the player sees it:
  "rule_set": "Competitive", "rules": {…}, "rules_hash": "…",
  "paired": false, "reported": false, "winner": null, "games": [], "created_at": 1792771200,
  "stage": "open", "reason": null, "you_ready": true, "opponent_ready": false,
- "opponent_online": true, "go_at": null, "playing_at": null, "rematch_of": null, "random": false}
+ "opponent_online": true, "go_at": null, "playing_at": null, "rematch_of": null, "random": false,
+ "forfeited_by": null, "forfeited_at": null}
 ```
+
+`forfeited_by` is `you` or `opponent` for a set one of them gave up (see
+"Forfeit"), with `forfeited_at` in Unix seconds; `null` otherwise.
 
 `random` marks a challenge a search sent (see "Random opponents"). `state` is
 `challenged`, `accepted`, `declined`, `cancelled`, `expired` (a challenge
@@ -657,3 +662,21 @@ different games. A player reports once. The view then shows the player's own
 report as `games`. When the other player closed Recharged, their game went
 quiet for 25 seconds after a report whose last game broke off, or 5 minutes
 pass without their report, the one report settles the set the same way.
+
+### Forfeit
+
+A player who leaves the set's match on purpose gives the set up: their game
+sends `POST /api/v1/matches/<id>/forfeit` with the games played to the end
+before (`{"games": [...]}` as in a report, none during the first game). It is
+taken only while the set is `playing` (accepted, and the games met in
+RANKED) and the player has not reported it; 409 otherwise (`invited`, `open`
+and `go` have no match to leave, and a set with a result is over), 404 for a
+match not the player's, 400 for games that don't fit the series. The set is
+`finished` at once with the opponent as `winner`, whatever the games' score;
+the games are the player's report. The answer is the match as the player
+sees it, with `forfeited_by: "you"`. The opponent's report that still comes
+is kept (200, the match as they see it) but changes nothing: it can't
+dispute the set. Otherwise it is a finished set the opponent won, like any
+other (recent opponents, rematch; its games stay off the RANKED boards as
+every set's do). An older server answers 404: the game then leaves the set
+as before, and it ends as a set broken off.

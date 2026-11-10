@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT m.match_id, m.mode, m.release, m.best_of, m.state, m.winner, m.home_mii,\n                  m.away_mii, m.home_captain, m.away_captain, m.home_wins, m.away_wins,\n                  m.started_at, m.last_report_at, m.ended_at,\n                  home.profile_id AS \"home_profile?\", away.profile_id AS \"away_profile?\",\n                  EXISTS (SELECT 1 FROM relay_sessions r\n                          WHERE (r.first_profile IN (home.profile_id, away.profile_id)\n                                 OR r.second_profile IN (home.profile_id, away.profile_id))\n                            AND r.started_at <= m.last_report_at\n                            AND (r.ended_at IS NULL OR r.ended_at >= m.started_at)) AS \"relayed!\"\n           FROM online_matches m\n           LEFT JOIN online_match_sides home ON home.match_id = m.match_id AND home.side = 'home'\n           LEFT JOIN online_match_sides away ON away.match_id = m.match_id AND away.side = 'away'\n           WHERE $1::bigint IS NULL OR m.match_id = $1\n           ORDER BY (m.state <> 'in_progress'), m.started_at DESC\n           LIMIT $2",
+  "query": "SELECT m.match_id, m.mode, m.release, m.best_of, m.state, m.winner, m.home_mii,\n                  m.away_mii, m.home_captain, m.away_captain, m.home_wins, m.away_wins,\n                  m.started_at, m.last_report_at, m.ended_at, m.forfeited_at,\n                  CASE m.forfeited_by WHEN home.profile_id THEN 'home'\n                                      WHEN away.profile_id THEN 'away' END AS forfeited_by,\n                  home.profile_id AS \"home_profile?\", away.profile_id AS \"away_profile?\",\n                  EXISTS (SELECT 1 FROM relay_sessions r\n                          WHERE (r.first_profile IN (home.profile_id, away.profile_id)\n                                 OR r.second_profile IN (home.profile_id, away.profile_id))\n                            AND r.started_at <= m.last_report_at\n                            AND (r.ended_at IS NULL OR r.ended_at >= m.started_at)) AS \"relayed!\"\n           FROM online_matches m\n           LEFT JOIN online_match_sides home ON home.match_id = m.match_id AND home.side = 'home'\n           LEFT JOIN online_match_sides away ON away.match_id = m.match_id AND away.side = 'away'\n           WHERE $1::bigint IS NULL OR m.match_id = $1\n           ORDER BY (m.state <> 'in_progress'), m.started_at DESC\n           LIMIT $2",
   "describe": {
     "columns": [
       {
@@ -170,6 +170,23 @@
       },
       {
         "ordinal": 15,
+        "name": "forfeited_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "online_matches",
+            "name": "forfeited_at"
+          }
+        }
+      },
+      {
+        "ordinal": 16,
+        "name": "forfeited_by",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 17,
         "name": "home_profile?",
         "type_info": "Int4",
         "origin": {
@@ -180,7 +197,7 @@
         }
       },
       {
-        "ordinal": 16,
+        "ordinal": 18,
         "name": "away_profile?",
         "type_info": "Int4",
         "origin": {
@@ -191,7 +208,7 @@
         }
       },
       {
-        "ordinal": 17,
+        "ordinal": 19,
         "name": "relayed!",
         "type_info": "Bool",
         "origin": "Expression"
@@ -219,10 +236,12 @@
       false,
       false,
       true,
+      true,
+      null,
       false,
       false,
       null
     ]
   },
-  "hash": "8e8a75865df9a6b9804a2755cff0e47a0193ea211bb53567c2d5191e0e41c112"
+  "hash": "21a4b6fd6d1c578fadd8bd7be503269402607099eeab1dc1a540f7bfd57ff6d4"
 }

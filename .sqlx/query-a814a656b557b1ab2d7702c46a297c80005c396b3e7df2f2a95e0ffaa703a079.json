@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE matches SET state = 'finished', winner = $2, forfeited_by = $3,\n                            forfeited_at = now(), updated_at = now()\n         WHERE match_id = $1\n         RETURNING forfeited_at AS \"forfeited_at!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "forfeited_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "forfeited_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "a814a656b557b1ab2d7702c46a297c80005c396b3e7df2f2a95e0ffaa703a079"
+}

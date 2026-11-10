@@ -20,13 +20,18 @@ use std::{
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::{ConnectInfo, DefaultBodyLimit, State, rejection::BytesRejection},
+    extract::{
+        ConnectInfo, DefaultBodyLimit, Query, State,
+        rejection::{BytesRejection, QueryRejection},
+    },
     http::StatusCode,
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{get, post},
 };
+use serde::Deserialize;
 use serde_json::json;
 use sqlx::PgPool;
+use time::format_description::well_known::Rfc3339;
 use tracing::{debug, info, trace, warn};
 
 use crate::gpcm::Gpcm;
@@ -45,9 +50,9 @@ struct ReportsState {
     limits: Arc<errors::Limits>,
 }
 
-/// `POST /api/v1/wfc/reports`, `POST /api/v1/wfc/errors` and
-/// `POST /api/v1/wfc/desyncs`, for any host name: the game sends them to its
-/// server's address. They need the caller's address: serve them with
+/// `POST /api/v1/wfc/reports`, `POST /api/v1/wfc/errors`,
+/// `POST /api/v1/wfc/desyncs` and `GET /api/v1/wfc/forfeit`, for any host
+/// name: the game sends them to its server's address. They need the caller's address: serve them with
 /// `into_make_service_with_connect_info::<SocketAddr>()`.
 pub fn router(pool: PgPool, gpcm: Arc<Gpcm>) -> Router {
     // A dossier is bigger than a report.
@@ -57,6 +62,7 @@ pub fn router(pool: PgPool, gpcm: Arc<Gpcm>) -> Router {
     Router::new()
         .route("/api/v1/wfc/reports", post(receive))
         .route("/api/v1/wfc/errors", post(receive_error))
+        .route("/api/v1/wfc/forfeit", get(forfeit))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .merge(desyncs)
         .with_state(ReportsState {
@@ -240,6 +246,52 @@ async fn receive_dossier(
     }
 }
 
+#[derive(Deserialize)]
+struct ForfeitQuery {
+    profile_id: i32,
+}
+
+/// The game whose match broke off asks whether its opponent forfeited it
+/// (docs/reports.md, "Forfeit"): the latest forfeit against `profile_id`
+/// in the last 3 minutes, `{"forfeit": {"by": "<Mii>", "at": "<RFC 3339>"}}`,
+/// else `{"forfeit": null}`. Only from the profile's login, as a report.
+async fn forfeit(
+    State(state): State<ReportsState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    query: Result<Query<ForfeitQuery>, QueryRejection>,
+) -> Response {
+    let Ok(Query(ForfeitQuery { profile_id })) = query else {
+        debug!(target: "reports", %peer, "forfeit asked without a profile");
+        return json_error(StatusCode::BAD_REQUEST, "profile_id: a WFC profile");
+    };
+    if !logged_in_at(&state.gpcm, profile_id, peer.ip()) {
+        debug!(target: "reports", profile_id, %peer, "forfeit asked from elsewhere");
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "profile not logged in from this address",
+        );
+    }
+    match store::forfeit_against(&state.pool, profile_id).await {
+        Ok(found) => {
+            let forfeit = found.map(|(by, at)| {
+                json!({
+                    "by": by,
+                    "at": at.format(&Rfc3339).expect("a date formats"),
+                })
+            });
+            debug!(target: "reports", profile_id, ?forfeit, "forfeit asked");
+            Json(json!({ "forfeit": forfeit })).into_response()
+        }
+        Err(error) => {
+            warn!(target: "reports", %error, "database error");
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "the server's database failed",
+            )
+        }
+    }
+}
+
 impl ReportsState {
     /// Keeps a refusal for the Monitoring page; the log has it anyway.
     async fn count_refusal(&self, profile_id: i32, kind: &str, problem: &str, peer: SocketAddr) {
@@ -350,6 +402,31 @@ mod tests {
 
         async fn report(&self, address: [u8; 4], body: &Value) -> (StatusCode, Value) {
             self.post(address, body.to_string()).await
+        }
+
+        /// GETs `path` from `address`, as the game asks.
+        async fn get(&self, path: &str, address: [u8; 4]) -> (StatusCode, Value) {
+            let app = router(self.pool.clone(), self.gpcm.clone())
+                .layer(MockConnectInfo(SocketAddr::from((address, 51000))));
+            let request = Request::get(path)
+                .header(header::HOST, "2.31.48.136")
+                .body(Body::empty())
+                .unwrap();
+            let response = app.oneshot(request).await.unwrap();
+            let status = response.status();
+            let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+                .await
+                .unwrap();
+            (status, serde_json::from_slice(&bytes).unwrap())
+        }
+
+        /// The latest forfeit against `profile_id`, as its game asks.
+        async fn forfeit(&self, address: [u8; 4], profile_id: i32) -> (StatusCode, Value) {
+            self.get(
+                &format!("/api/v1/wfc/forfeit?profile_id={profile_id}"),
+                address,
+            )
+            .await
         }
     }
 
@@ -567,6 +644,93 @@ mod tests {
         assert!(answer["error"].as_str().is_some());
     }
 
+    fn end(mut body: Value, reason: &str, cause: &str) -> Value {
+        body["event"] = json!("end");
+        body["reason"] = json!(reason);
+        body["cause"] = json!(cause);
+        body
+    }
+
+    #[sqlx::test]
+    async fn a_forfeit_gives_the_match_to_the_opponent_who_asks(pool: PgPool) {
+        let server = Server::new(pool);
+        let anosch = server.log_in(1, "Anosch", ANOSCH_HOME).await;
+        let sam = server.log_in(2, "Sam", SAM_HOME).await;
+        let mut home = start();
+        home["profile_id"] = json!(anosch);
+        let away = as_sam(sam);
+        let (_, opened) = server.report(ANOSCH_HOME, &home).await;
+        server.report(SAM_HOME, &away).await;
+        for (address, body) in [(ANOSCH_HOME, &home), (SAM_HOME, &away)] {
+            server.report(address, &game(body.clone(), 1, 3, 0)).await;
+        }
+        let none = (StatusCode::OK, json!({"forfeit": null}));
+        assert_eq!(server.forfeit(SAM_HOME, sam).await, none);
+
+        // Anosch won game 1 and leaves game 2 on purpose, leading 1-0: Sam's
+        // game sees it broken off.
+        let (status, answer) = server
+            .report(ANOSCH_HOME, &end(home.clone(), "abandoned", "forfeit"))
+            .await;
+        assert_eq!((status, &answer), (StatusCode::OK, &opened));
+        let mut broke_off = game(away.clone(), 2, 1, 0);
+        broke_off["game"]["ending"] = json!("disconnect");
+        server.report(SAM_HOME, &broke_off).await;
+        server
+            .report(SAM_HOME, &end(away.clone(), "abandoned", "disconnect"))
+            .await;
+        let match_id = opened["match_id"].as_i64().unwrap();
+        let row = sqlx::query!(
+            "SELECT state, winner, home_wins, away_wins, forfeited_by FROM online_matches
+             WHERE match_id = $1",
+            match_id
+        )
+        .fetch_one(&server.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            (
+                row.state.as_str(),
+                row.winner.as_deref(),
+                row.home_wins,
+                row.away_wins,
+                row.forfeited_by
+            ),
+            ("finished", Some("away"), 2, 0, Some(anosch))
+        );
+
+        // Sam's game asks, from its login: Anosch forfeited, just now.
+        let (status, answer) = server.forfeit(SAM_HOME, sam).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(answer["forfeit"]["by"], "Anosch");
+        let at = answer["forfeit"]["at"].as_str().unwrap();
+        let at = time::OffsetDateTime::parse(at, &Rfc3339).unwrap();
+        assert!((time::OffsetDateTime::now_utc() - at).whole_seconds() < 10);
+        // Not against Anosch; not from elsewhere; not without a profile.
+        assert_eq!(server.forfeit(ANOSCH_HOME, anosch).await, none);
+        assert_eq!(
+            server.forfeit(ANOSCH_HOME, sam).await,
+            (
+                StatusCode::FORBIDDEN,
+                json!({"error": "profile not logged in from this address"})
+            )
+        );
+        assert_eq!(
+            server.get("/api/v1/wfc/forfeit", SAM_HOME).await.0,
+            StatusCode::BAD_REQUEST
+        );
+        // Three minutes later it is no news.
+        sqlx::query!(
+            "UPDATE online_matches SET forfeited_at = now() - interval '181 seconds'
+             WHERE match_id = $1",
+            match_id
+        )
+        .execute(&server.pool)
+        .await
+        .unwrap();
+        assert_eq!(server.forfeit(SAM_HOME, sam).await, none);
+    }
+
     #[sqlx::test]
     async fn both_games_report_a_series_into_one_match(pool: PgPool) {
         let server = Server::new(pool);
@@ -620,6 +784,11 @@ mod tests {
                 row.away_wins
             ),
             ("finished", Some("home"), 2, 0)
+        );
+        // Nobody forfeited: Sam's game, which lost, asks for nothing.
+        assert_eq!(
+            server.forfeit(SAM_HOME, sam).await,
+            (StatusCode::OK, json!({"forfeit": null}))
         );
     }
 

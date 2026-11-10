@@ -55,6 +55,10 @@ pub struct Listed {
     state: String,
     /// Once finished: `home` or `away`; none for a draw.
     winner: Option<String>,
+    /// The side whose forfeit decided the match (the other won), and when.
+    forfeited_by: Option<String>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    forfeited_at: Option<OffsetDateTime>,
     home: Team,
     away: Team,
     /// Games won, of those that count.
@@ -126,6 +130,8 @@ struct ReporterView {
     /// Why the series ended, as the end said: `decided`, `desync`,
     /// `disconnect` or `offline`; none when it did not say.
     cause: Option<String>,
+    /// The end said `cause: forfeit`: its player gave the match up.
+    forfeit: bool,
     /// The build that reported, when it said.
     build: Option<String>,
     /// The operating system it ran on, when it said.
@@ -194,7 +200,9 @@ async fn listed(
     let rows = sqlx::query!(
         r#"SELECT m.match_id, m.mode, m.release, m.best_of, m.state, m.winner, m.home_mii,
                   m.away_mii, m.home_captain, m.away_captain, m.home_wins, m.away_wins,
-                  m.started_at, m.last_report_at, m.ended_at,
+                  m.started_at, m.last_report_at, m.ended_at, m.forfeited_at,
+                  CASE m.forfeited_by WHEN home.profile_id THEN 'home'
+                                      WHEN away.profile_id THEN 'away' END AS forfeited_by,
                   home.profile_id AS "home_profile?", away.profile_id AS "away_profile?",
                   EXISTS (SELECT 1 FROM relay_sessions r
                           WHERE (r.first_profile IN (home.profile_id, away.profile_id)
@@ -221,6 +229,8 @@ async fn listed(
             best_of: row.best_of,
             state: row.state,
             winner: row.winner,
+            forfeited_by: row.forfeited_by,
+            forfeited_at: row.forfeited_at,
             home: Team {
                 mii: row.home_mii,
                 captain: row.home_captain,
@@ -301,6 +311,7 @@ pub async fn detail(pool: &PgPool, match_id: i64) -> Result<Option<Detail>, sqlx
                     series: reporter.series,
                     reason: reporter.reason.clone(),
                     cause: reporter.cause.clone(),
+                    forfeit: reporter.forfeited_at.is_some(),
                     build: reporter.build.clone(),
                     os: reporter.os.clone(),
                     left_at: reporter.left_at,
@@ -541,6 +552,43 @@ pub(crate) mod tests {
                 .await
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[sqlx::test]
+    async fn a_forfeit_shows_who_gave_the_match_up(pool: PgPool) {
+        let games = Games::new(pool).await;
+        let home = games.report(games.anosch, 100, "home", "start");
+        let away = games.report(games.sam, 200, "away", "start");
+        let match_id = games.send(&home).await;
+        games.send(&away).await;
+        let mut gave_up = home.clone();
+        gave_up["event"] = json!("end");
+        gave_up["reason"] = json!("abandoned");
+        gave_up["cause"] = json!("forfeit");
+        games.send(&gave_up).await;
+
+        let detail = detail(&games.pool, match_id).await.unwrap().unwrap();
+        let summary = &detail.summary;
+        assert_eq!(
+            (
+                summary.state.as_str(),
+                summary.winner.as_deref(),
+                summary.forfeited_by.as_deref()
+            ),
+            ("finished", Some("away"), Some("home"))
+        );
+        assert!(summary.forfeited_at.is_some());
+        let forfeits: Vec<_> = detail
+            .sides
+            .iter()
+            .map(|side| side.reporter.as_ref().unwrap().forfeit)
+            .collect();
+        assert_eq!(forfeits, [true, false]);
+        let reporter = detail.sides[0].reporter.as_ref().unwrap();
+        assert_eq!(
+            (reporter.reason.as_deref(), reporter.cause.as_deref()),
+            (Some("abandoned"), None)
         );
     }
 
