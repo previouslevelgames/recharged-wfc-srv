@@ -1,0 +1,195 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT d.match_id, d.game, max(d.received_at) AS \"at!\", min(d.release) AS \"release!\",\n                  (array_agg(d.frame ORDER BY d.received_at))[1] AS \"frame!\",\n                  max(d.profile_id) FILTER (WHERE d.side = 'home') AS home_profile,\n                  max(p.ingamesn) FILTER (WHERE d.side = 'home') AS home_mii,\n                  max(d.build) FILTER (WHERE d.side = 'home') AS home_build,\n                  max(d.platform) FILTER (WHERE d.side = 'home') AS home_platform,\n                  max(d.profile_id) FILTER (WHERE d.side = 'away') AS away_profile,\n                  max(p.ingamesn) FILTER (WHERE d.side = 'away') AS away_mii,\n                  max(d.build) FILTER (WHERE d.side = 'away') AS away_build,\n                  max(d.platform) FILTER (WHERE d.side = 'away') AS away_platform,\n                  max(v.kind) AS kind, max(v.frame) AS diverged_frame,\n                  max(v.field_index) AS field_index,\n                  max(v.home_caller) AS home_caller, max(v.away_caller) AS away_caller,\n                  max(v.home_size) AS home_size, max(v.away_size) AS away_size,\n                  max(v.home_hash) AS home_hash, max(v.away_hash) AS away_hash,\n                  max(v.home_bytes) AS home_bytes, max(v.away_bytes) AS away_bytes\n           FROM desync_dossiers d\n           LEFT JOIN profiles p USING (profile_id)\n           LEFT JOIN desync_divergences v USING (match_id, game)\n           WHERE $2::bigint IS NULL OR d.match_id = $2\n           GROUP BY d.match_id, d.game\n           ORDER BY max(d.received_at) DESC\n           LIMIT $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "match_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "desync_dossiers",
+            "name": "match_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "game",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "desync_dossiers",
+            "name": "game"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "at!",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "release!",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 4,
+        "name": "frame!",
+        "type_info": "Int4",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 5,
+        "name": "home_profile",
+        "type_info": "Int4",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 6,
+        "name": "home_mii",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "home_build",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 8,
+        "name": "home_platform",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 9,
+        "name": "away_profile",
+        "type_info": "Int4",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 10,
+        "name": "away_mii",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 11,
+        "name": "away_build",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 12,
+        "name": "away_platform",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 13,
+        "name": "kind",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 14,
+        "name": "diverged_frame",
+        "type_info": "Int4",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 15,
+        "name": "field_index",
+        "type_info": "Int4",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 16,
+        "name": "home_caller",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 17,
+        "name": "away_caller",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 18,
+        "name": "home_size",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 19,
+        "name": "away_size",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 20,
+        "name": "home_hash",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 21,
+        "name": "away_hash",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 22,
+        "name": "home_bytes",
+        "type_info": "Bytea",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 23,
+        "name": "away_bytes",
+        "type_info": "Bytea",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "d3c5836c6852aaf6d3bed7ce366aa796b08004edd785a32ba9f1a0f6b7e41a95"
+}

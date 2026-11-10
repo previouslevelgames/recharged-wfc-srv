@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO desync_divergences\n                     (match_id, game, kind, frame, field_index, home_caller, away_caller,\n                      home_size, away_size, home_hash, away_hash, home_bytes, away_bytes)\n                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)\n                 ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int4",
+        "Text",
+        "Int4",
+        "Int4",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Int8",
+        "Bytea",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "dd7dbef1f431b53c8f6dbbfdb1feb192a8c5d9bee5cb6ea3ca22f104fac40a78"
+}

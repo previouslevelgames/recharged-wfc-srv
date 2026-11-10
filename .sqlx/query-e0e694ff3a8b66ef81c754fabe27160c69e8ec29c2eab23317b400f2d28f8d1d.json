@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT match_id FROM online_matches WHERE match_id = $1 FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "match_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "online_matches",
+            "name": "match_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "e0e694ff3a8b66ef81c754fabe27160c69e8ec29c2eab23317b400f2d28f8d1d"
+}

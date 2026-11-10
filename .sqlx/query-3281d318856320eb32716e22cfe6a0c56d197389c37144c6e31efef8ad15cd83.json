@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT body FROM desync_dossiers WHERE match_id = $1 AND game = $2 AND side = $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "body",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "desync_dossiers",
+            "name": "body"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int4",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "3281d318856320eb32716e22cfe6a0c56d197389c37144c6e31efef8ad15cd83"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE desync_dossiers SET received_at = now() - interval '25 hours'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "ad8c618f5f0e23845da749bb899f380afed8513e51118b7d0c10ff2aa82c821f"
+}

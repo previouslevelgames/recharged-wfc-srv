@@ -37,6 +37,17 @@ migrate: db
 run: db
     RUST_LOG="${RUST_LOG:-info,raw=trace}" GEOIP_COUNTRY_DB="${GEOIP_COUNTRY_DB:-target/dbip-country-lite.mmdb}" cargo run --locked
 
+# The dashboard on http://127.0.0.1:8080/admin with made-up matches and desync
+# dossiers, signed in by a fake Google (src/admin/preview.rs): to look at a
+# page without Google or a game. In a test database, gone when it stops.
+preview: migrate
+    cargo test --locked --lib preview_the_dashboard -- --ignored --nocapture
+
+# The same dashboard on the development database as it is: the matches and
+# dossiers of games played against `just run`, which can run alongside.
+preview-dev: migrate
+    cargo test --locked --lib preview_the_dev_database -- --ignored --nocapture
+
 # DB-IP's free country database (CC BY 4.0, https://db-ip.com) for players'
 # flags, this month's (or last month's, early in a month), to target/.
 countries:

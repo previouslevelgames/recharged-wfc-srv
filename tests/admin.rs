@@ -47,6 +47,8 @@ async fn an_admin_signs_in_sees_every_section_and_signs_out(pool: PgPool) {
     assert_eq!(status, 200);
     assert!(page.contains(r#"href="http://127.0.0.1:8080/admin/login""#));
     assert_eq!(browser.get("/admin/api/overview").await.0, 401);
+    assert_eq!(browser.get("/admin/api/desyncs/1/1/home").await.0, 401);
+    assert_eq!(browser.get("/admin/api/desyncs/1/1").await.0, 401);
 
     let params = start_sign_in(&mut browser, "/admin/login").await;
     google.approve(&params, "Admin@Example.com");
@@ -72,6 +74,8 @@ async fn an_admin_signs_in_sees_every_section_and_signs_out(pool: PgPool) {
     assert_eq!(browser.get("/admin/elsewhere").await.0, 404);
     // A profile's or a match's own page, for a number only.
     assert_eq!(browser.get("/admin/players/999999999").await.0, 200);
+    assert_eq!(browser.get("/admin/api/desyncs/1/1/home").await.0, 404);
+    assert_eq!(browser.get("/admin/api/desyncs/1/1").await.0, 404);
     assert_eq!(browser.get("/admin/matches/12").await.0, 200);
     for path in [
         "/admin/matches/twelve",
@@ -89,6 +93,8 @@ async fn an_admin_signs_in_sees_every_section_and_signs_out(pool: PgPool) {
         ("matchmaking", "/totals/searching"),
         ("matches", "/totals/one_sided"),
         ("monitoring", "/by_day/0/errors"),
+        ("monitoring", "/desyncs"),
+        ("monitoring", "/divergences"),
         ("database", "/tables/0/name"),
         ("leaderboards", "/totals/entries"),
         ("competitive", "/rule_sets/0/rules/tweaks"),

@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT d.side, d.body, p.ingamesn AS \"mii?\" FROM desync_dossiers d\n         LEFT JOIN profiles p USING (profile_id)\n         WHERE d.match_id = $1 AND d.game = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "side",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "desync_dossiers",
+            "name": "side"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "body",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "desync_dossiers",
+            "name": "body"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "mii?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "profiles",
+            "name": "ingamesn"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "8d33304e481f04a833724f042c4ee31148708a9828fcc71feedbde8ccaec0e65"
+}

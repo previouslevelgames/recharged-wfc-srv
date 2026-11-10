@@ -31,6 +31,8 @@ mod monitoring;
 mod overview;
 mod page;
 mod players;
+#[cfg(test)]
+mod preview;
 mod session;
 mod sets;
 
@@ -185,6 +187,11 @@ pub(crate) fn router(
         .route("/admin/api/competitive", get(api_competitive))
         .route("/admin/api/logs", get(api_logs))
         .route("/admin/api/logs/{day}", get(log_file))
+        .route("/admin/api/desyncs/{match_id}/{game}", get(dossier_text))
+        .route(
+            "/admin/api/desyncs/{match_id}/{game}/{side}",
+            get(dossier_file),
+        )
         .route("/admin/api/sets/{id}", get(api_set))
         .route("/admin/api/maintenance", get(api_maintenance))
         .route(
@@ -640,6 +647,66 @@ async fn log_file(
         Ok(None) => StatusCode::NOT_FOUND.into_response(),
         Err(error) => {
             warn!(target: "admin", %error, "log file unreadable");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+/// A side's desync dossier as the game sent it, to save.
+async fn dossier_file(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Path((match_id, game, side)): Path<(i64, i32, String)>,
+) -> Response {
+    if state.reader(&jar, &headers).is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match monitoring::dossier(&state.pool, match_id, game, &side).await {
+        Ok(Some((name, bytes))) => (
+            [
+                (header::CONTENT_TYPE, "application/octet-stream".to_owned()),
+                (
+                    header::CONTENT_DISPOSITION,
+                    format!(r#"attachment; filename="{name}""#),
+                ),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(error) => {
+            warn!(target: "admin", %error, "database error");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+/// A game's desync dossiers as text, to save or hand to a debugger.
+async fn dossier_text(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Path((match_id, game)): Path<(i64, i32)>,
+) -> Response {
+    if state.reader(&jar, &headers).is_none() {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match monitoring::dossier_text(&state.pool, match_id, game).await {
+        Ok(Some((name, text))) => (
+            [
+                (header::CONTENT_TYPE, "text/plain; charset=utf-8".to_owned()),
+                (
+                    header::CONTENT_DISPOSITION,
+                    format!(r#"attachment; filename="{name}""#),
+                ),
+            ],
+            text,
+        )
+            .into_response(),
+        Ok(None) => StatusCode::NOT_FOUND.into_response(),
+        Err(error) => {
+            warn!(target: "admin", %error, "database error");
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
