@@ -415,7 +415,10 @@ one row, their points, wins and losses added up, with the Mii of the best one
 points share it), the Mii's name and record from the game's submission, the
 Recharged player whose profile it is (`null` when no launcher proved it), and
 the game's region (1 JP, 2 US, 4 EU, 8 KR). Rows of an ended season, which
-stay in `scores` until their player's next ranked game, are left out.
+stay in `scores` until their player's next ranked game, are left out, and so
+are rows without a game (0 points, no wins, no losses: the game also puts the
+empty record of a season or day it has not played yet). `players` counts the
+rows that are left, a player's profiles once; a Mii name joins nothing.
 
 ### One player, two profiles
 

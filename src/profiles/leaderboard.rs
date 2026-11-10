@@ -39,7 +39,7 @@ struct Leaderboard {
 struct Board {
     first_day: String,
     last_day: String,
-    /// Everyone on it.
+    /// Everyone with a game on it, a player's WFC profiles as one.
     players: usize,
     top: Vec<Entry>,
     /// The signed-in player's row (all the WFC profiles they proved, as one),
@@ -100,7 +100,7 @@ async fn board(
 ) -> Result<Board, sqlx::Error> {
     let first_day = season::first_day(category, today);
     // A row of an ended season stays in `scores` until its player's next put:
-    // the date in its userdata tells.
+    // the date in its userdata tells. A row without a game counts no one.
     let lines: Vec<Line<OffsetDateTime>> = sqlx::query!(
         "SELECT profile_id, region, score, userdata, updated_at FROM scores WHERE category = $1",
         category
@@ -113,6 +113,7 @@ async fn board(
             .date
             .map(|date| season::first_day(category, date))
             == Some(first_day)
+            && players::played(row.score, &row.userdata)
     })
     .map(|row| {
         Line::new(
@@ -325,6 +326,8 @@ mod tests {
             (1003, SEASON, 99, last_year, "Wario"),
             (1001, DAILY, 5, today, "Mario"),
             (1002, DAILY, 7, yesterday, "Luigi"),
+            // Today's record before a game of it: no player of the day.
+            (1003, DAILY, 0, today, "Wario"),
         ] {
             sqlx::query!(
                 "INSERT INTO scores (profile_id, category, region, score, userdata)
@@ -332,7 +335,7 @@ mod tests {
                 pid,
                 category,
                 score,
-                &userdata(date, score / 10, 1, name),
+                &userdata(date, score / 10, i32::from(score > 0), name),
             )
             .execute(&pool)
             .await
