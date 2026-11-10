@@ -173,7 +173,11 @@ the step before the desync's and of the desync's (checksums go every other
 step, so the machines may have diverged a step earlier): for each, where the
 game took it (an offset in its game module, or one of the rollback's own
 kinds in the top four bits: a pose, a physics body, a collision...), its
-size, the FNV-1a hash of its bytes and its first 16.
+size, the FNV-1a hash of its bytes and its first 16. From Recharged 1.1.7
+(version 2) it also has the game as the side's rollback played it and the
+inputs of the 32 steps through the desync's, once all had arrived: those
+should be the same on both sides, and where they differ the network or the
+rollback lost one before the checksums showed it.
 
 The game writes the dossier to its data folder (`desyncs/`) at the desync, so
 a crash right after it leaves it there, and sends it in the background; it
@@ -181,12 +185,12 @@ deletes it once the server answered. One not delivered waits for the next
 series of its profile, in this run or a later one.
 
 The body is binary, little-endian (`Content-Type: application/octet-stream`),
-28 856 bytes at most:
+57 232 bytes at most (28 856 for version 1):
 
 | Offset | Size | |
 |---|---|---|
 | 0 | 4 | `RCDS` |
-| 4 | 4 | version, 1 |
+| 4 | 4 | version, 1 (Recharged 1.1.6) or 2 |
 | 8 | 8 | `series`, as in its reports |
 | 16 | 8 | when the game wrote it, Unix seconds |
 | 24 | 4 | `profile_id` |
@@ -197,7 +201,7 @@ The body is binary, little-endian (`Content-Type: application/octet-stream`),
 | 48 | 8 | the random seeds, likewise |
 | 56 | 4 | the other machine's index |
 | 60 | 4 | the input delay, in steps |
-| 64 | 4 | the inputs predicted wrong in the match |
+| 64 | 4 | the steps predicted wrong in the game, every machine's (version 1: in the game's whole run) |
 | 68 | 4 | the rollback's diagnostic switches: bit 0 the poses, 1 the physics bodies, 2 the collisions |
 | 72 | 4 | the release, `R4QE`... |
 | 76 | 64 | the build, NUL-padded |
@@ -207,6 +211,44 @@ The body is binary, little-endian (`Content-Type: application/octet-stream`),
 
 The steps are the desync's frame less one, then the desync's. A step with no
 fields was not kept.
+
+Version 2 goes on after the steps with the game, 88 bytes, each a word, its
+counts since the game began:
+
+| Offset | |
+|---|---|
+| 0 | this machine's index |
+| 4 | the game's machines, 1 to 4 |
+| 8 | the step the rollback's tracking last started after |
+| 12 | 1 if still tracking at the desync, else 0 |
+| 16 | the input delay the game began with, in steps |
+| 20, 24 | times this machine's input delay grew, and shrank |
+| 28 | the step of its last change, 0 none |
+| 32 | four words: by machine, the steps whose inputs came other than predicted |
+| 48 | the steps run with any input predicted |
+| 52 | the rollbacks to correct a misprediction |
+| 56 | the predicted steps undone (they changed the phase) |
+| 60 | the replays cut at a phase change |
+| 64 | the predicted steps kept for a disc read |
+| 68 | the rollbacks that could not go back |
+| 72 | the times tracking stopped with inputs still predicted |
+| 76, 80 | the steps that waited for inputs as the original router did, and with the prediction window full |
+| 84 | the input steps that follow, 32 |
+
+A misprediction in a step kept for a disc read, before a rollback that could
+not go back or when tracking stopped can no longer be corrected: it desyncs.
+
+Then the input steps, the oldest first and the desync's the last, each 20
+bytes: its frame (a word), whether it was kept (1, else 0 and nothing else
+set: gone from the rollback's ring), its machines' inputs that follow (all
+the game's), one bit per machine whose inputs were predicted when the step
+first ran, one bit per machine whose inputs then came otherwise, then by team
+and player (the game's `cTeam::m_pPlayers`, five each) the pad controlling it
+(machine × 4 + the machine's player, -1 the AI), and two zero bytes. Each
+machine's inputs are 216 bytes: its player count, its event count (4 at
+most each), its remap angle (two bytes), each player's connection state (four
+bytes), each player's `PackedDetInput` (four of 16 bytes) and its events (four
+`DetermDataEvent`s of 36 bytes).
 
 A dossier counts only from its profile's login ([Trust](#trust)), and only for
 a series the profile reported, on the side it played: the server keeps it
@@ -229,6 +271,13 @@ module.
 | `count` | the same fields, but one game took more |
 | `none` | every field the same: the random seed, or state outside the checksum |
 | `missing` | a step one side did not keep whole, and the others agree; or no step both kept |
+
+The text of a game's two dossiers of version 2 also says where their inputs
+diverge: the first step both kept whose inputs differ, the machine and the
+parts (a player's buttons, sticks, accelerometers, pointer, state; the events;
+the remap angle), and whether the away side has that machine's inputs those
+of the home side some steps before or after at every step both kept (a step
+lost or added on the way). The same inputs everywhere point at the state.
 
 The Monitoring page lists the games with dossiers and groups the divergences
 by both sides' binaries and callers. It shows each field as the game's log
