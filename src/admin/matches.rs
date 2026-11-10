@@ -95,6 +95,11 @@ pub struct Detail {
     relayed: Vec<Relayed>,
     /// The days the server keeps them: an older match shows none.
     relay_kept_days: i32,
+    /// The games' desync dossiers, and where each game's two diverge
+    /// (docs/reports.md, "Desync dossiers").
+    desyncs: Vec<super::monitoring::Desync>,
+    /// The days the server keeps them.
+    dossiers_kept_days: i32,
 }
 
 #[derive(Serialize)]
@@ -270,6 +275,7 @@ pub async fn detail(pool: &PgPool, match_id: i64) -> Result<Option<Detail>, sqlx
         summary.last_report_at,
     )
     .await?;
+    let desyncs = super::monitoring::desyncs(&mut tx, Some(match_id)).await?;
     tx.commit().await?;
 
     let empty = Default::default();
@@ -313,6 +319,8 @@ pub async fn detail(pool: &PgPool, match_id: i64) -> Result<Option<Detail>, sqlx
         events,
         relayed,
         relay_kept_days: relay_store::KEPT_DAYS,
+        desyncs,
+        dossiers_kept_days: reports::dossiers::KEPT_DAYS,
     }))
 }
 
@@ -597,6 +605,49 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(sams[0].match_id, Some(relayed));
+    }
+
+    #[sqlx::test]
+    async fn a_match_shows_its_desync_dossiers(pool: PgPool) {
+        use crate::reports::{
+            dossiers::{self, tests::dossier},
+            report::Side,
+        };
+        let games = Games::new(pool.clone()).await;
+        let match_id = games
+            .send(&games.report(games.anosch, 1, "home", "start"))
+            .await;
+        games
+            .send(&games.report(games.sam, 2, "away", "start"))
+            .await;
+        let other = games
+            .send(&games.report(games.anosch, 3, "home", "start"))
+            .await;
+        assert!(
+            detail(&pool, match_id)
+                .await
+                .unwrap()
+                .unwrap()
+                .desyncs
+                .is_empty()
+        );
+
+        let mut home = dossier(Side::Home);
+        (home.profile_id, home.series) = (games.anosch, 1);
+        dossiers::store(&pool, &home, &home.encode()).await.unwrap();
+        let mut elsewhere = dossier(Side::Home);
+        (elsewhere.profile_id, elsewhere.series) = (games.anosch, 3);
+        dossiers::store(&pool, &elsewhere, &elsewhere.encode())
+            .await
+            .unwrap();
+
+        let shown = detail(&pool, match_id).await.unwrap().unwrap();
+        assert_eq!(shown.desyncs.len(), 1, "its own, not the other match's");
+        assert_eq!(shown.dossiers_kept_days, dossiers::KEPT_DAYS);
+        assert_eq!(
+            detail(&pool, other).await.unwrap().unwrap().desyncs.len(),
+            1
+        );
     }
 
     #[sqlx::test]

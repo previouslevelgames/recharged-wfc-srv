@@ -217,7 +217,9 @@ matches in progress, and below them what went wrong in each half hour, with a
 key to its error codes and a table of the same numbers. Its by-day table
 shows each day's most players online. Then it shows how online matches
 go wrong over the last 14 days: games out of sync and lost connections by day, build and stadium, games
-that left WFC in the middle of a match, the error codes players saw, and the
+that left WFC in the middle of a match, the error codes players saw, the
+desync dossiers with where each game's two first differ
+([reports.md](reports.md#desync-dossiers)), to save for `addr2line`, and the
 reports the server refused ([reports.md](reports.md#diagnostics)).
 Only the Google accounts in `ADMIN_GOOGLE_EMAILS` or `OWNER_GOOGLE_EMAILS` get
 in. Owners also see **Maintenance** (`/admin/maintenance`), operations that
