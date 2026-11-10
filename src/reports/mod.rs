@@ -6,6 +6,7 @@
 //! [`outcome`]). They also tell what went wrong; with the error codes the
 //! games showed ([`errors`]), the Monitoring page of `/admin` shows it.
 
+pub(crate) mod dossiers;
 pub(crate) mod errors;
 pub(crate) mod outcome;
 pub(crate) mod report;
@@ -44,15 +45,20 @@ struct ReportsState {
     limits: Arc<errors::Limits>,
 }
 
-/// `POST /api/v1/wfc/reports` and `POST /api/v1/wfc/errors`, for any host
-/// name: the game sends them to its server's address. They need the
-/// caller's address: serve them with
+/// `POST /api/v1/wfc/reports`, `POST /api/v1/wfc/errors` and
+/// `POST /api/v1/wfc/desyncs`, for any host name: the game sends them to its
+/// server's address. They need the caller's address: serve them with
 /// `into_make_service_with_connect_info::<SocketAddr>()`.
 pub fn router(pool: PgPool, gpcm: Arc<Gpcm>) -> Router {
+    // A dossier is bigger than a report.
+    let desyncs = Router::new()
+        .route("/api/v1/wfc/desyncs", post(receive_dossier))
+        .layer(DefaultBodyLimit::max(dossiers::MAX_BYTES));
     Router::new()
         .route("/api/v1/wfc/reports", post(receive))
         .route("/api/v1/wfc/errors", post(receive_error))
         .layer(DefaultBodyLimit::max(MAX_BODY))
+        .merge(desyncs)
         .with_state(ReportsState {
             pool,
             gpcm,
@@ -169,6 +175,71 @@ async fn receive_error(
     }
 }
 
+/// A game's desync dossier (docs/reports.md, "Desync dossiers"). The game
+/// deletes it on 200, 400, 413 and 422, and sends it again on 403, 429 and
+/// 5xx: never 404, which tells it the server takes none.
+async fn receive_dossier(
+    State(state): State<ReportsState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    let body = match body {
+        Ok(body) => body,
+        // 413 for one too big: the game gives it up.
+        Err(rejection) => {
+            warn!(target: "reports", %peer, problem = rejection.body_text(), "dossier refused");
+            return json_error(rejection.status(), &rejection.body_text());
+        }
+    };
+    trace!(target: "raw::reports", %peer, bytes = body.len(), "dossier");
+    let dossier = match dossiers::Dossier::parse(&body) {
+        Ok(dossier) => dossier,
+        Err(problem) => return refuse(peer, &problem),
+    };
+    let profile_id = dossier.profile_id;
+    if !logged_in_at(&state.gpcm, profile_id, peer.ip()) {
+        warn!(target: "reports", profile_id, %peer, "dossier from elsewhere");
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "profile not logged in from this address",
+        );
+    }
+
+    let (series, game, frame) = (dossier.series, dossier.game, dossier.frame);
+    match dossiers::store(&state.pool, &dossier, &body).await {
+        Ok(dossiers::Stored::Kept { match_id, diverged }) => {
+            let diverged = diverged.map(dossiers::Kind::as_str);
+            info!(target: "reports", match_id, profile_id, series, game, frame, side = dossier.side.as_str(), build = dossier.build, ?diverged, "desync dossier stored");
+            Json(json!({ "match_id": match_id })).into_response()
+        }
+        Ok(dossiers::Stored::NoSeries) => {
+            debug!(target: "reports", profile_id, series, "dossier of no series");
+            json_error(StatusCode::UNPROCESSABLE_ENTITY, "no such series")
+        }
+        Ok(dossiers::Stored::WrongSide) => {
+            debug!(target: "reports", profile_id, series, "dossier of the other side");
+            json_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "the series was played on the other side",
+            )
+        }
+        Ok(dossiers::Stored::TooMany) => {
+            debug!(target: "reports", profile_id, "dossier dropped: too many");
+            json_error(
+                StatusCode::TOO_MANY_REQUESTS,
+                "too many dossiers from this profile",
+            )
+        }
+        Err(failure) => {
+            warn!(target: "reports", error = %failure, "database error");
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "the server's database failed",
+            )
+        }
+    }
+}
+
 impl ReportsState {
     /// Keeps a refusal for the Monitoring page; the log has it anyway.
     async fn count_refusal(&self, profile_id: i32, kind: &str, problem: &str, peer: SocketAddr) {
@@ -213,7 +284,13 @@ mod tests {
     use tower::ServiceExt;
 
     use super::*;
-    use crate::{accounts, reports::report::tests::start};
+    use crate::{
+        accounts,
+        reports::{
+            dossiers::tests::{dossier, step},
+            report::{Side, tests::start},
+        },
+    };
 
     const ANOSCH_HOME: [u8; 4] = [203, 0, 113, 4];
     const SAM_HOME: [u8; 4] = [198, 51, 100, 7];
@@ -544,5 +621,133 @@ mod tests {
             ),
             ("finished", Some("home"), 2, 0)
         );
+    }
+
+    /// Both sides' dossiers of a game, and where they diverge.
+    #[sqlx::test]
+    async fn the_two_dossiers_of_a_desync_meet(pool: PgPool) {
+        const DESYNCS: &str = "/api/v1/wfc/desyncs";
+        let server = Server::new(pool.clone());
+        let anosch = server.log_in(1, "Anosch", ANOSCH_HOME).await;
+        let sam = server.log_in(2, "Sam", SAM_HOME).await;
+        let mut body = start();
+        body["profile_id"] = json!(anosch);
+        server.report(ANOSCH_HOME, &body).await;
+        server.report(SAM_HOME, &as_sam(sam)).await;
+
+        let mut home = dossier(Side::Home);
+        home.profile_id = anosch;
+        home.series = 1_792_000_000;
+        let mut away = dossier(Side::Away);
+        away.profile_id = sam;
+        away.series = 1_792_000_002;
+        away.steps[1] = step(4812, &[1, 9, 3]);
+
+        // Only from its login, of a series its profile played, on its side.
+        let (status, _) = server.post_to(DESYNCS, SAM_HOME, home.encode()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let mut unknown = home.clone();
+        unknown.series += 1;
+        let (status, _) = server.post_to(DESYNCS, ANOSCH_HOME, unknown.encode()).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        let mut other = home.clone();
+        other.side = Side::Away;
+        let (status, _) = server.post_to(DESYNCS, ANOSCH_HOME, other.encode()).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        let (status, _) = server
+            .post_to(DESYNCS, ANOSCH_HOME, vec![0u8; dossiers::MAX_BYTES + 1])
+            .await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        let (status, _) = server.post_to(DESYNCS, ANOSCH_HOME, vec![0u8; 200]).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // Twice: its answer was lost.
+        for _ in 0..2 {
+            let (status, answer) = server.post_to(DESYNCS, ANOSCH_HOME, home.encode()).await;
+            assert_eq!(status, StatusCode::OK);
+            assert!(answer["match_id"].is_i64());
+        }
+        let diverged = sqlx::query_scalar!("SELECT count(*) AS \"count!\" FROM desync_divergences")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(diverged, 0);
+        let (status, _) = server.post_to(DESYNCS, SAM_HOME, away.encode()).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let kept = sqlx::query_scalar!("SELECT count(*) AS \"count!\" FROM desync_dossiers")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(kept, 2);
+        let row = sqlx::query!(
+            "SELECT kind, frame, field_index, home_caller, away_bytes FROM desync_divergences"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            (
+                row.kind.as_str(),
+                row.frame,
+                row.field_index,
+                row.home_caller
+            ),
+            ("value", Some(4812), Some(1), Some(0x0012_3404))
+        );
+        assert_eq!(row.away_bytes.unwrap()[..4], 9u32.to_le_bytes());
+    }
+
+    /// A profile's dossiers of the last day: the next is refused, and kept
+    /// by the game for later.
+    #[sqlx::test]
+    async fn a_profile_sends_so_many_dossiers_a_day(pool: PgPool) {
+        let server = Server::new(pool.clone());
+        let anosch = server.log_in(1, "Anosch", ANOSCH_HOME).await;
+        let mut body = start();
+        body["profile_id"] = json!(anosch);
+        server.report(ANOSCH_HOME, &body).await;
+        // Two other matches, each with ten dossiers of the profile.
+        for _ in 0..2 {
+            sqlx::query!(
+                "WITH m AS (
+                     INSERT INTO online_matches (release, mode, best_of, home_mii, away_mii,
+                                                 home_captain, away_captain)
+                     VALUES ('R4QE', 'ranked', 3, 'Anosch', 'Sam', 'mario', 'luigi')
+                     RETURNING match_id)
+                 INSERT INTO desync_dossiers
+                     (match_id, side, game, profile_id, release, build, platform, frame,
+                      written_at, body)
+                 SELECT m.match_id, side, game, $1, 'R4QE', '1.1.6', '', 1, now(), ''
+                 FROM m, unnest(ARRAY['home', 'away']) AS side, generate_series(1, 5) AS game",
+                anosch,
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let mut home = dossier(Side::Home);
+        home.profile_id = anosch;
+        home.series = 1_792_000_000;
+        let (status, _) = server
+            .post_to("/api/v1/wfc/desyncs", ANOSCH_HOME, home.encode())
+            .await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        let kept = sqlx::query_scalar!(r#"SELECT count(*) AS "count!" FROM desync_dossiers"#)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(kept, 20);
+
+        // A day later, it is taken.
+        sqlx::query!("UPDATE desync_dossiers SET received_at = now() - interval '25 hours'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let (status, _) = server
+            .post_to("/api/v1/wfc/desyncs", ANOSCH_HOME, home.encode())
+            .await;
+        assert_eq!(status, StatusCode::OK);
     }
 }

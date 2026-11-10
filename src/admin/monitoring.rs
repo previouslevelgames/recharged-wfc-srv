@@ -1,8 +1,8 @@
 //! The Monitoring page: how online matches go wrong (docs/reports.md,
 //! "Diagnostics"). Games that went out of sync or lost their connection, as
 //! the Recharged builds reported them; games that left WFC in the middle of
-//! a match, as GPCM saw it; the error codes the games showed; and the
-//! reports the server refused. Over the last [`DAYS`] days (UTC), by day,
+//! a match, as GPCM saw it; the error codes the games showed; the desync
+//! dossiers and where they diverge; and the reports the server refused. Over the last [`DAYS`] days (UTC), by day,
 //! build, stadium and code, and the last [`TIMELINE_HOURS`] hours as a
 //! timeline, which also shows the players online (`crate::online`).
 
@@ -11,7 +11,14 @@ use sqlx::{PgConnection, PgPool};
 use time::{Duration, OffsetDateTime, Time};
 
 use super::page::snapshot;
-use crate::{gpcm::Gpcm, online, reports};
+use crate::{
+    gpcm::Gpcm,
+    online,
+    reports::{
+        self, dossiers,
+        report::{Side, Teams},
+    },
+};
 
 /// The days shown, today's included.
 const DAYS: i64 = 14;
@@ -34,6 +41,10 @@ pub struct Monitoring {
     by_stadium: Vec<Stadium>,
     incidents: Vec<Incident>,
     errors: Vec<ErrorCode>,
+    /// The games with a dossier, the newest first, [`SHOWN`] at most.
+    desyncs: Vec<Desync>,
+    /// Where games diverged, the most frequent first.
+    divergences: Vec<Divergence>,
     refusals: Vec<Refusal>,
     timeline: Timeline,
 }
@@ -170,6 +181,68 @@ struct ErrorCode {
     last_at: OffsetDateTime,
 }
 
+/// A game's desync dossiers (docs/reports.md, "Desync dossiers"): one side's
+/// or both, and where they diverge once both are in.
+#[derive(Serialize)]
+pub(super) struct Desync {
+    #[serde(with = "time::serde::rfc3339")]
+    at: OffsetDateTime,
+    match_id: i64,
+    game: i32,
+    release: String,
+    /// The step whose checksums differ, as the first dossier has it.
+    frame: i32,
+    /// Each side's dossier, None until it comes.
+    home: Option<DossierSide>,
+    away: Option<DossierSide>,
+    /// Whether both sides run the same binary: then their callers compare.
+    same_binary: bool,
+    /// `path`, `value`, `count`, `none` or `missing`; None until both came.
+    kind: Option<String>,
+    diverged_frame: Option<i32>,
+    field_index: Option<i32>,
+    /// Each side's field there, its raw caller first and as the game's log
+    /// names it (`dossiers::Field::describe`).
+    home_field: Option<String>,
+    away_field: Option<String>,
+}
+
+#[derive(Serialize)]
+struct DossierSide {
+    profile_id: i32,
+    mii: Option<String>,
+    build: String,
+    /// The kind of game module, `linux x86_64`...; empty when unknown.
+    platform: String,
+    /// How to name the code at one of its callers' offsets.
+    symbolize: String,
+}
+
+/// The games that diverged at one field of one pair of binaries.
+#[derive(Serialize)]
+struct Divergence {
+    release: String,
+    kind: String,
+    home: Spot,
+    away: Spot,
+    /// The callers are offsets in the same binary.
+    same_binary: bool,
+    games: i64,
+    #[serde(with = "time::serde::rfc3339")]
+    last_at: OffsetDateTime,
+}
+
+/// A side's field, where its binary took it.
+#[derive(Serialize)]
+struct Spot {
+    build: String,
+    platform: String,
+    /// Raw; None for the shorter side of a `count`.
+    caller: Option<i64>,
+    /// The caller as the game's log names it, without the field's value.
+    field: Option<String>,
+}
+
 /// The reports of a profile the server refused.
 #[derive(Serialize)]
 struct Refusal {
@@ -206,6 +279,8 @@ pub async fn read(pool: &PgPool, gpcm: &Gpcm) -> Result<Monitoring, sqlx::Error>
         by_stadium: by_stadium(&mut tx, since).await?,
         incidents: incidents(&mut tx, since).await?,
         errors: errors(&mut tx, since).await?,
+        desyncs: desyncs(&mut tx, None).await?,
+        divergences: divergences(&mut tx, since).await?,
         refusals: refusals(&mut tx).await?,
         timeline: timeline(&mut tx, online_now).await?,
     };
@@ -371,6 +446,254 @@ async fn errors(
     )
     .fetch_all(conn)
     .await
+}
+
+/// The games with dossiers, the newest first, [`SHOWN`] at most: every
+/// match's, or `match_id`'s alone.
+pub(super) async fn desyncs(
+    conn: &mut PgConnection,
+    match_id: Option<i64>,
+) -> Result<Vec<Desync>, sqlx::Error> {
+    let rows = sqlx::query!(
+        r#"SELECT d.match_id, d.game, max(d.received_at) AS "at!", min(d.release) AS "release!",
+                  (array_agg(d.frame ORDER BY d.received_at))[1] AS "frame!",
+                  max(d.profile_id) FILTER (WHERE d.side = 'home') AS home_profile,
+                  max(p.ingamesn) FILTER (WHERE d.side = 'home') AS home_mii,
+                  max(d.build) FILTER (WHERE d.side = 'home') AS home_build,
+                  max(d.platform) FILTER (WHERE d.side = 'home') AS home_platform,
+                  max(d.profile_id) FILTER (WHERE d.side = 'away') AS away_profile,
+                  max(p.ingamesn) FILTER (WHERE d.side = 'away') AS away_mii,
+                  max(d.build) FILTER (WHERE d.side = 'away') AS away_build,
+                  max(d.platform) FILTER (WHERE d.side = 'away') AS away_platform,
+                  max(v.kind) AS kind, max(v.frame) AS diverged_frame,
+                  max(v.field_index) AS field_index,
+                  max(v.home_caller) AS home_caller, max(v.away_caller) AS away_caller,
+                  max(v.home_size) AS home_size, max(v.away_size) AS away_size,
+                  max(v.home_hash) AS home_hash, max(v.away_hash) AS away_hash,
+                  max(v.home_bytes) AS home_bytes, max(v.away_bytes) AS away_bytes
+           FROM desync_dossiers d
+           LEFT JOIN profiles p USING (profile_id)
+           LEFT JOIN desync_divergences v USING (match_id, game)
+           WHERE $2::bigint IS NULL OR d.match_id = $2
+           GROUP BY d.match_id, d.game
+           ORDER BY max(d.received_at) DESC
+           LIMIT $1"#,
+        SHOWN,
+        match_id,
+    )
+    .fetch_all(conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let release = row.release;
+            let side = |profile_id: Option<i32>, mii, build: Option<String>, platform| {
+                let platform: String = Option::unwrap_or_default(platform);
+                Some(DossierSide {
+                    profile_id: profile_id?,
+                    mii,
+                    build: build.unwrap_or_default(),
+                    symbolize: dossiers::symbolize(
+                        &release,
+                        Some(&platform)
+                            .filter(|p| !p.is_empty())
+                            .map(String::as_str),
+                    ),
+                    platform,
+                })
+            };
+            let home = side(
+                row.home_profile,
+                row.home_mii,
+                row.home_build,
+                row.home_platform,
+            );
+            let away = side(
+                row.away_profile,
+                row.away_mii,
+                row.away_build,
+                row.away_platform,
+            );
+            let same_binary = match (&home, &away) {
+                (Some(home), Some(away)) => {
+                    !home.platform.is_empty()
+                        && (&home.build, &home.platform) == (&away.build, &away.platform)
+                }
+                _ => false,
+            };
+            Desync {
+                at: row.at,
+                match_id: row.match_id,
+                game: row.game,
+                frame: row.frame,
+                home,
+                away,
+                same_binary,
+                kind: row.kind,
+                diverged_frame: row.diverged_frame,
+                field_index: row.field_index,
+                home_field: field(
+                    row.home_caller,
+                    row.home_size,
+                    row.home_hash,
+                    row.home_bytes,
+                )
+                .map(|field| field.describe()),
+                away_field: field(
+                    row.away_caller,
+                    row.away_size,
+                    row.away_hash,
+                    row.away_bytes,
+                )
+                .map(|field| field.describe()),
+                release,
+            }
+        })
+        .collect())
+}
+
+/// A field of a divergence, from its columns.
+fn field(
+    caller: Option<i64>,
+    size: Option<i64>,
+    hash: Option<i64>,
+    bytes: Option<Vec<u8>>,
+) -> Option<dossiers::Field> {
+    Some(dossiers::Field {
+        caller: u32::try_from(caller?).ok()?,
+        size: u32::try_from(size?).ok()?,
+        hash: u32::try_from(hash?).ok()?,
+        bytes: bytes?.try_into().ok()?,
+    })
+}
+
+/// Where a caller is, without a value: the description of a field of
+/// zeros, up to its kind.
+fn spot(caller: Option<i64>) -> Option<String> {
+    let caller = u32::try_from(caller?).ok()?;
+    let described = dossiers::Field {
+        caller,
+        size: 0,
+        hash: 0,
+        bytes: [0; dossiers::FIELD_BYTES],
+    }
+    .describe();
+    // `0x… pose team 1 player 2 node 3: …`: up to the colon.
+    let place = described.split(':').next().unwrap_or(&described);
+    Some(place.to_owned())
+}
+
+/// Games that found a field: the ones that say where the code differs. A
+/// caller is an offset in its side's binary, so they group by both binaries.
+async fn divergences(
+    conn: &mut PgConnection,
+    since: OffsetDateTime,
+) -> Result<Vec<Divergence>, sqlx::Error> {
+    let rows = sqlx::query!(
+        r#"SELECT home.release, v.kind,
+                  home.build AS home_build, home.platform AS home_platform, v.home_caller,
+                  away.build AS away_build, away.platform AS away_platform, v.away_caller,
+                  count(*) AS "games!", max(greatest(home.received_at, away.received_at)) AS "last_at!"
+           FROM desync_divergences v
+           JOIN desync_dossiers home
+             ON home.match_id = v.match_id AND home.game = v.game AND home.side = 'home'
+           JOIN desync_dossiers away
+             ON away.match_id = v.match_id AND away.game = v.game AND away.side = 'away'
+           WHERE v.kind IN ('path', 'value', 'count') AND home.received_at >= $1
+           GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
+           ORDER BY 9 DESC, 10 DESC
+           LIMIT $2"#,
+        since,
+        SHOWN,
+    )
+    .fetch_all(conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| Divergence {
+            release: row.release,
+            kind: row.kind,
+            same_binary: !row.home_platform.is_empty()
+                && (&row.home_build, &row.home_platform) == (&row.away_build, &row.away_platform),
+            home: Spot {
+                build: row.home_build,
+                platform: row.home_platform,
+                caller: row.home_caller,
+                field: spot(row.home_caller),
+            },
+            away: Spot {
+                build: row.away_build,
+                platform: row.away_platform,
+                caller: row.away_caller,
+                field: spot(row.away_caller),
+            },
+            games: row.games,
+            last_at: row.last_at,
+        })
+        .collect())
+}
+
+/// A side's dossier as it came, to read with the tools of its build: its
+/// file name and bytes, None for none.
+pub async fn dossier(
+    pool: &PgPool,
+    match_id: i64,
+    game: i32,
+    side: &str,
+) -> Result<Option<(String, Vec<u8>)>, sqlx::Error> {
+    let body = sqlx::query_scalar!(
+        "SELECT body FROM desync_dossiers WHERE match_id = $1 AND game = $2 AND side = $3",
+        match_id,
+        game,
+        side,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(body.map(|body| (format!("desync-{match_id}-{game}-{side}.rcds"), body)))
+}
+
+/// A game's dossiers as text (`dossiers::describe`), to save; None for none.
+pub async fn dossier_text(
+    pool: &PgPool,
+    match_id: i64,
+    game: i32,
+) -> Result<Option<(String, String)>, sqlx::Error> {
+    let rows = sqlx::query!(
+        "SELECT d.side, d.body, p.ingamesn AS \"mii?\" FROM desync_dossiers d
+         LEFT JOIN profiles p USING (profile_id)
+         WHERE d.match_id = $1 AND d.game = $2",
+        match_id,
+        game,
+    )
+    .fetch_all(pool)
+    .await?;
+    let mut sides = Teams {
+        home: None,
+        away: None,
+    };
+    for row in rows {
+        // Read when it came; only a later version of the format could fail.
+        let (Some(side), Ok(dossier)) =
+            (Side::parse(&row.side), dossiers::Dossier::parse(&row.body))
+        else {
+            continue;
+        };
+        let sided = Some(dossiers::Sided {
+            dossier,
+            mii: row.mii,
+        });
+        match side {
+            Side::Home => sides.home = sided,
+            Side::Away => sides.away = sided,
+        }
+    }
+    if sides.home.is_none() && sides.away.is_none() {
+        return Ok(None);
+    }
+    Ok(Some((
+        format!("desync-{match_id}-{game}.txt"),
+        dossiers::describe(match_id, game, &sides),
+    )))
 }
 
 async fn timeline(conn: &mut PgConnection, online_now: Online) -> Result<Timeline, sqlx::Error> {
@@ -707,5 +1030,123 @@ mod tests {
             .to_string();
         let day = monitoring.by_day.iter().find(|day| day.day == old).unwrap();
         assert_eq!(day.peak_online, Some(45));
+    }
+
+    #[sqlx::test]
+    async fn the_desync_dossiers_and_where_they_diverge(pool: PgPool) {
+        use crate::reports::{
+            dossiers::{
+                self,
+                tests::{dossier, step},
+            },
+            report::Side,
+        };
+        let games = Games::new(pool.clone()).await;
+        games
+            .send(&games.report(games.anosch, 1, "home", "start"))
+            .await;
+        games
+            .send(&games.report(games.sam, 2, "away", "start"))
+            .await;
+        let mut home = dossier(Side::Home);
+        (home.profile_id, home.series) = (games.anosch, 1);
+        let mut away = dossier(Side::Away);
+        (away.profile_id, away.series) = (games.sam, 2);
+        away.steps[1] = step(4812, &[1, 9, 3]);
+
+        let body = home.encode();
+        dossiers::store(&pool, &home, &body).await.unwrap();
+        let monitoring = read(&pool, &gpcm(&pool)).await.unwrap();
+        let desync = &monitoring.desyncs[0];
+        assert!(desync.home.is_some() && desync.away.is_none());
+        assert_eq!(desync.kind, None);
+        assert!(monitoring.divergences.is_empty());
+
+        dossiers::store(&pool, &away, &away.encode()).await.unwrap();
+        let monitoring = read(&pool, &gpcm(&pool)).await.unwrap();
+        assert_eq!(monitoring.desyncs.len(), 1);
+        let desync = &monitoring.desyncs[0];
+        let sam = desync.away.as_ref().unwrap();
+        assert_eq!(
+            (sam.profile_id, sam.build.as_str()),
+            (games.sam, "1.1.6+g0123456789ab")
+        );
+        assert_eq!(
+            (
+                desync.kind.as_deref(),
+                desync.frame,
+                desync.diverged_frame,
+                desync.field_index,
+                desync.same_binary,
+            ),
+            (Some("value"), 4812, Some(4812), Some(1), true)
+        );
+        assert_eq!(sam.platform, "linux x86_64");
+        assert!(
+            sam.symbolize
+                .starts_with("addr2line -f -C -e recharged_game_us.so")
+        );
+        assert_eq!(
+            desync.away_field.as_deref(),
+            Some("0x00123404 at +0x123404: 4 bytes 09000000, size 4, hash 09000e2b")
+        );
+        let spots: Vec<_> = monitoring
+            .divergences
+            .iter()
+            .map(|v| {
+                (
+                    v.kind.as_str(),
+                    v.home.caller,
+                    v.home.field.as_deref(),
+                    v.same_binary,
+                    v.games,
+                )
+            })
+            .collect();
+        assert_eq!(
+            spots,
+            [(
+                "value",
+                Some(0x0012_3404),
+                Some("0x00123404 at +0x123404"),
+                true,
+                1
+            )]
+        );
+
+        let (name, saved) = dossier_file(&pool, desync.match_id, 2, "home").await;
+        assert_eq!(name, format!("desync-{}-2-home.rcds", desync.match_id));
+        assert_eq!(saved, body);
+        assert!(
+            super::dossier(&pool, desync.match_id, 2, "elsewhere")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let (name, text) = dossier_text(&pool, desync.match_id, 2)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(name, format!("desync-{}-2.txt", desync.match_id));
+        assert!(text.contains("Where they diverge: value"), "{text}");
+        assert!(text.contains("== away: Sam, profile"), "{text}");
+        assert!(
+            dossier_text(&pool, desync.match_id, 3)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    async fn dossier_file(
+        pool: &PgPool,
+        match_id: i64,
+        game: i32,
+        side: &str,
+    ) -> (String, Vec<u8>) {
+        super::dossier(pool, match_id, game, side)
+            .await
+            .unwrap()
+            .unwrap()
     }
 }

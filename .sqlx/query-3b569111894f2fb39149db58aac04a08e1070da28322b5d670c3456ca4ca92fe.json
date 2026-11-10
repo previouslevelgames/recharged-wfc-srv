@@ -1,0 +1,74 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT kind, frame, field_index, home_caller, away_bytes FROM desync_divergences",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "desync_divergences",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "frame",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "desync_divergences",
+            "name": "frame"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "field_index",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "desync_divergences",
+            "name": "field_index"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "home_caller",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "desync_divergences",
+            "name": "home_caller"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "away_bytes",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "desync_divergences",
+            "name": "away_bytes"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "3b569111894f2fb39149db58aac04a08e1070da28322b5d670c3456ca4ca92fe"
+}

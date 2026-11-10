@@ -232,6 +232,15 @@ const INCIDENTS = {
   offline: ['Went offline', null],
   abandoned: ['Abandoned', null],
 };
+// How a game's two desync dossiers differ (docs/reports.md, "Desync
+// dossiers"), with its badge tone and what it means.
+const DIVERGENCES = {
+  path: ['Different code', 'serious', 'The games took the field from different places: they ran different code (only between sides of the same binary)'],
+  value: ['Different value', 'serious', 'The same field, different bytes or size'],
+  count: ['More fields', 'warning', 'The same fields, but one game took more'],
+  none: ['Same fields', null, 'Every field the same: the random seed, or state outside the checksum'],
+  missing: ['Not kept', null, 'A step one game did not keep whole'],
+};
 // DWC's error codes (dwc_error.h): 86420 is the matchmaking sequence (8),
 // NAT negotiation (6), repeated failures (420).
 const DWC_SEQUENCES = { 6: 'Login', 7: 'Friends', 8: 'Matchmaking', 9: 'Other' };
@@ -1474,7 +1483,8 @@ function renderMatch(data, now) {
     if (data.error) return [unreachable(data.error)];
     return [banner({ level: 'warning', title: 'No such match', detail: `No game reported a match ${route.id}.` })];
   }
-  const { match, sides, games, events, relayed, relay_kept_days: keptDays } = detail;
+  const { match, sides, games, events, relayed, relay_kept_days: keptDays, desyncs, dossiers_kept_days: dossierDays } = detail;
+  const outOfSync = games.some((game) => ['home', 'away'].some((side) => game[side]?.ending === 'desync'));
   setHead(`${match.home.mii} vs ${match.away.mii}`, [
     `${MODES[match.mode] || match.mode} · ${match.release} · best of ${match.best_of} · started `,
     ago(match.started_at, now),
@@ -1548,6 +1558,20 @@ function renderMatch(data, now) {
         'No game reported yet.',
       ),
     ),
+    desyncs.length || outOfSync
+      ? card(
+        'Desync dossiers',
+        'What each side\'s rollback knew at the first desync of a game, and the first field of the checksum that differs once both are in',
+        desyncTable(
+          desyncs,
+          now,
+          false,
+          since(match.started_at, now) > dossierDays * 86400
+            ? `None: the server keeps dossiers ${dossierDays} days.`
+            : 'None came: only Recharged 1.1.6 and later send them, and a game sends its own with its next series.',
+        ),
+      )
+      : null,
     card(
       'Reports',
       'As the games sent them, the first first; a report that came again is kept once',
@@ -2006,10 +2030,70 @@ function timelineChart(timeline, now) {
   );
 }
 
+/** A side of a desync: who, its build and platform, how to name the code at
+ * its callers, and its dossier to save. */
+function dossierSide(desync, side) {
+  const dossier = desync[side];
+  if (!dossier) return h('span', { class: 'sub' }, 'No dossier yet');
+  return [
+    h('a', { href: playerPath(dossier.profile_id) }, dossier.mii || `Profile ${dossier.profile_id}`),
+    h('span', { class: 'sub' }, h('code', null, dossier.build), ` · ${dossier.platform || 'unknown platform'}`),
+    h('span', { class: 'sub', title: dossier.symbolize }, h('a', { href: `/admin/api/desyncs/${desync.match_id}/${desync.game}/${side}`, download: '' }, 'Raw dossier')),
+  ];
+}
+
+function divergenceWhat(desync) {
+  if (!desync.kind) return h('span', { class: 'sub' }, 'Waiting for the other side');
+  const [name, tone, about] = DIVERGENCES[desync.kind] || [desync.kind, null, null];
+  const where = desync.field_index == null ? null : `Frame ${integer.format(desync.diverged_frame)} · field ${desync.field_index}`;
+  return [h('span', { title: about }, badge(tone, name)), where && h('span', { class: 'sub' }, where)];
+}
+
+/** The field where the two sides diverged, as each side took it: its raw
+ * caller, then what the server reads in it. */
+function divergenceField(desync) {
+  if (desync.field_index == null) return h('span', { class: 'sub' }, '—');
+  const line = (label, field) => h('span', { class: 'sub' }, `${label} `, field ? h('code', null, field) : 'no field there');
+  return [
+    line('Home', desync.home_field),
+    line('Away', desync.away_field),
+    !desync.same_binary && h('span', { class: 'sub' }, 'Different binaries: compared by place, each caller in its own module'),
+  ];
+}
+
+/** Where one side's binary took a field: raw caller, then its kind. */
+function spotText(spot) {
+  return [
+    spot.field ? h('code', null, spot.field) : h('span', { class: 'sub' }, 'no field'),
+    h('span', { class: 'sub' }, h('code', null, spot.build), ` · ${spot.platform || 'unknown platform'}`),
+  ];
+}
+
+/** The games with desync dossiers, the Monitoring's (`withMatch`) or one
+ * match's. */
+function desyncTable(desyncs, now, withMatch, empty) {
+  const game = (d) => `Game ${d.game} · frame ${integer.format(d.frame)} · ${d.release}`;
+  return table(
+    [
+      { label: 'When', cell: (d) => ago(d.at, now) },
+      withMatch
+        ? { label: 'Match', cell: (d) => [h('a', { href: `/admin/matches/${d.match_id}` }, `Match ${d.match_id}`), h('span', { class: 'sub' }, game(d))] }
+        : { label: 'Game', cell: (d) => [`Game ${d.game}`, h('span', { class: 'sub' }, `frame ${integer.format(d.frame)}`)] },
+      { label: 'Diverged', cell: divergenceWhat },
+      { label: 'Field', class: 'wrap', cell: divergenceField },
+      { label: 'Home', class: 'wrap', cell: (d) => dossierSide(d, 'home') },
+      { label: 'Away', class: 'wrap', cell: (d) => dossierSide(d, 'away') },
+      { label: '', class: 'actions', cell: (d) => h('a', { class: 'button', href: `/admin/api/desyncs/${d.match_id}/${d.game}`, download: '' }, 'Text') },
+    ],
+    desyncs,
+    empty,
+  );
+}
+
 function renderMonitoring(data, now) {
   const content = data.content;
   if (!content) return [unreachable(data.error)];
-  const { days, by_day: byDay, by_build: byBuild, by_stadium: byStadium, incidents, errors, refusals } = content;
+  const { days, by_day: byDay, by_build: byBuild, by_stadium: byStadium, incidents, errors, desyncs, divergences, refusals } = content;
   const sum = (field) => byDay.reduce((total, day) => total + day[field], 0);
   const [matches, games] = [sum('matches'), sum('games')];
   const recent = refusals.filter((refusal) => since(refusal.last_at, now) < days * 86400);
@@ -2058,6 +2142,26 @@ function renderMonitoring(data, now) {
         ],
         errors,
         `No error codes in the last ${days} days.`,
+      ),
+    ),
+    card(
+      'Desync dossiers',
+      'Games out of sync whose Recharged builds sent what their rollback knew, the newest first: once both sides are in, the first field of the checksum that differs. The text has both sides whole, for reading or for a debugger',
+      desyncTable(desyncs, now, true, 'No desync dossier yet: only Recharged 1.1.6 and later send them.'),
+    ),
+    card(
+      'Where games diverge',
+      `${window}: the fields both dossiers of a game point at, the most frequent first, by the two sides' binaries. A caller is an offset in its own side's game module`,
+      table(
+        [
+          { label: 'Diverged', cell: (v) => [divergenceWhat({ kind: v.kind }), h('span', { class: 'sub' }, v.release)].flat() },
+          { label: 'Home', class: 'wrap', cell: (v) => spotText(v.home) },
+          { label: 'Away', class: 'wrap', cell: (v) => [...spotText(v.away), !v.same_binary && h('span', { class: 'sub' }, 'Another binary')] },
+          { label: 'Games', num: true, cell: (v) => integer.format(v.games) },
+          { label: 'Last', cell: (v) => ago(v.last_at, now) },
+        ],
+        divergences,
+        `No game in the last ${days} days had both dossiers point at a field.`,
       ),
     ),
     card(

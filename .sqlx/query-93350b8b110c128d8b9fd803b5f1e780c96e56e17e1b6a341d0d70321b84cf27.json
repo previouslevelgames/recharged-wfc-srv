@@ -1,0 +1,127 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT home.release, v.kind,\n                  home.build AS home_build, home.platform AS home_platform, v.home_caller,\n                  away.build AS away_build, away.platform AS away_platform, v.away_caller,\n                  count(*) AS \"games!\", max(greatest(home.received_at, away.received_at)) AS \"last_at!\"\n           FROM desync_divergences v\n           JOIN desync_dossiers home\n             ON home.match_id = v.match_id AND home.game = v.game AND home.side = 'home'\n           JOIN desync_dossiers away\n             ON away.match_id = v.match_id AND away.game = v.game AND away.side = 'away'\n           WHERE v.kind IN ('path', 'value', 'count') AND home.received_at >= $1\n           GROUP BY 1, 2, 3, 4, 5, 6, 7, 8\n           ORDER BY 9 DESC, 10 DESC\n           LIMIT $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "release",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "desync_dossiers",
+            "name": "release"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "desync_divergences",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "home_build",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "desync_dossiers",
+            "name": "build"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "home_platform",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "desync_dossiers",
+            "name": "platform"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "home_caller",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "desync_divergences",
+            "name": "home_caller"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "away_build",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "desync_dossiers",
+            "name": "build"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "away_platform",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "desync_dossiers",
+            "name": "platform"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "away_caller",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "desync_divergences",
+            "name": "away_caller"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "games!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 9,
+        "name": "last_at!",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      true,
+      null,
+      null
+    ]
+  },
+  "hash": "93350b8b110c128d8b9fd803b5f1e780c96e56e17e1b6a341d0d70321b84cf27"
+}

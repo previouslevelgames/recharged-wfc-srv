@@ -136,6 +136,103 @@ and keeps 30 days of them (`client_errors`).
 
 A server from before 1.0.8 answers 404: the game drops the error.
 
+## Desync dossiers
+
+`POST /api/v1/wfc/desyncs`, on the same port: what a game's rollback knew at
+a network match's first desync (`src/platform/desync_dossier.h` in
+Recharged). A report's `game.sync` says that the machines went out of sync;
+the two sides' dossiers say where. Each has the fields of the checksums of
+the step before the desync's and of the desync's (checksums go every other
+step, so the machines may have diverged a step earlier): for each, where the
+game took it (an offset in its game module, or one of the rollback's own
+kinds in the top four bits: a pose, a physics body, a collision...), its
+size, the FNV-1a hash of its bytes and its first 16.
+
+The game writes the dossier to its data folder (`desyncs/`) at the desync, so
+a crash right after it leaves it there, and sends it in the background; it
+deletes it once the server answered. One not delivered waits for the next
+series of its profile, in this run or a later one.
+
+The body is binary, little-endian (`Content-Type: application/octet-stream`),
+28 856 bytes at most:
+
+| Offset | Size | |
+|---|---|---|
+| 0 | 4 | `RCDS` |
+| 4 | 4 | version, 1 |
+| 8 | 8 | `series`, as in its reports |
+| 16 | 8 | when the game wrote it, Unix seconds |
+| 24 | 4 | `profile_id` |
+| 28 | 4 | the game of the series, 1 to 9 |
+| 32 | 4 | the side, 0 home, 1 away |
+| 36 | 4 | the step whose checksums differ |
+| 40 | 8 | the checksums, this machine's and the other's |
+| 48 | 8 | the random seeds, likewise |
+| 56 | 4 | the other machine's index |
+| 60 | 4 | the input delay, in steps |
+| 64 | 4 | the inputs predicted wrong in the match |
+| 68 | 4 | the rollback's diagnostic switches: bit 0 the poses, 1 the physics bodies, 2 the collisions |
+| 72 | 4 | the release, `R4QE`... |
+| 76 | 64 | the build, NUL-padded |
+| 140 | 16 | the platform: the system and CPU the game module was built for, lowercase, NUL-padded (`linux x86_64`, `windows x86_64` also under Wine, `macos arm64`...); empty when the game did not know it |
+| 156 | 4 | the steps, 2 |
+| 160 | | each step: its frame, its field count (512 at most) and whether it took more fields than it lists (1, else 0), as three words; then its fields, 28 bytes each: the caller, the size and the hash as three words, then the first 16 bytes, zero-padded |
+
+The steps are the desync's frame less one, then the desync's. A step with no
+fields was not kept.
+
+A dossier counts only from its profile's login ([Trust](#trust)), and only for
+a series the profile reported, on the side it played: the server keeps it
+with that match, one per game and side, 20 per profile a day, for 14 days
+(`desync_dossiers`). Once both sides' of a game are in, it compares them step by step
+from the earlier one and keeps the first field that differs
+(`desync_divergences`).
+
+A caller is an offset in a game module, so two sides' callers compare only
+when both run the same binary: the same release, build and platform. Then a
+field differs by its caller too. Otherwise (Linux against Windows, or a
+platform the dossier does not name) the fields are compared by their place in
+the step, by size, hash and bytes, and each caller is read in its own side's
+module.
+
+| Kind | |
+|---|---|
+| `path` | the games took the field from different places: they ran different code. Only between sides of the same binary |
+| `value` | the same field, different bytes or size |
+| `count` | the same fields, but one game took more |
+| `none` | every field the same: the random seed, or state outside the checksum |
+| `missing` | a step one side did not keep whole, and the others agree; or no step both kept |
+
+The Monitoring page lists the games with dossiers and groups the divergences
+by both sides' binaries and callers. It shows each field as the game's log
+does (`rollback_fields.cpp`'s `LogFields`), its raw caller first: an offset,
+or from `0x80000000` up one of the rollback's own kinds by its top four bits
+(a pose, a physics body, a collision, a contact, a `DebugPrintf` branch and
+its values, the ball's chain or position). It saves each dossier as it came,
+and a game's two as text: where they diverge, then each side's header and
+every field, for reading or for a debugger. An offset names its code in that
+side's module of its build:
+
+| Platform | |
+|---|---|
+| Linux | `addr2line -f -C -e recharged_game_us.so <offset>` |
+| Windows | `addr2line -f -C -e recharged_game_us.dll <ImageBase + offset>`, the ImageBase from `objdump -p recharged_game_us.dll` |
+| macOS | `atos -o recharged_game_us.so -l 0 <offset>` |
+
+(`_eu`, `_jp` and `_kr` for the other releases.)
+
+| Status | Body | |
+|---|---|---|
+| 200 | `{"match_id": 42}` | stored, or stored before |
+| 400 | `{"error": "dossier cut short"}` | not a dossier: the game deletes it |
+| 403 | `{"error": "profile not logged in from this address"}` | the game sends it again with its next series |
+| 413 | `{"error": "..."}` | too big: the game deletes it |
+| 422 | `{"error": "no such series"}` | not a series the profile played, or not on that side: the game deletes it |
+| 429 | `{"error": "too many dossiers from this profile"}` | the game sends it again later |
+
+A server from before answers 404: the game keeps its dossiers and sends none
+for the rest of the run.
+
 ## Trust
 
 As for gamestats2's puts ([gamestats2.md](gamestats2.md#trust)), a report
@@ -207,6 +304,8 @@ does not count. Endings and lengths are each side's own.
 | `online_match_events` | each report as it came, for the match's timeline |
 | `report_refusals` | the refused reports of each known profile: how many, the last problem and address |
 | `client_errors` | the error codes the games showed, 30 days |
+| `desync_dossiers` | the games' desync dossiers, 14 days |
+| `desync_divergences` | where a game's two dossiers first differ |
 
 These matches are not the profiles' test matches ([profiles.md](profiles.md#matches)),
 which two players who signed in from the launcher arrange and report
