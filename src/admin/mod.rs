@@ -31,6 +31,8 @@ mod monitoring;
 mod overview;
 mod page;
 mod players;
+#[cfg(test)]
+mod preview;
 mod session;
 mod sets;
 

@@ -19,7 +19,14 @@ check the query macros without a database.
 The Git revision is embedded at build time, automatically by the image workflow
 and build helper. Native builds use Git HEAD, or `unknown` without Git metadata.
 
-For `/admin` locally, register `http://127.0.0.1:8080/admin/callback` as another
+`just preview` shows `/admin` on `http://127.0.0.1:8080/admin` without
+Google or a game: a test database with made-up matches and desync dossiers
+(`src/admin/preview.rs`), and a fake Google that signs in whoever clicks Sign
+in. It stops with Ctrl-C, and its data goes with it. `just preview-dev` serves
+the same dashboard, signed in the same way, on the development database as it
+is: the matches of games played against `just run`, alongside it.
+
+For `/admin` with real Google sign-in locally, register `http://127.0.0.1:8080/admin/callback` as another
 redirect URI of the OAuth client, then run with `PUBLIC_URL=http://127.0.0.1:8080`
 and the other three variables, and open `http://127.0.0.1:8080/admin` (not
 `localhost`, so the address matches). The routes, sign-in and queries live in
