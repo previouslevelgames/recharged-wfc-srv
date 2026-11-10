@@ -20,6 +20,9 @@ pub struct MiiProfile {
     pub profile_id: i32,
     /// The Mii name of its last login.
     pub mii: Option<String>,
+    /// Its Mii in Base64, when its player's launcher sent it
+    /// (docs/profiles.md, "Miis").
+    pub mii_data: Option<String>,
     /// The release: R4QE, R4QP, R4QJ or R4QK.
     pub game: String,
     /// As the game shows it, for that release.
@@ -63,7 +66,8 @@ async fn profiles(
     friend: bool,
 ) -> Result<Vec<MiiProfile>, sqlx::Error> {
     let rows = sqlx::query!(
-        "SELECT profile_id, gsbrcd, ingamesn, last_login_at FROM profiles WHERE profile_id = ANY($1)",
+        "SELECT profile_id, gsbrcd, ingamesn, last_login_at, mii_data
+         FROM profiles WHERE profile_id = ANY($1)",
         ids
     )
     .fetch_all(pool)
@@ -77,6 +81,7 @@ async fn profiles(
             MiiProfile {
                 profile_id: row.profile_id,
                 mii: row.ingamesn.clone().filter(|name| !name.is_empty()),
+                mii_data: row.mii_data.as_deref().map(super::mii_data::encode),
                 friend_code: crate::accounts::friend_code(row.profile_id, &game),
                 game,
                 online: logged_in.is_some(),

@@ -31,6 +31,9 @@ pub struct Player {
     pub id: i64,
     pub name: String,
     pub avatar_url: Option<String>,
+    /// Their Mii in Base64 (docs/profiles.md, "Miis"): the one of their WFC
+    /// profile that logged in last, of those with one; none without.
+    pub mii_data: Option<String>,
     /// The Discord username they sign in with.
     pub discord: Option<String>,
     /// A test player (PROFILES_TEST_SIGN_IN).
@@ -298,10 +301,15 @@ pub async fn player(pool: &PgPool, player_id: i64) -> Result<Option<Player>, sql
     )
     .fetch_optional(pool)
     .await?;
-    Ok(row.map(|row| Player {
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let mut miis = super::mii_data::of_players(pool, &[player_id]).await?;
+    Ok(Some(Player {
         id: row.player_id,
         name: row.display_name,
         avatar_url: row.avatar_url,
+        mii_data: miis.remove(&player_id),
         account: account(row.discord.is_some(), row.test.is_some()),
         discord: row.discord,
         test: row.test.is_some(),
@@ -883,6 +891,7 @@ pub(super) async fn listed(
     )
     .fetch_all(pool)
     .await?;
+    let mut miis = super::mii_data::of_players(pool, ids).await?;
     let mut listed: Vec<Listed> = rows
         .into_iter()
         .map(|row| Listed {
@@ -890,6 +899,7 @@ pub(super) async fn listed(
                 id: row.player_id,
                 name: row.display_name,
                 avatar_url: row.avatar_url,
+                mii_data: miis.remove(&row.player_id),
                 account: account(row.discord.is_some(), row.test.is_some()),
                 discord: row.discord,
                 test: row.test.is_some(),

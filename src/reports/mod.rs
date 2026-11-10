@@ -9,6 +9,7 @@
 pub(crate) mod dossiers;
 pub(crate) mod errors;
 pub(crate) mod outcome;
+pub(crate) mod record;
 pub(crate) mod report;
 mod store;
 

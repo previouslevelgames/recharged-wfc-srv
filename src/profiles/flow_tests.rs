@@ -2051,3 +2051,174 @@ async fn a_player_who_forfeits_the_set_loses_it(pool: PgPool) {
         .await;
     assert_eq!(players["recent"][0]["name"], "Mario");
 }
+
+/// A Mii of the test's: 74 bytes counting from `first`, in Base64.
+fn mii(first: u8) -> String {
+    let data: Vec<u8> = (0..74u8).map(|n| first.wrapping_add(n)).collect();
+    super::mii_data::encode(&data)
+}
+
+#[sqlx::test]
+async fn players_send_their_miis_and_are_shown_by_them(pool: PgPool) {
+    let world = World::new(pool);
+    let mario = world.sign_in("Mario").await;
+    let bowser = world.sign_in("Bowser").await;
+    // Mario plays a US and a European game, Bowser a US one.
+    let mario_us = world.wfc_login(1, "R4QEaaaaaaa").await;
+    let mario_eu = world.wfc_login(2, "R4QPaaaaaaa").await;
+    let bowser_pid = world.wfc_login(3, "R4QEbbbbbbb").await;
+    for (token, pid) in [
+        (&mario, mario_us),
+        (&mario, mario_eu),
+        (&bowser, bowser_pid),
+    ] {
+        let (status, body) = world.prove(token, pid).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let stored = |pid: i32| {
+        let pool = world.pool.clone();
+        async move {
+            sqlx::query_scalar!("SELECT mii_data FROM profiles WHERE profile_id = $1", pid)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+                .map(|data| super::mii_data::encode(&data))
+        }
+    };
+
+    // Only a Mii of a profile of his own is stored: not Bowser's, not one
+    // of the wrong length, not an empty slot, not a profile nobody has.
+    let empty = super::mii_data::encode(&[0; 74]);
+    let short = super::mii_data::encode(&[1; 73]);
+    let (status, body) = world
+        .send(
+            "POST",
+            "/api/v1/me/miis",
+            &mario,
+            json!({"miis": [
+                {"profile_id": mario_us, "data": mii(1)},
+                {"profile_id": bowser_pid, "data": mii(2)},
+                {"profile_id": mario_eu, "data": short},
+                {"profile_id": mario_eu, "data": empty},
+                {"profile_id": mario_eu, "data": "not base64"},
+                {"profile_id": 999_999_999, "data": mii(3)},
+            ]}),
+        )
+        .await;
+    assert_eq!((status, body), (StatusCode::OK, json!({"stored": 1})));
+    assert_eq!(stored(mario_us).await, Some(mii(1)));
+    assert_eq!(stored(mario_eu).await, None);
+    assert_eq!(stored(bowser_pid).await, None);
+
+    // At most 32 at once; a body that isn't an upload, or no session: refused.
+    let many: Vec<Value> = (0..33)
+        .map(|_| json!({"profile_id": mario_us, "data": mii(4)}))
+        .collect();
+    for (token, body, refused) in [
+        (&mario, json!({ "miis": many }), StatusCode::BAD_REQUEST),
+        (&mario, json!({"miis": "Mario"}), StatusCode::BAD_REQUEST),
+        (
+            &mario,
+            json!({"miis": [{"profile_id": "one"}]}),
+            StatusCode::BAD_REQUEST,
+        ),
+        (
+            &String::new(),
+            json!({"miis": []}),
+            StatusCode::UNAUTHORIZED,
+        ),
+    ] {
+        let (status, _) = world.send("POST", "/api/v1/me/miis", token, body).await;
+        assert_eq!(status, refused);
+    }
+    assert_eq!(stored(mario_us).await, Some(mii(1)));
+
+    // Mario shows by it, to himself and in Bowser's lists; Bowser sent none.
+    let (_, me) = world.send("GET", "/api/v1/me", &mario, Value::Null).await;
+    assert_eq!(me["mii_data"], mii(1));
+    let (_, me) = world.send("GET", "/api/v1/me", &bowser, Value::Null).await;
+    assert_eq!(me["mii_data"], Value::Null);
+    let mii_of_mario = || async {
+        let (_, lists) = world
+            .send("GET", "/api/v1/players", &bowser, Value::Null)
+            .await;
+        let online = lists["online"].as_array().unwrap();
+        let mario = online.iter().find(|player| player["name"] == "Mario");
+        mario.unwrap()["mii_data"].clone()
+    };
+    assert_eq!(mii_of_mario().await, json!(mii(1)));
+
+    // A Mii sent again replaces the one before. A player shows by the Mii of
+    // the profile that logged in last, of those with one.
+    let (_, body) = world
+        .send(
+            "POST",
+            "/api/v1/me/miis",
+            &mario,
+            json!({"miis": [
+                {"profile_id": mario_us, "data": mii(5)},
+                {"profile_id": mario_eu, "data": mii(6)},
+            ]}),
+        )
+        .await;
+    assert_eq!(body, json!({"stored": 2}));
+    for (pid, ago) in [(mario_us, 1), (mario_eu, 2)] {
+        sqlx::query!(
+            "UPDATE profiles SET last_login_at = now() - make_interval(hours => $2)
+             WHERE profile_id = $1",
+            pid,
+            ago,
+        )
+        .execute(&world.pool)
+        .await
+        .unwrap();
+    }
+    assert_eq!(mii_of_mario().await, json!(mii(5)));
+    world.wfc_login(2, "R4QPaaaaaaa").await;
+    assert_eq!(mii_of_mario().await, json!(mii(6)));
+    let (_, me) = world.send("GET", "/api/v1/me", &mario, Value::Null).await;
+    assert_eq!(me["mii_data"], mii(6));
+
+    // A Mii profile shows by its own Mii; a Wii's has none.
+    let wii = world.wfc_login(4, "R4QEccccccc").await;
+    for pid in [mario_us, wii] {
+        let (status, _) = world
+            .send(
+                "POST",
+                "/api/v1/friends/miis",
+                &bowser,
+                json!({ "profile_id": pid }),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    let (_, lists) = world
+        .send("GET", "/api/v1/players", &bowser, Value::Null)
+        .await;
+    let friends: Vec<(Value, Value)> = lists["mii_friends"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|friend| (friend["profile_id"].clone(), friend["mii_data"].clone()))
+        .collect();
+    assert_eq!(
+        friends,
+        [(json!(mario_us), json!(mii(5))), (json!(wii), Value::Null)]
+    );
+
+    // A set's opponent shows by theirs.
+    let (status, challenge) = world
+        .send(
+            "POST",
+            "/api/v1/matches",
+            &bowser,
+            json!({"opponent": "Mario", "rule_set": 1}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{challenge}");
+    assert_eq!(challenge["opponent"]["mii_data"], mii(6));
+    let (_, current) = world
+        .send("GET", "/api/v1/matches/current", &mario, Value::Null)
+        .await;
+    assert_eq!(current["match"]["opponent"]["mii_data"], Value::Null);
+}

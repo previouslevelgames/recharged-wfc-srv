@@ -237,8 +237,9 @@ A player as the launcher sees it, in a sign-in, `GET /api/v1/me`, the lists
 of `GET /api/v1/players` and a match's opponent:
 
 ```json
-{"id": 7, "name": "Nelly", "avatar_url": null, "discord": null, "test": false,
- "account": "mii", "friend_code": "0868-9934-5920", "country": "CH"}
+{"id": 7, "name": "Nelly", "avatar_url": null, "mii_data": "AEAATgBlAGwAbAB5…",
+ "discord": null, "test": false, "account": "mii", "friend_code": "0868-9934-5920",
+ "country": "CH"}
 ```
 
 `account` is what the player signs in with: `discord`, `test` (a test name),
@@ -246,7 +247,8 @@ or `mii` (neither, see "Playing without Discord"). `friend_code` is the
 friend code of the WFC profile that identifies the player (a Mii player's
 first proven profile; it stays after Discord is connected), `null` without
 one. Both from 1.2.3. `country` is the flag beside the name (see
-"Countries"), `null` for none; from 1.2.11.
+"Countries"), `null` for none; from 1.2.11. `mii_data` is the player's Mii
+(see "Miis"), `null` for none; from 1.2.22.
 `player_sessions` holds the sessions, `player_wfc_profiles` the friend codes
 proven theirs, `rule_sets` the rules, `matches` and `match_reports` the
 matches and what each game reported. The series every Recharged build reports
@@ -310,8 +312,10 @@ they don't search) and asks again every 2 seconds while they search.
 
 The game's own online players without a Recharged launcher show in the
 launcher by their Mii and friend code: the WFC profiles logged in to GPCM, as
-`{"profile_id", "mii", "game", "friend_code", "online", "status", "match",
-"last_online", "friend"}`. `mii` is the Mii name of the profile's last login,
+`{"profile_id", "mii", "mii_data", "game", "friend_code", "online", "status",
+"match", "last_online", "friend"}`. `mii` is the Mii name of the profile's last login,
+`mii_data` its own Mii (see "Miis"; `null` for a profile whose player's
+launcher never sent it, and for every Wii's; from 1.2.22),
 `game` the release (`R4QE`, `R4QP`, `R4QJ`, `R4QK`), `friend_code` the code
 the game shows for it (`0868-9934-5920`), `status` while logged in what the
 game does (`menu`, `matchmaking` or `match`, from DWC's status), `match`
@@ -399,6 +403,57 @@ is `{"profile_id", "game": "R4QE", "friend_code": "0868-9934-5920", "mii"}`.
 403 for a profile not logged in with that ticket. `GET /api/v1/me` lists the
 player's profiles as `wfc`, the latest first. A Mii player's first proven
 profile also identifies it from then on (see "Playing without Discord").
+
+## Miis
+
+A player's launcher sends the Miis of their WFC profiles (from 1.2.22), so
+launchers and games show players by their Mii's head: `POST
+/api/v1/me/miis` with `{"miis": [{"profile_id": 1000000123, "data":
+"<Base64>"}]}`, at most 32. `data` is the Mii's RFLCharData, the 74 bytes the
+game keeps for it, in standard Base64. A Mii is stored only for a profile
+bound to the player (see "Friend codes"), and only when its data is 74 bytes
+that are not all zero; any other is left out without an error. A Mii sent
+again replaces the one before. The answer is `{"stored": <how many>}`; 400 for
+more than 32 or a body that isn't such a list. `profiles.mii_data` keeps it,
+with `mii_stored_at`, when it last came. A player can never send the Mii of a
+profile that isn't theirs. A Wii sends none, and neither do launchers before
+1.2.22: their players and profiles show without one.
+
+A player's Mii is `mii_data` wherever the launcher sees a player (see
+"Players"): the Mii of their bound profile that logged in to WFC last, of
+those with one; `null` for none. It goes with its profile to the player who
+proves that profile next. A Mii profile (see "Mii profiles") has its own Mii
+as `mii_data`.
+
+## Stats
+
+`GET /api/v1/me/stats` (from 1.2.22) gives the player's record in the online
+series their WFC profiles reported ([reports.md](reports.md)), counted as the
+admin dashboard counts a profile's record:
+
+```json
+{"today": "2026-11-10",
+ "season": {"first_day": "2026-11-05", "last_day": "2026-11-11"},
+ "modes": [
+   {"mode": "ranked",
+    "all": {"series": {"played": 3, "won": 2, "lost": 1, "drawn": 0, "disputed": 0,
+                       "abandoned": 0, "in_progress": 0},
+            "games": {"played": 7, "won": 5, "lost": 2, "drawn": 0,
+                      "goals_for": 21, "goals_against": 12}},
+    "season": {…}, "today": {…}},
+   {"mode": "friends", …}]}
+```
+
+`modes` has `ranked` and `friends`, each with three periods: `all` (all
+time), `season` (the series started from `first_day` to `last_day`, the
+current season of the game's RANKED board) and `today`, each by the UTC day
+the series started on. A series is `played` once a game reported it; `won`,
+`lost` and `drawn` once it is finished ([reports.md](reports.md#games-and-states)),
+`disputed`, `abandoned` and `in_progress` otherwise, so these six add up to
+`played`. `games` are the games that count, from the player's side, with the
+goals of those. All the player's profiles count together; a series between
+two of their own counts once, from its home side. A player without a profile
+has zeros.
 
 ## Leaderboard
 
@@ -541,8 +596,8 @@ A match as the player sees it:
 
 ```json
 {"id": 12, "state": "accepted", "side": "challenger",
- "opponent": {"id": 8, "name": "Sam", "avatar_url": "…", "discord": "sam",
-              "account": "discord", "friend_code": null,
+ "opponent": {"id": 8, "name": "Sam", "avatar_url": "…", "mii_data": null,
+              "discord": "sam", "account": "discord", "friend_code": null,
               "wfc": [{"profile_id": 1000000001, "game": "R4QE", "friend_code": "…", "mii": "Sam"}]},
  "rule_set": "Competitive", "rules": {…}, "rules_hash": "…",
  "paired": false, "reported": false, "winner": null, "games": [], "created_at": 1792771200,

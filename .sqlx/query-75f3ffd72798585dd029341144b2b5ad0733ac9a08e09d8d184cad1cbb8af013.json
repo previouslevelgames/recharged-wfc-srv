@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT mii_data FROM profiles WHERE profile_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "mii_data",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "profiles",
+            "name": "mii_data"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "75f3ffd72798585dd029341144b2b5ad0733ac9a08e09d8d184cad1cbb8af013"
+}

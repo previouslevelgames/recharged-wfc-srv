@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE profiles SET last_login_at = now() - make_interval(hours => $2)\n             WHERE profile_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "558c71f3f988e988543ca161f21780ae5969db1a2626db022693b7de15d95a47"
+}

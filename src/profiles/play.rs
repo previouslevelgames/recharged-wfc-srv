@@ -987,6 +987,7 @@ impl ProfilesState {
                 "id": opponent.id,
                 "name": opponent.name,
                 "avatar_url": opponent.avatar_url,
+                "mii_data": opponent.mii_data,
                 "discord": opponent.discord,
                 "account": opponent.account,
                 "friend_code": opponent.friend_code,

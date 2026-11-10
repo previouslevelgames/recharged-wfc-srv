@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT profile_id, gsbrcd, ingamesn, last_login_at FROM profiles WHERE profile_id = ANY($1)",
+  "query": "SELECT profile_id, gsbrcd, ingamesn, last_login_at, mii_data\n         FROM profiles WHERE profile_id = ANY($1)",
   "describe": {
     "columns": [
       {
@@ -46,6 +46,17 @@
             "name": "last_login_at"
           }
         }
+      },
+      {
+        "ordinal": 4,
+        "name": "mii_data",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "profiles",
+            "name": "mii_data"
+          }
+        }
       }
     ],
     "parameters": {
@@ -57,8 +68,9 @@
       false,
       false,
       true,
-      false
+      false,
+      true
     ]
   },
-  "hash": "ef9e7feb6b6d0221702740b7226b5f771dc632475498e3fa86a1f9b1c014391e"
+  "hash": "22eeb570ee1c5d8bdb5d9d7bf913d5ec698439abe2a316a04d96ecc9be0f9770"
 }

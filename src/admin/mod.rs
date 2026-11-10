@@ -36,6 +36,10 @@ mod preview;
 mod session;
 mod sets;
 
+/// Reported matches for tests elsewhere, e.g. a player's stats.
+#[cfg(test)]
+pub(crate) use matches::tests::Games;
+
 use std::{fmt::Display, future::Future, sync::Arc, time::Duration};
 
 use axum::{
