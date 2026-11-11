@@ -179,13 +179,20 @@ inputs of the 32 steps through the desync's, once all had arrived: those
 should be the same on both sides, and where they differ the network or the
 rollback lost one before the checksums showed it.
 
+Each machine finds the desync at a step whose checksum the other sent (every
+other step, its last step confirmed), so the two sides found it at different
+steps, and their two steps rarely met. From version 2 a dossier also lists
+the steps whose checksums the side sent since the last of the other side's
+that matched there (the last 14): the step where the other side found the
+desync is one of them, and both sides' dossiers list it.
+
 The game writes the dossier to its data folder (`desyncs/`) at the desync, so
 a crash right after it leaves it there, and sends it in the background; it
 deletes it once the server answered. One not delivered waits for the next
 series of its profile, in this run or a later one.
 
 The body is binary, little-endian (`Content-Type: application/octet-stream`),
-57 232 bytes at most (28 856 for version 1):
+258 104 bytes at most (28 856 for version 1):
 
 | Offset | Size | |
 |---|---|---|
@@ -206,11 +213,12 @@ The body is binary, little-endian (`Content-Type: application/octet-stream`),
 | 72 | 4 | the release, `R4QE`... |
 | 76 | 64 | the build, NUL-padded |
 | 140 | 16 | the platform: the system and CPU the game module was built for, lowercase, NUL-padded (`linux x86_64`, `windows x86_64` also under Wine, `macos arm64`...); empty when the game did not know it |
-| 156 | 4 | the steps, 2 |
+| 156 | 4 | the steps: 2 in version 1, 2 to 16 in version 2 |
 | 160 | | each step: its frame, its field count (512 at most) and whether it took more fields than it lists (1, else 0), as three words; then its fields, 28 bytes each: the caller, the size and the hash as three words, then the first 16 bytes, zero-padded |
 
-The steps are the desync's frame less one, then the desync's. A step with no
-fields was not kept.
+The steps go in order of frame and list the desync's frame less one and the
+desync's; version 1 has those two alone, version 2 also the steps the side
+sent, before or after them. A step with no fields was not kept.
 
 Version 2 goes on after the steps with the game, 88 bytes, each a word, its
 counts since the game began:
@@ -253,8 +261,8 @@ bytes), each player's `PackedDetInput` (four of 16 bytes) and its events (four
 A dossier counts only from its profile's login ([Trust](#trust)), and only for
 a series the profile reported, on the side it played: the server keeps it
 with that match, one per game and side, 20 per profile a day, for 14 days
-(`desync_dossiers`). Once both sides' of a game are in, it compares them step by step
-from the earlier one and keeps the first field that differs
+(`desync_dossiers`). Once both sides' of a game are in, it compares them at the
+steps both list, from the earliest, and keeps the first field that differs
 (`desync_divergences`).
 
 A caller is an offset in a game module, so two sides' callers compare only

@@ -2,10 +2,13 @@
 //! match's first desync (its `src/platform/desync_dossier.h`), read and
 //! checked byte by byte, and where the two sides' first differ.
 //!
-//! A dossier is binary, little-endian: a 160-byte header, then two steps (the
-//! one before the desync's and the desync's: checksums go every other step,
-//! so the machines may have diverged a step earlier), each three words and
-//! its fields of 28 bytes. A field is one block of the step's checksum as the
+//! A dossier is binary, little-endian: a 160-byte header, then its steps,
+//! oldest first, each three words and its fields of 28 bytes. Version 1 has
+//! two: the one before the desync's and the desync's (checksums go every
+//! other step, so the machines may have diverged a step earlier). Version 2
+//! adds, up to [`MAX_STEPS`], the steps whose checksums the side sent since
+//! the last of the other side's that matched there: each side finds the
+//! desync at a step the other sent, so both list the step each one found. A field is one block of the step's checksum as the
 //! game took it: where (an offset in the game module), its size, the FNV-1a
 //! hash of all its bytes and its first 16. The first field that differs
 //! between the two sides is where the match diverged.
@@ -25,10 +28,10 @@
 use super::report::{RELEASES, Side, Teams};
 use sqlx::PgPool;
 
-/// A dossier's size at most: two steps of [`MAX_FIELDS`] fields, then the
-/// game and its inputs, every machine's.
+/// A dossier's size at most: [`MAX_STEPS`] steps of [`MAX_FIELDS`] fields,
+/// then the game and its inputs, every machine's.
 pub const MAX_BYTES: usize = HEADER
-    + STEPS * (STEP + MAX_FIELDS * FIELD)
+    + MAX_STEPS * (STEP + MAX_FIELDS * FIELD)
     + MATCH
     + INPUT_STEPS * (INPUT_STEP + MACHINES * MACHINE_INPUT);
 /// The bytes of a field kept as they are.
@@ -37,6 +40,9 @@ pub const FIELD_BYTES: usize = 16;
 pub const INPUT_STEPS: usize = 32;
 /// Machines in a game at most.
 pub const MACHINES: usize = 4;
+/// The steps a version 2 dossier lists at most; version 1 lists
+/// [`FIRST_STEPS`].
+pub const MAX_STEPS: usize = 16;
 
 const MAGIC: &[u8; 4] = b"RCDS";
 /// Version 1 (1.1.6): the header and the fields; version 2 adds [`Netplay`].
@@ -49,7 +55,7 @@ const EVENT: usize = 0x24;
 const HEADER: usize = 160;
 const STEP: usize = 12;
 const FIELD: usize = 12 + FIELD_BYTES;
-const STEPS: usize = 2;
+const FIRST_STEPS: usize = 2;
 const MAX_FIELDS: usize = 512;
 /// A series' games at most, as the match reports'.
 const MAX_GAMES: u32 = 9;
@@ -112,8 +118,10 @@ pub struct Dossier {
     /// `linux x86_64`, `windows x86_64` (Wine too), `macos arm64`... Empty
     /// when the game did not know it.
     pub platform: String,
-    /// The step before the desync's, then the desync's.
-    pub steps: [Step; STEPS],
+    /// Oldest first: the step before the desync's, the desync's and (from
+    /// version 2) those whose checksums the side sent since the last of the
+    /// other side's that matched there.
+    pub steps: Vec<Step>,
     /// 1 or 2.
     pub version: u32,
     /// From version 2.
@@ -381,10 +389,11 @@ impl<'a> Reader<'a> {
         })
     }
 
-    fn step(&mut self, expected: u32) -> Result<Step, String> {
+    fn step(&mut self) -> Result<Step, String> {
         let frame = self.u32()?;
-        if frame != expected {
-            return Err(format!("step of frame {frame}, not {expected}"));
+        // The tables keep frames as INTEGER.
+        if i32::try_from(frame).is_err() {
+            return Err("step frame out of range".to_owned());
         }
         let count = self.u32()? as usize;
         if count > MAX_FIELDS {
@@ -551,12 +560,26 @@ impl Dossier {
         if !platform.is_empty() && !is_platform(&platform) {
             return Err("platform is not a system and a CPU".to_owned());
         }
-        let steps = r.u32()?;
-        if steps as usize != STEPS {
+        let steps = r.u32()? as usize;
+        let allowed = if version == 1 {
+            FIRST_STEPS..=FIRST_STEPS
+        } else {
+            FIRST_STEPS..=MAX_STEPS
+        };
+        if !allowed.contains(&steps) {
             return Err(format!("{steps} steps"));
         }
-        let before = r.step(frame.wrapping_sub(1))?;
-        let desync = r.step(frame)?;
+        let steps = (0..steps)
+            .map(|_| r.step())
+            .collect::<Result<Vec<_>, String>>()?;
+        if steps.windows(2).any(|pair| pair[0].frame >= pair[1].frame) {
+            return Err("steps not in order of frame".to_owned());
+        }
+        for listed in [frame.wrapping_sub(1), frame] {
+            if !steps.iter().any(|step| step.frame == listed) {
+                return Err(format!("no step of frame {listed}"));
+            }
+        }
         let netplay = if version >= 2 {
             Some(r.netplay(frame)?)
         } else {
@@ -581,7 +604,7 @@ impl Dossier {
             release,
             build,
             platform,
-            steps: [before, desync],
+            steps,
             version,
             netplay,
         })
@@ -622,7 +645,7 @@ impl Dossier {
         out.extend_from_slice(self.release.as_bytes());
         padded(&mut out, &self.build, BUILD);
         padded(&mut out, &self.platform, PLATFORM);
-        out.extend_from_slice(&(STEPS as u32).to_le_bytes());
+        out.extend_from_slice(&(self.steps.len() as u32).to_le_bytes());
         for step in &self.steps {
             for word in [step.frame, step.fields.len() as u32, step.overflowed as u32] {
                 out.extend_from_slice(&word.to_le_bytes());
@@ -1262,6 +1285,22 @@ pub fn describe(match_id: i64, game: i32, sides: &Teams<Option<Sided>>) -> Strin
                 divergence.kind.as_str(),
                 divergence.kind.meaning()
             );
+            let both: Vec<String> = pair
+                .home
+                .steps
+                .iter()
+                .filter(|h| pair.away.steps.iter().any(|a| a.frame == h.frame))
+                .map(|step| step.frame.to_string())
+                .collect();
+            let _ = writeln!(
+                out,
+                "  frames both sides list: {}",
+                if both.is_empty() {
+                    "none".to_owned()
+                } else {
+                    both.join(", ")
+                }
+            );
             if let (Some(frame), Some(index)) = (divergence.frame, divergence.field_index) {
                 let _ = writeln!(out, "  at frame {frame}, field {index}");
                 for (name, field) in [
@@ -1638,7 +1677,7 @@ pub(crate) mod tests {
             release: "R4QE",
             build: "1.1.6+g0123456789ab".to_owned(),
             platform: "linux x86_64".to_owned(),
-            steps: [step(4811, &[1, 2, 3]), step(4812, &[1, 2, 3])],
+            steps: vec![step(4811, &[1, 2, 3]), step(4812, &[1, 2, 3])],
             version: 2,
             netplay: Some(netplay),
         }
@@ -1673,11 +1712,33 @@ pub(crate) mod tests {
         original.netplay = None;
         let bytes = original.encode();
         assert_eq!(bytes.len(), HEADER + 2 * (STEP + 3 * FIELD));
-        assert_eq!(Dossier::parse(&bytes), Ok(original));
+        assert_eq!(Dossier::parse(&bytes), Ok(original.clone()));
         // Or one with more after its steps.
         let mut more = bytes.clone();
         more.extend(dossier(Side::Away).encode()[bytes.len()..].iter());
         assert!(Dossier::parse(&more).unwrap_err().contains("bytes after"));
+        // Two steps, no more.
+        original.steps.push(step(4813, &[1, 2, 3]));
+        assert!(
+            Dossier::parse(&original.encode())
+                .unwrap_err()
+                .contains("3 steps")
+        );
+    }
+
+    /// Version 2 adds the steps the side sent: after the desync's too.
+    #[test]
+    fn the_steps_sent_read_back() {
+        let mut original = dossier(Side::Away);
+        original.steps = vec![
+            step(4807, &[1, 2, 3]),
+            step(4811, &[1, 2, 3]),
+            step(4812, &[1, 2, 3]),
+            step(4815, &[4, 5]),
+        ];
+        let bytes = original.encode();
+        assert_eq!(bytes[156..160], 4u32.to_le_bytes());
+        assert_eq!(Dossier::parse(&bytes), Ok(original));
     }
 
     // The offsets of the game's desync_dossier.h, which the encoder keeps to.
@@ -1720,14 +1781,14 @@ pub(crate) mod tests {
         let last = first + 31 * (INPUT_STEP + 2 * MACHINE_INPUT);
         assert_eq!(bytes[last..last + 4], 4812u32.to_le_bytes());
         assert_eq!(bytes[last + INPUT_STEP + 8 + 12], 40); // machine 0's stick
-        assert_eq!(MAX_BYTES, 57_232);
+        assert_eq!(MAX_BYTES, 258_104);
     }
 
     #[test]
     fn the_largest_dossier_fits() {
         let mut big = dossier(Side::Home);
         let values: Vec<u32> = (0..MAX_FIELDS as u32).collect();
-        big.steps = [step(4811, &values), step(4812, &values)];
+        big.steps = (4797..=4812).map(|frame| step(frame, &values)).collect();
         let netplay = big.netplay.as_mut().unwrap();
         netplay.machines = 4;
         for step in &mut netplay.inputs {
@@ -1777,8 +1838,11 @@ pub(crate) mod tests {
             refused(|b| b[140..152].copy_from_slice(b"Linux x86_64"))
                 .contains("a system and a CPU")
         );
-        assert!(refused(|b| word(b, 156, 3)).contains("3 steps"));
-        assert!(refused(|b| word(b, 160, 4810)).contains("frame 4810"));
+        assert!(refused(|b| word(b, 156, 1)).contains("1 steps"));
+        assert!(refused(|b| word(b, 156, 17)).contains("17 steps"));
+        assert!(refused(|b| word(b, 160, 4810)).contains("no step of frame 4811"));
+        assert!(refused(|b| word(b, 160, 4813)).contains("not in order"));
+        assert!(refused(|b| word(b, 160, 0x8000_0000)).contains("step frame"));
         assert!(refused(|b| word(b, 164, 513)).contains("513 fields"));
         assert!(refused(|b| word(b, 168, 2)).contains("overflowed 2"));
         // Version 2's game and inputs.
@@ -2068,6 +2132,7 @@ pub(crate) mod tests {
         for line in [
             "Desync dossiers of match 42, game 2 (R4QE)",
             "Where they diverge: value (the same field, different bytes or size)",
+            "  frames both sides list: 4811, 4812",
             "  at frame 4812, field 1",
             "  away 0x00123404 at +0x123404: 4 bytes 09000000, size 4, hash 09000e2b",
             "Both sides run the same binary",
@@ -2105,8 +2170,32 @@ pub(crate) mod tests {
     fn no_step_in_common_is_missing() {
         let mut p = pair();
         p.away.frame = 5000;
-        p.away.steps = [step(4999, &[1]), step(5000, &[1])];
+        p.away.steps = vec![step(4999, &[1]), step(5000, &[1])];
         let d = diverge(&p);
         assert_eq!((d.kind, d.frame), (Kind::Missing, None));
+    }
+
+    /// Match 2529's: each side found the desync at a step the other sent,
+    /// two steps apart; the steps each sent meet the other's.
+    #[test]
+    fn the_sides_meet_at_a_step_one_sent() {
+        let mut p = pair();
+        p.home.frame = 2914;
+        p.home.steps = vec![
+            step(2911, &[1, 2, 3]),
+            step(2913, &[1, 2, 4]),
+            step(2914, &[1, 2, 5]),
+        ];
+        p.away.frame = 2912;
+        p.away.steps = vec![
+            step(2911, &[1, 2, 3]),
+            step(2912, &[1, 9, 3]),
+            step(2913, &[1, 2, 6]),
+        ];
+        let d = diverge(&p);
+        assert_eq!(
+            (d.kind, d.frame, d.field_index),
+            (Kind::Value, Some(2913), Some(2))
+        );
     }
 }

@@ -816,7 +816,8 @@ mod tests {
         let mut nine = values.clone();
         nine[1] = 9;
         for (d, last) in [(&mut home, &values), (&mut away, &nine)] {
-            d.steps = [step(4811, &values), step(4812, last)];
+            d.steps = (4797..4812).map(|frame| step(frame, &values)).collect();
+            d.steps.push(step(4812, last));
             let netplay = d.netplay.as_mut().unwrap();
             netplay.machines = 4;
             for step in &mut netplay.inputs {
