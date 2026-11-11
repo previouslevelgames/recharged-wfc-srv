@@ -10,6 +10,12 @@
 //! hash of all its bytes and its first 16. The first field that differs
 //! between the two sides is where the match diverged.
 //!
+//! From version 2 (Recharged 1.1.7) the game as the side's rollback played it
+//! follows ([`Netplay`]): its counts since the game began and the inputs of
+//! the 32 steps through the desync's, once all had arrived. The two sides'
+//! inputs should be the same: where they differ ([`diverge_inputs`]) the
+//! network or the rollback lost one, and the checksums only showed it later.
+//!
 //! A caller is an offset in a game module: the same code has the same
 //! callers only in the same binary (release, build and platform, the game
 //! module's system and CPU, which the game names). Two
@@ -19,13 +25,27 @@
 use super::report::{RELEASES, Side, Teams};
 use sqlx::PgPool;
 
-/// A dossier's size at most: two steps of [`MAX_FIELDS`] fields.
-pub const MAX_BYTES: usize = HEADER + STEPS * (STEP + MAX_FIELDS * FIELD);
+/// A dossier's size at most: two steps of [`MAX_FIELDS`] fields, then the
+/// game and its inputs, every machine's.
+pub const MAX_BYTES: usize = HEADER
+    + STEPS * (STEP + MAX_FIELDS * FIELD)
+    + MATCH
+    + INPUT_STEPS * (INPUT_STEP + MACHINES * MACHINE_INPUT);
 /// The bytes of a field kept as they are.
 pub const FIELD_BYTES: usize = 16;
+/// The steps whose inputs a version 2 dossier lists, the desync's the last.
+pub const INPUT_STEPS: usize = 32;
+/// Machines in a game at most.
+pub const MACHINES: usize = 4;
 
 const MAGIC: &[u8; 4] = b"RCDS";
-const VERSION: u32 = 1;
+/// Version 1 (1.1.6): the header and the fields; version 2 adds [`Netplay`].
+const VERSIONS: std::ops::RangeInclusive<u32> = 1..=2;
+const MATCH: usize = 88;
+const INPUT_STEP: usize = 20;
+const MACHINE_INPUT: usize = 216;
+const RECORD: usize = 16;
+const EVENT: usize = 0x24;
 const HEADER: usize = 160;
 const STEP: usize = 12;
 const FIELD: usize = 12 + FIELD_BYTES;
@@ -94,6 +114,162 @@ pub struct Dossier {
     pub platform: String,
     /// The step before the desync's, then the desync's.
     pub steps: [Step; STEPS],
+    /// 1 or 2.
+    pub version: u32,
+    /// From version 2.
+    pub netplay: Option<Netplay>,
+}
+
+/// Version 2: the game as the side's rollback played it, its counts since
+/// the game began. A misprediction it could no longer correct
+/// (`kept_predicted`, `impossible`, `stopped_predicted`) desyncs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Netplay {
+    pub local_machine: i32,
+    pub machines: u32,
+    /// The step the rollback's tracking last started after.
+    pub tracking_from: u32,
+    /// Still tracking at the desync.
+    pub tracking: bool,
+    /// Steps: the input delay the game began with.
+    pub start_delay: u32,
+    /// Times this machine's input delay grew, and shrank.
+    pub delay_longer: u32,
+    pub delay_shorter: u32,
+    /// The step of its last change, 0: none.
+    pub delay_changed_at: u32,
+    /// By machine: steps whose inputs came other than predicted.
+    pub mispredicted: [u32; MACHINES],
+    pub predicted_steps: u32,
+    pub correction_rollbacks: u32,
+    /// Predicted steps undone: they changed the phase.
+    pub undone: u32,
+    /// Replays cut at a phase change.
+    pub truncated: u32,
+    /// Predicted steps kept for a disc read.
+    pub kept_predicted: u32,
+    /// Rollbacks that could not go back.
+    pub impossible: u32,
+    /// Tracking stopped with inputs still predicted.
+    pub stopped_predicted: u32,
+    /// Steps that waited for inputs as the original router did, and with the
+    /// prediction window full.
+    pub lockstep_waits: u32,
+    pub window_waits: u32,
+    /// [`INPUT_STEPS`] steps, the oldest first, the desync's the last.
+    pub inputs: Vec<InputStep>,
+}
+
+/// A step's inputs once all had arrived.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InputStep {
+    pub frame: u32,
+    /// False: gone from the rollback's ring, and nothing else set.
+    pub kept: bool,
+    /// One bit per machine: its inputs were predicted when the step first
+    /// ran, and they came other than predicted.
+    pub predicted: u8,
+    pub mispredicted: u8,
+    /// By team and player (the game's `cTeam::m_pPlayers`): the pad
+    /// controlling it, machine * 4 + the machine's player; -1 none (the AI).
+    pub pads: [[i8; 5]; 2],
+    /// By machine.
+    pub machines: Vec<MachineInput>,
+}
+
+/// A machine's inputs of a step, as its input message made them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MachineInput {
+    pub players: u8,
+    pub event_count: u8,
+    pub remap: u16,
+    /// Each player's connection state.
+    pub states: [u8; 4],
+    /// Each player's `PackedDetInput`.
+    pub records: [[u8; RECORD]; 4],
+    /// Its deterministic data events (`DetermDataEvent`).
+    pub events: [[u8; EVENT]; 4],
+}
+
+/// The parts of a `PackedDetInput`, by its bytes (the game's
+/// `rollback_netplay.cpp` `MispredictedParts`).
+const RECORD_PARTS: [(&str, std::ops::Range<usize>); 7] = [
+    ("buttons", 0..2),
+    ("triggers", 2..3),
+    ("remote accel", 3..6),
+    ("nunchuk accel", 6..9),
+    ("pointer targets", 9..10),
+    ("pointer", 10..12),
+    ("sticks", 12..16),
+];
+
+impl MachineInput {
+    /// What counts of it: the players' records and states, the events.
+    fn same(&self, other: &MachineInput) -> bool {
+        self.differences(other).is_empty()
+    }
+
+    /// The parts that differ from `other`'s, by name.
+    fn differences(&self, other: &MachineInput) -> Vec<String> {
+        let mut parts = Vec::new();
+        if self.players != other.players {
+            parts.push("players".to_owned());
+        }
+        if self.remap != other.remap {
+            parts.push("remap angle".to_owned());
+        }
+        for player in 0..usize::from(self.players.min(other.players)) {
+            if self.states[player] != other.states[player] {
+                parts.push(format!("player {player}'s state"));
+            }
+            for (name, range) in &RECORD_PARTS {
+                if self.records[player][range.clone()] != other.records[player][range.clone()] {
+                    parts.push(format!("player {player}'s {name}"));
+                }
+            }
+        }
+        let events = usize::from(self.event_count.min(other.event_count));
+        if self.event_count != other.event_count || self.events[..events] != other.events[..events]
+        {
+            parts.push("events".to_owned());
+        }
+        parts
+    }
+
+    /// One line: each player's record, read part by part.
+    fn describe(&self) -> String {
+        let signed = |b: u8| b as i8;
+        let mut text = format!("remap {:04x}", self.remap);
+        for player in 0..usize::from(self.players.min(4)) {
+            let r = &self.records[player];
+            text += &format!(
+                "; player {player} state {}: buttons {:02x}{:02x} triggers {:02x} accel {} {} {} \
+                 nunchuk {} {} {} pointer {:02x} {:02x}{:02x} stick {} {} c-stick {} {}",
+                self.states[player],
+                r[1],
+                r[0],
+                r[2],
+                signed(r[3]),
+                signed(r[4]),
+                signed(r[5]),
+                signed(r[6]),
+                signed(r[7]),
+                signed(r[8]),
+                r[9],
+                r[11],
+                r[10],
+                signed(r[12]),
+                signed(r[13]),
+                signed(r[14]),
+                signed(r[15]),
+            );
+        }
+        for event in &self.events[..usize::from(self.event_count.min(4))] {
+            let hex: String = event.iter().map(|b| format!("{b:02x}")).collect();
+            text += &format!("; event {hex}");
+        }
+        text
+    }
 }
 
 /// The little-endian words of a dossier, in order.
@@ -127,6 +303,84 @@ impl<'a> Reader<'a> {
         Ok(u64::from_le_bytes(self.array()?))
     }
 
+    fn u8(&mut self) -> Result<u8, String> {
+        Ok(self.take(1)?[0])
+    }
+
+    fn u16(&mut self) -> Result<u16, String> {
+        Ok(u16::from_le_bytes(self.array()?))
+    }
+
+    /// Version 2's game and inputs, of the steps through `frame`.
+    fn netplay(&mut self, frame: u32) -> Result<Netplay, String> {
+        let local_machine = self.i32()?;
+        let machines = self.u32()?;
+        if machines == 0 || machines as usize > MACHINES {
+            return Err(format!("{machines} machines"));
+        }
+        if !(0..machines as i32).contains(&local_machine) {
+            return Err(format!("local machine {local_machine}"));
+        }
+        let tracking_from = self.u32()?;
+        let tracking = match self.u32()? {
+            0 => false,
+            1 => true,
+            other => return Err(format!("tracking {other}")),
+        };
+        let mut words = [0u32; 18];
+        for word in &mut words {
+            *word = self.u32()?;
+        }
+        let [
+            start_delay,
+            delay_longer,
+            delay_shorter,
+            delay_changed_at,
+            m0,
+            m1,
+            m2,
+            m3,
+            predicted_steps,
+            correction_rollbacks,
+            undone,
+            truncated,
+            kept_predicted,
+            impossible,
+            stopped_predicted,
+            lockstep_waits,
+            window_waits,
+            input_steps,
+        ] = words;
+        if input_steps as usize != INPUT_STEPS {
+            return Err(format!("{input_steps} input steps"));
+        }
+        let first = frame.wrapping_sub(INPUT_STEPS as u32 - 1);
+        let inputs = (0..INPUT_STEPS as u32)
+            .map(|i| self.input_step(first.wrapping_add(i), machines))
+            .collect::<Result<_, String>>()?;
+        Ok(Netplay {
+            local_machine,
+            machines,
+            tracking_from,
+            tracking,
+            start_delay,
+            delay_longer,
+            delay_shorter,
+            delay_changed_at,
+            mispredicted: [m0, m1, m2, m3],
+            predicted_steps,
+            correction_rollbacks,
+            undone,
+            truncated,
+            kept_predicted,
+            impossible,
+            stopped_predicted,
+            lockstep_waits,
+            window_waits,
+            inputs,
+        })
+    }
+
     fn step(&mut self, expected: u32) -> Result<Step, String> {
         let frame = self.u32()?;
         if frame != expected {
@@ -157,6 +411,75 @@ impl<'a> Reader<'a> {
             fields,
         })
     }
+
+    fn input_step(&mut self, expected: u32, machines: u32) -> Result<InputStep, String> {
+        let frame = self.u32()?;
+        if frame != expected {
+            return Err(format!("input step of frame {frame}, not {expected}"));
+        }
+        let kept = match self.u8()? {
+            0 => false,
+            1 => true,
+            other => return Err(format!("input step kept {other}")),
+        };
+        let count = self.u8()?;
+        let predicted = self.u8()?;
+        let mispredicted = self.u8()?;
+        let mut pads = [[0i8; 5]; 2];
+        for pad in pads.iter_mut().flatten() {
+            *pad = self.u8()? as i8;
+            if !(-1..16).contains(pad) {
+                return Err(format!("pad {pad}"));
+            }
+        }
+        if self.array::<2>()? != [0, 0] {
+            return Err("input step reserved bytes set".to_owned());
+        }
+        if kept && u32::from(count) != machines {
+            return Err(format!("{count} machines' inputs of {machines}"));
+        }
+        if !kept && (count != 0 || predicted != 0 || mispredicted != 0 || pads != [[-1; 5]; 2]) {
+            return Err("an input step not kept has inputs".to_owned());
+        }
+        if (predicted | mispredicted) >> count != 0 {
+            return Err("an input step flags a machine it does not list".to_owned());
+        }
+        let machines = (0..count)
+            .map(|_| {
+                let players = self.u8()?;
+                let event_count = self.u8()?;
+                if players > 4 || event_count > 4 {
+                    return Err(format!("{players} players, {event_count} events"));
+                }
+                let remap = self.u16()?;
+                let states = self.array()?;
+                let mut records = [[0; RECORD]; 4];
+                for record in &mut records {
+                    *record = self.array()?;
+                }
+                let mut events = [[0; EVENT]; 4];
+                for event in &mut events {
+                    *event = self.array()?;
+                }
+                Ok(MachineInput {
+                    players,
+                    event_count,
+                    remap,
+                    states,
+                    records,
+                    events,
+                })
+            })
+            .collect::<Result<_, String>>()?;
+        Ok(InputStep {
+            frame,
+            kept,
+            predicted,
+            mispredicted,
+            pads,
+            machines,
+        })
+    }
 }
 
 /// A NUL-padded string: printable ASCII up to the first NUL, only NULs after.
@@ -185,7 +508,7 @@ impl Dossier {
             return Err("not a dossier".to_owned());
         }
         let version = r.u32()?;
-        if version != VERSION {
+        if !VERSIONS.contains(&version) {
             return Err(format!("dossier version {version}"));
         }
         let series = i64::try_from(r.u64()?).map_err(|_| "series out of range".to_owned())?;
@@ -234,6 +557,11 @@ impl Dossier {
         }
         let before = r.step(frame.wrapping_sub(1))?;
         let desync = r.step(frame)?;
+        let netplay = if version >= 2 {
+            Some(r.netplay(frame)?)
+        } else {
+            None
+        };
         if !r.bytes.is_empty() {
             return Err("bytes after the dossier".to_owned());
         }
@@ -254,6 +582,8 @@ impl Dossier {
             build,
             platform,
             steps: [before, desync],
+            version,
+            netplay,
         })
     }
 
@@ -266,7 +596,7 @@ impl Dossier {
             out.resize(out.len() + size - text.len(), 0);
         };
         out.extend_from_slice(MAGIC);
-        out.extend_from_slice(&VERSION.to_le_bytes());
+        out.extend_from_slice(&self.version.to_le_bytes());
         out.extend_from_slice(&(self.series as u64).to_le_bytes());
         out.extend_from_slice(&(self.written_at as u64).to_le_bytes());
         let side = match self.side {
@@ -302,6 +632,52 @@ impl Dossier {
                     out.extend_from_slice(&word.to_le_bytes());
                 }
                 out.extend_from_slice(&field.bytes);
+            }
+        }
+        if let Some(n) = &self.netplay {
+            for word in [
+                n.local_machine as u32,
+                n.machines,
+                n.tracking_from,
+                n.tracking as u32,
+                n.start_delay,
+                n.delay_longer,
+                n.delay_shorter,
+                n.delay_changed_at,
+            ]
+            .into_iter()
+            .chain(n.mispredicted)
+            .chain([
+                n.predicted_steps,
+                n.correction_rollbacks,
+                n.undone,
+                n.truncated,
+                n.kept_predicted,
+                n.impossible,
+                n.stopped_predicted,
+                n.lockstep_waits,
+                n.window_waits,
+                n.inputs.len() as u32,
+            ]) {
+                out.extend_from_slice(&word.to_le_bytes());
+            }
+            for step in &n.inputs {
+                out.extend_from_slice(&step.frame.to_le_bytes());
+                out.extend([
+                    step.kept as u8,
+                    step.machines.len() as u8,
+                    step.predicted,
+                    step.mispredicted,
+                ]);
+                out.extend(step.pads.iter().flatten().map(|&pad| pad as u8));
+                out.extend([0, 0]);
+                for input in &step.machines {
+                    out.extend([input.players, input.event_count]);
+                    out.extend_from_slice(&input.remap.to_le_bytes());
+                    out.extend_from_slice(&input.states);
+                    out.extend(input.records.iter().flatten());
+                    out.extend(input.events.iter().flatten());
+                }
             }
         }
         out
@@ -642,6 +1018,214 @@ pub fn diverge(dossiers: &Teams<Dossier>) -> Divergence {
     }
 }
 
+/// Where the two sides' inputs first differ: inputs that all had arrived
+/// should be the same on every machine.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InputDivergence {
+    /// A side's dossier lists no inputs (version 1).
+    Unknown,
+    /// The same inputs at every step both kept, `steps` of them.
+    Same { steps: usize },
+    /// A machine's inputs of a step differ, by these parts. `shift`: its
+    /// inputs on the away side are those of the home side that many steps
+    /// before (negative: after), at every step both kept.
+    Differs {
+        frame: u32,
+        machine: usize,
+        parts: Vec<String>,
+        shift: Option<i32>,
+    },
+}
+
+/// The steps from the oldest, machine by machine.
+pub fn diverge_inputs(dossiers: &Teams<Dossier>) -> InputDivergence {
+    let (Some(home), Some(away)) = (&dossiers.home.netplay, &dossiers.away.netplay) else {
+        return InputDivergence::Unknown;
+    };
+    let mut steps = 0;
+    for h in home.inputs.iter().filter(|step| step.kept) {
+        let Some(a) = kept_step(away, h.frame) else {
+            continue;
+        };
+        steps += 1;
+        let machines = h.machines.len().max(a.machines.len());
+        for machine in 0..machines {
+            let (hi, ai) = (h.machines.get(machine), a.machines.get(machine));
+            let parts = match (hi, ai) {
+                (Some(hi), Some(ai)) if hi.same(ai) => continue,
+                (Some(hi), Some(ai)) => hi.differences(ai),
+                _ => vec!["machines".to_owned()],
+            };
+            return InputDivergence::Differs {
+                frame: h.frame,
+                machine,
+                parts,
+                shift: shift(home, away, machine),
+            };
+        }
+    }
+    InputDivergence::Same { steps }
+}
+
+fn kept_step(netplay: &Netplay, frame: u32) -> Option<&InputStep> {
+    netplay
+        .inputs
+        .iter()
+        .find(|step| step.kept && step.frame == frame)
+}
+
+/// The steps by which `machine`'s inputs on the away side follow the home
+/// side's, when at every step both kept (eight at least, not all the same
+/// inputs) they are the home side's that many steps before; the nearest.
+fn shift(home: &Netplay, away: &Netplay, machine: usize) -> Option<i32> {
+    fn input(netplay: &Netplay, frame: u32, machine: usize) -> Option<&MachineInput> {
+        kept_step(netplay, frame).and_then(|step| step.machines.get(machine))
+    }
+    (1..=8).flat_map(|k| [k, -k]).find(|&k| {
+        let mut compared = Vec::new();
+        for step in &home.inputs {
+            let (Some(h), Some(a)) = (
+                input(home, step.frame, machine),
+                input(away, step.frame.wrapping_add_signed(k), machine),
+            ) else {
+                continue;
+            };
+            if !h.same(a) {
+                return false;
+            }
+            compared.push(h);
+        }
+        compared.len() >= 8 && compared.iter().any(|h| !h.same(compared[0]))
+    })
+}
+
+impl InputDivergence {
+    /// One line for a reader.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Unknown => "a dossier from before 1.1.7 lists no inputs".to_owned(),
+            Self::Same { steps } => format!(
+                "the same at all {steps} steps both kept: the inputs did not diverge, the state did"
+            ),
+            Self::Differs {
+                frame,
+                machine,
+                parts,
+                shift,
+            } => {
+                let mut text = format!("at frame {frame}, machine {machine}: {}", parts.join(", "));
+                match shift {
+                    Some(k) if *k > 0 => {
+                        text +=
+                            &format!("; away has machine {machine}'s inputs {k} steps after home")
+                    }
+                    Some(k) => {
+                        text += &format!(
+                            "; away has machine {machine}'s inputs {} steps before home",
+                            -k
+                        )
+                    }
+                    None => {}
+                }
+                text
+            }
+        }
+    }
+}
+
+/// Version 2's game and inputs, for [`describe`]; `marked` the step of the
+/// inputs' divergence.
+fn describe_netplay(out: &mut String, n: &Netplay, marked: Option<u32>) {
+    use std::fmt::Write;
+    let changed = match n.delay_changed_at {
+        0 => "never".to_owned(),
+        frame => format!("last at frame {frame}"),
+    };
+    let _ = writeln!(
+        out,
+        "this machine {} of {}; tracking from frame {}{}; input delay {} steps at the start, \
+         longer {} times and shorter {}, {changed}",
+        n.local_machine,
+        n.machines,
+        n.tracking_from,
+        if n.tracking {
+            ""
+        } else {
+            ", stopped at the desync"
+        },
+        n.start_delay,
+        n.delay_longer,
+        n.delay_shorter,
+    );
+    let mispredicted: Vec<String> = n.mispredicted[..n.machines as usize]
+        .iter()
+        .map(u32::to_string)
+        .collect();
+    let _ = writeln!(
+        out,
+        "in this game: mispredicted steps by machine {}; steps predicted {}, rollbacks to correct {}; \
+         undone {}, replays cut {}; waits as the original router {}, window full {}",
+        mispredicted.join(" "),
+        n.predicted_steps,
+        n.correction_rollbacks,
+        n.undone,
+        n.truncated,
+        n.lockstep_waits,
+        n.window_waits,
+    );
+    let _ = writeln!(
+        out,
+        "mispredictions it could no longer correct: predicted steps kept for a disc read {}, \
+         rollbacks impossible {}, tracking stopped with inputs predicted {}",
+        n.kept_predicted, n.impossible, n.stopped_predicted,
+    );
+    let _ = writeln!(
+        out,
+        "\ninputs of the steps through the desync's, once all had arrived (P: predicted when the \
+         step first ran, M: and they came otherwise; pads by team and player, machine.player):"
+    );
+    for step in &n.inputs {
+        let mark = if marked == Some(step.frame) { ">" } else { " " };
+        if !step.kept {
+            let _ = writeln!(out, "{mark} frame {}: not kept", step.frame);
+            continue;
+        }
+        let pads = |team: usize| {
+            step.pads[team]
+                .iter()
+                .map(|&pad| match pad {
+                    -1 => "-".to_owned(),
+                    pad => format!("{}.{}", pad / 4, pad % 4),
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        let _ = writeln!(
+            out,
+            "{mark} frame {}: team 0 pads {}, team 1 pads {}",
+            step.frame,
+            pads(0),
+            pads(1)
+        );
+        for (machine, input) in step.machines.iter().enumerate() {
+            let flag = |bits: u8, letter: char| {
+                if bits >> machine & 1 != 0 {
+                    letter
+                } else {
+                    ' '
+                }
+            };
+            let _ = writeln!(
+                out,
+                "    machine {machine} {}{} {}",
+                flag(step.predicted, 'P'),
+                flag(step.mispredicted, 'M'),
+                input.describe()
+            );
+        }
+    }
+}
+
 /// A side's dossier for [`describe`], with its Mii.
 pub struct Sided {
     pub dossier: Dossier,
@@ -664,6 +1248,7 @@ pub fn describe(match_id: i64, game: i32, sides: &Teams<Option<Sided>>) -> Strin
         "Desync dossiers of match {match_id}, game {game} ({release})"
     );
     let mut diverged = None;
+    let mut diverged_inputs = None;
     match (&sides.home, &sides.away) {
         (Some(home), Some(away)) => {
             let pair = Teams {
@@ -693,6 +1278,11 @@ pub fn describe(match_id: i64, game: i32, sides: &Teams<Option<Sided>>) -> Strin
                     }
                 }
                 diverged = Some((frame, index));
+            }
+            let inputs = diverge_inputs(&pair);
+            let _ = writeln!(out, "Where the inputs diverge: {}", inputs.describe());
+            if let InputDivergence::Differs { frame, .. } = inputs {
+                diverged_inputs = Some(frame);
             }
             if pair.home.same_binary(&pair.away) {
                 let _ = writeln!(
@@ -750,10 +1340,15 @@ pub fn describe(match_id: i64, game: i32, sides: &Teams<Option<Sided>>) -> Strin
         );
         let _ = writeln!(
             out,
-            "other machine {}, input delay {} steps, {} inputs predicted wrong, diagnostics: {}",
+            "other machine {}, input delay {} steps, {} steps predicted wrong {}, diagnostics: {}",
             d.machine,
             d.input_delay,
             d.mispredictions,
+            if d.netplay.is_some() {
+                "in the game"
+            } else {
+                "in the session (1.1.6)"
+            },
             if options.is_empty() {
                 "none".to_owned()
             } else {
@@ -784,6 +1379,10 @@ pub fn describe(match_id: i64, game: i32, sides: &Teams<Option<Sided>>) -> Strin
                 };
                 let _ = writeln!(out, "{mark}{index:4} {}", field.describe());
             }
+        }
+        if let Some(netplay) = &d.netplay {
+            out.push('\n');
+            describe_netplay(&mut out, netplay, diverged_inputs);
         }
     }
     out
@@ -962,7 +1561,67 @@ pub(crate) mod tests {
         }
     }
 
+    /// One player's inputs, its stick pushed by `stick` on x.
+    pub fn machine_input(stick: i8) -> MachineInput {
+        let mut records = [[0; RECORD]; 4];
+        records[0][12] = stick as u8;
+        MachineInput {
+            players: 1,
+            event_count: 0,
+            remap: 0,
+            states: [1, 0, 0, 0],
+            records,
+            events: [[0; EVENT]; 4],
+        }
+    }
+
+    /// Two machines' inputs of the steps through `frame`: machine 0's stick
+    /// by step from `stick`, machine 1's still.
+    pub fn netplay(frame: u32, stick: impl Fn(u32) -> i8) -> Netplay {
+        let first = frame - (INPUT_STEPS as u32 - 1);
+        Netplay {
+            local_machine: 0,
+            machines: 2,
+            tracking_from: 0,
+            tracking: true,
+            start_delay: 1,
+            delay_longer: 0,
+            delay_shorter: 0,
+            delay_changed_at: 0,
+            mispredicted: [0, 3, 0, 0],
+            predicted_steps: 40,
+            correction_rollbacks: 3,
+            undone: 0,
+            truncated: 0,
+            kept_predicted: 0,
+            impossible: 0,
+            stopped_predicted: 0,
+            lockstep_waits: 25,
+            window_waits: 0,
+            inputs: (first..=frame)
+                .map(|frame| InputStep {
+                    frame,
+                    kept: true,
+                    predicted: 0b10,
+                    mispredicted: 0,
+                    pads: [[0, -1, -1, -1, -1], [4, -1, -1, -1, -1]],
+                    machines: vec![machine_input(stick(frame)), machine_input(0)],
+                })
+                .collect(),
+        }
+    }
+
+    /// Machine 0 pushes its stick at 4800.
+    pub fn pushed(frame: u32) -> i8 {
+        if frame >= 4800 { 40 } else { 0 }
+    }
+
     pub fn dossier(side: Side) -> Dossier {
+        let mut netplay = netplay(4812, pushed);
+        netplay.local_machine = match side {
+            Side::Home => 0,
+            Side::Away => 1,
+        };
         Dossier {
             series: 1_761_500_000,
             written_at: 1_761_500_300,
@@ -980,6 +1639,8 @@ pub(crate) mod tests {
             build: "1.1.6+g0123456789ab".to_owned(),
             platform: "linux x86_64".to_owned(),
             steps: [step(4811, &[1, 2, 3]), step(4812, &[1, 2, 3])],
+            version: 2,
+            netplay: Some(netplay),
         }
     }
 
@@ -994,8 +1655,29 @@ pub(crate) mod tests {
     fn a_dossier_reads_back() {
         let original = dossier(Side::Away);
         let bytes = original.encode();
+        assert_eq!(
+            bytes.len(),
+            HEADER
+                + 2 * (STEP + 3 * FIELD)
+                + MATCH
+                + INPUT_STEPS * (INPUT_STEP + 2 * MACHINE_INPUT)
+        );
+        assert_eq!(Dossier::parse(&bytes), Ok(original));
+    }
+
+    /// 1.1.6's: the header and the fields alone.
+    #[test]
+    fn a_version_1_dossier_reads_back() {
+        let mut original = dossier(Side::Away);
+        original.version = 1;
+        original.netplay = None;
+        let bytes = original.encode();
         assert_eq!(bytes.len(), HEADER + 2 * (STEP + 3 * FIELD));
         assert_eq!(Dossier::parse(&bytes), Ok(original));
+        // Or one with more after its steps.
+        let mut more = bytes.clone();
+        more.extend(dossier(Side::Away).encode()[bytes.len()..].iter());
+        assert!(Dossier::parse(&more).unwrap_err().contains("bytes after"));
     }
 
     // The offsets of the game's desync_dossier.h, which the encoder keeps to.
@@ -1018,7 +1700,27 @@ pub(crate) mod tests {
         assert_eq!(bytes[160..164], 4811u32.to_le_bytes());
         assert_eq!(bytes[164..168], 3u32.to_le_bytes());
         assert_eq!(bytes[172..176], 0x0012_3400u32.to_le_bytes());
-        assert_eq!(MAX_BYTES, 28_856);
+        // Version 2's game after the steps, then its inputs.
+        assert_eq!(bytes[4..8], 2u32.to_le_bytes());
+        let game = HEADER + 2 * (STEP + 3 * FIELD);
+        assert_eq!(bytes[game..game + 4], 1u32.to_le_bytes()); // this machine
+        assert_eq!(bytes[game + 4..game + 8], 2u32.to_le_bytes()); // machines
+        assert_eq!(bytes[game + 16..game + 20], 1u32.to_le_bytes()); // the starting delay
+        assert_eq!(bytes[game + 36..game + 40], 3u32.to_le_bytes()); // machine 1's mispredictions
+        assert_eq!(bytes[game + 84..game + 88], 32u32.to_le_bytes()); // input steps
+        let first = game + MATCH;
+        assert_eq!(bytes[first..first + 4], 4781u32.to_le_bytes());
+        assert_eq!(bytes[first + 4..first + 8], [1, 2, 0b10, 0]);
+        assert_eq!(
+            bytes[first + 8..first + 18],
+            [0, 0xFF, 0xFF, 0xFF, 0xFF, 4, 0xFF, 0xFF, 0xFF, 0xFF]
+        );
+        let input = first + INPUT_STEP;
+        assert_eq!(bytes[input..input + 8], [1, 0, 0, 0, 1, 0, 0, 0]);
+        let last = first + 31 * (INPUT_STEP + 2 * MACHINE_INPUT);
+        assert_eq!(bytes[last..last + 4], 4812u32.to_le_bytes());
+        assert_eq!(bytes[last + INPUT_STEP + 8 + 12], 40); // machine 0's stick
+        assert_eq!(MAX_BYTES, 57_232);
     }
 
     #[test]
@@ -1026,6 +1728,11 @@ pub(crate) mod tests {
         let mut big = dossier(Side::Home);
         let values: Vec<u32> = (0..MAX_FIELDS as u32).collect();
         big.steps = [step(4811, &values), step(4812, &values)];
+        let netplay = big.netplay.as_mut().unwrap();
+        netplay.machines = 4;
+        for step in &mut netplay.inputs {
+            step.machines.resize(4, machine_input(0));
+        }
         let bytes = big.encode();
         assert_eq!(bytes.len(), MAX_BYTES);
         assert!(Dossier::parse(&bytes).is_ok());
@@ -1049,7 +1756,7 @@ pub(crate) mod tests {
         assert!(refused(|b| b.push(0)).contains("bytes after"));
         assert!(refused(|b| b.resize(MAX_BYTES + 1, 0)).contains("over"));
         assert!(refused(|b| b[0] = b'X').contains("not a dossier"));
-        assert!(refused(|b| word(b, 4, 2)).contains("version 2"));
+        assert!(refused(|b| word(b, 4, 3)).contains("version 3"));
         assert!(refused(|b| b[15] = 0x80).contains("series"));
         assert!(refused(|b| word(b, 24, 0)).contains("profile_id"));
         assert!(refused(|b| word(b, 24, 0x8000_0000)).contains("profile_id"));
@@ -1074,6 +1781,102 @@ pub(crate) mod tests {
         assert!(refused(|b| word(b, 160, 4810)).contains("frame 4810"));
         assert!(refused(|b| word(b, 164, 513)).contains("513 fields"));
         assert!(refused(|b| word(b, 168, 2)).contains("overflowed 2"));
+        // Version 2's game and inputs.
+        let game = HEADER + 2 * (STEP + 3 * FIELD);
+        let first = game + MATCH;
+        assert!(refused(|b| word(b, game + 4, 0)).contains("0 machines"));
+        assert!(refused(|b| word(b, game + 4, 5)).contains("5 machines"));
+        assert!(refused(|b| word(b, game, 2)).contains("local machine 2"));
+        assert!(refused(|b| word(b, game + 12, 2)).contains("tracking 2"));
+        assert!(refused(|b| word(b, game + 84, 31)).contains("31 input steps"));
+        assert!(refused(|b| word(b, first, 4780)).contains("frame 4780, not 4781"));
+        assert!(refused(|b| b[first + 4] = 2).contains("kept 2"));
+        assert!(refused(|b| b[first + 5] = 1).contains("1 machines' inputs of 2"));
+        assert!(refused(|b| b[first + 6] = 0b100).contains("does not list"));
+        assert!(refused(|b| b[first + 8] = 16).contains("pad 16"));
+        assert!(refused(|b| b[first + 18] = 1).contains("reserved"));
+        assert!(refused(|b| b[first + INPUT_STEP] = 5).contains("5 players"));
+        assert!(refused(|b| b.truncate(b.len() - 1)).contains("cut short"));
+    }
+
+    /// An input step gone from the ring: nothing but its frame.
+    #[test]
+    fn an_input_step_not_kept_lists_nothing() {
+        let mut d = dossier(Side::Home);
+        let step = &mut d.netplay.as_mut().unwrap().inputs[0];
+        (step.kept, step.machines, step.predicted, step.pads) = (false, vec![], 0, [[-1; 5]; 2]);
+        assert_eq!(Dossier::parse(&d.encode()), Ok(d.clone()));
+        d.netplay.as_mut().unwrap().inputs[0].pads[1][0] = 4;
+        assert!(
+            Dossier::parse(&d.encode())
+                .unwrap_err()
+                .contains("not kept has inputs")
+        );
+    }
+
+    #[test]
+    fn the_same_inputs_are_the_same() {
+        assert_eq!(diverge_inputs(&pair()), InputDivergence::Same { steps: 32 });
+        let mut p = pair();
+        p.away.version = 1;
+        p.away.netplay = None;
+        assert_eq!(diverge_inputs(&p), InputDivergence::Unknown);
+        // A step one side lost is not compared.
+        let mut p = pair();
+        let step = &mut p.away.netplay.as_mut().unwrap().inputs[31];
+        (step.kept, step.machines, step.predicted, step.pads) = (false, vec![], 0, [[-1; 5]; 2]);
+        assert_eq!(diverge_inputs(&p), InputDivergence::Same { steps: 31 });
+    }
+
+    #[test]
+    fn other_inputs_are_named_by_their_parts() {
+        let mut p = pair();
+        p.away.netplay.as_mut().unwrap().inputs[20].machines[1].records[0][1] = 0x80;
+        p.away.netplay.as_mut().unwrap().inputs[20].machines[1].records[0][5] = 3;
+        assert_eq!(
+            diverge_inputs(&p),
+            InputDivergence::Differs {
+                frame: 4801,
+                machine: 1,
+                parts: vec![
+                    "player 0's buttons".to_owned(),
+                    "player 0's remote accel".to_owned()
+                ],
+                shift: None,
+            }
+        );
+    }
+
+    /// The away side got machine 0's inputs two steps late: its stick moves
+    /// at 4802 there.
+    #[test]
+    fn inputs_two_steps_late_are_a_shift() {
+        let mut p = pair();
+        p.away.netplay = Some(netplay(4812, |frame| pushed(frame - 2)));
+        let d = diverge_inputs(&p);
+        assert_eq!(
+            d,
+            InputDivergence::Differs {
+                frame: 4800,
+                machine: 0,
+                parts: vec!["player 0's sticks".to_owned()],
+                shift: Some(2),
+            }
+        );
+        assert_eq!(
+            d.describe(),
+            "at frame 4800, machine 0: player 0's sticks; away has machine 0's inputs 2 steps after home"
+        );
+        // Early on the home side instead.
+        p.away.netplay = Some(netplay(4812, |frame| pushed(frame + 3)));
+        assert!(matches!(
+            diverge_inputs(&p),
+            InputDivergence::Differs {
+                frame: 4797,
+                shift: Some(-3),
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1276,6 +2079,15 @@ pub(crate) mod tests {
             "frame 4811, 3 fields:",
             ">   1 0x00123404 at +0x123404: 4 bytes 02000000, size 4, hash 02000326",
             "    2 0x00123408",
+            "Where the inputs diverge: the same at all 32 steps both kept",
+            "31 steps predicted wrong in the game",
+            "this machine 0 of 2; tracking from frame 0; input delay 1 steps at the start",
+            "in this game: mispredicted steps by machine 0 3; steps predicted 40",
+            "rollbacks impossible 0, tracking stopped with inputs predicted 0",
+            "  frame 4800: team 0 pads 0.0 - - - -, team 1 pads 1.0 - - - -",
+            "    machine 0    remap 0000; player 0 state 1: buttons 0000 triggers 00 accel 0 0 0 \
+             nunchuk 0 0 0 pointer 00 0000 stick 40 0 c-stick 0 0",
+            "    machine 1 P  remap 0000",
         ] {
             assert!(text.contains(line), "{line:?} in:\n{text}");
         }

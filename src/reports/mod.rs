@@ -340,7 +340,7 @@ mod tests {
     use crate::{
         accounts,
         reports::{
-            dossiers::tests::{dossier, step},
+            dossiers::tests::{dossier, machine_input, step},
             report::{Side, tests::start},
         },
     };
@@ -811,7 +811,19 @@ mod tests {
         let mut away = dossier(Side::Away);
         away.profile_id = sam;
         away.series = 1_792_000_002;
-        away.steps[1] = step(4812, &[1, 9, 3]);
+        // The largest dossiers: every field, every machine's inputs.
+        let values: Vec<u32> = (1..=512).collect();
+        let mut nine = values.clone();
+        nine[1] = 9;
+        for (d, last) in [(&mut home, &values), (&mut away, &nine)] {
+            d.steps = [step(4811, &values), step(4812, last)];
+            let netplay = d.netplay.as_mut().unwrap();
+            netplay.machines = 4;
+            for step in &mut netplay.inputs {
+                step.machines.resize(4, machine_input(0));
+            }
+        }
+        assert_eq!(away.encode().len(), dossiers::MAX_BYTES);
 
         // Only from its login, of a series its profile played, on its side.
         let (status, _) = server.post_to(DESYNCS, SAM_HOME, home.encode()).await;
