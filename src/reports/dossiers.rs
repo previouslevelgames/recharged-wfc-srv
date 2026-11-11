@@ -1432,6 +1432,10 @@ pub const KEPT_DAYS: i32 = 14;
 /// A profile's dossiers at most a day: a desync ends its series, so a player
 /// sends a few at most.
 pub const PER_DAY: i64 = 20;
+/// And their bytes at most a day: those 20 of a usual size (2 to 6 steps of
+/// about 300 fields, 45 to 80 KB), or 8 of the largest. A profile holds 28
+/// MiB at most over [`KEPT_DAYS`], not 72.
+pub const BYTES_PER_DAY: i64 = 2 * 1024 * 1024;
 
 /// What became of a dossier.
 pub enum Stored {
@@ -1444,7 +1448,7 @@ pub enum Stored {
     NoSeries,
     /// Its profile played the series on the other side.
     WrongSide,
-    /// Its profile sent [`PER_DAY`] already.
+    /// Its profile sent [`PER_DAY`] already, or [`BYTES_PER_DAY`] with it.
     TooMany,
 }
 
@@ -1505,15 +1509,16 @@ pub async fn store(pool: &PgPool, dossier: &Dossier, body: &[u8]) -> Result<Stor
         == 1;
     // A dossier sent again (its answer was lost) is not counted twice.
     if inserted {
-        let today = sqlx::query_scalar!(
-            r#"SELECT count(*) AS "count!" FROM desync_dossiers
+        let today = sqlx::query!(
+            r#"SELECT count(*) AS "count!", coalesce(sum(octet_length(body)), 0)::bigint AS "bytes!"
+               FROM desync_dossiers
                WHERE profile_id = $1 AND received_at > now() - interval '1 day'"#,
             dossier.profile_id,
         )
         .fetch_one(&mut *tx)
         .await?;
         // This one included: dropping the transaction takes it back.
-        if today > PER_DAY {
+        if today.count > PER_DAY || today.bytes > BYTES_PER_DAY {
             return Ok(Stored::TooMany);
         }
     }

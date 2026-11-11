@@ -263,7 +263,8 @@ logged in from (its GPCM connection's or its NAS login's): from any other it
 answers 403 before reading it, so a stranger cannot make it hold dossiers'
 bytes in memory. A dossier counts only from its profile's login ([Trust](#trust)), and only for
 a series the profile reported, on the side it played: the server keeps it
-with that match, one per game and side, 20 per profile a day, for 14 days
+with that match, one per game and side, 20 per profile a day and 2 MiB of
+them (about 20 of a usual size, 8 of the largest), for 14 days
 (`desync_dossiers`). Once both sides' of a game are in, it compares them at the
 steps both list, from the earliest, and keeps the first field that differs
 (`desync_divergences`).

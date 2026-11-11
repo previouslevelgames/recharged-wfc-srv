@@ -816,6 +816,52 @@ mod tests {
         );
     }
 
+    /// Nor more than so many bytes a day, however few dossiers they make.
+    #[sqlx::test]
+    async fn a_profile_sends_so_many_bytes_a_day(pool: PgPool) {
+        let server = Server::new(pool.clone());
+        let anosch = server.log_in(1, "Anosch", ANOSCH_HOME).await;
+        let mut body = start();
+        body["profile_id"] = json!(anosch);
+        server.report(ANOSCH_HOME, &body).await;
+        // Nine large dossiers of another match, 2.1 MiB together.
+        sqlx::query!(
+            "WITH m AS (
+                 INSERT INTO online_matches (release, mode, best_of, home_mii, away_mii,
+                                             home_captain, away_captain)
+                 VALUES ('R4QE', 'ranked', 3, 'Anosch', 'Sam', 'mario', 'luigi')
+                 RETURNING match_id)
+             INSERT INTO desync_dossiers
+                 (match_id, side, game, profile_id, release, build, platform, frame,
+                  written_at, body)
+             SELECT m.match_id, 'home', game, $1, 'R4QE', '1.1.6', '', 1, now(),
+                    convert_to(repeat('x', 250000), 'UTF8')
+             FROM m, generate_series(1, 9) AS game",
+            anosch,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let mut home = dossier(Side::Home);
+        home.profile_id = anosch;
+        home.series = 1_792_000_000;
+        let (status, _) = server
+            .post_to("/api/v1/wfc/desyncs", ANOSCH_HOME, home.encode())
+            .await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+
+        // With two of them gone, it fits.
+        sqlx::query!("DELETE FROM desync_dossiers WHERE game > 7")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let (status, answer) = server
+            .post_to("/api/v1/wfc/desyncs", ANOSCH_HOME, home.encode())
+            .await;
+        assert_eq!(status, StatusCode::OK, "{answer}");
+    }
+
     /// A dossier from where no profile is logged in is refused before its
     /// body is read: one too big gets the 403, not the 413 its reading
     /// would. From a login's NAS address it is read.
