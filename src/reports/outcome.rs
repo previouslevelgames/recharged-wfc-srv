@@ -145,6 +145,9 @@ pub struct Reporter {
     /// Why the series ended, as the end said: `decided`, `desync`,
     /// `disconnect` or `offline`.
     pub cause: Option<String>,
+    /// When its end came, if it said `cause: forfeit`: its player gave the
+    /// match up.
+    pub forfeited_at: Option<OffsetDateTime>,
     /// The build that reported, when it said.
     pub build: Option<String>,
     /// The operating system it ran on, when it said.
@@ -169,6 +172,8 @@ pub struct Outcome {
     pub wins: Teams<i32>,
     pub miis: Teams<String>,
     pub captains: Teams<String>,
+    /// The side whose forfeit decided the match: the other won it.
+    pub forfeited: Option<Side>,
 }
 
 /// The match of `best_of` games with these sides; `idle` once nothing came
@@ -179,6 +184,11 @@ pub struct Outcome {
 /// it; a game one side alone reported counts once the other's report can
 /// no longer come: when every side ended or nothing came for 30 minutes. A
 /// game they saw differently disputes the match.
+///
+/// A forfeit (an end with `cause: forfeit`) of a match both sides report
+/// decides it for the other side, whatever the score, unless the games both
+/// saw the same and played to the end (no `disconnect` or `desync`) had
+/// decided it before ([`forfeit_decides`]). The first side's forfeit counts.
 pub fn settle(sides: &Teams<Option<Reporter>>, best_of: i32, idle: bool) -> Outcome {
     let reporters: Vec<&Reporter> = Side::BOTH
         .iter()
@@ -214,7 +224,9 @@ pub fn settle(sides: &Teams<Option<Reporter>>, best_of: i32, idle: bool) -> Outc
         Ordering::Less => Some(Side::Away),
         Ordering::Equal => None,
     };
+    let forfeited = forfeit_decides(sides, &games, best_of);
     let (state, winner) = match series_won {
+        _ if forfeited.is_some() => ("finished", forfeited.map(Side::other)),
         Some(_) if disputed => ("disputed", None),
         Some(side) => ("finished", Some(side)),
         None if abandoned || (idle && !ended) => ("abandoned", None),
@@ -252,7 +264,45 @@ pub fn settle(sides: &Teams<Option<Reporter>>, best_of: i32, idle: bool) -> Outc
         wins: counted,
         miis,
         captains,
+        forfeited,
     }
+}
+
+/// The side whose forfeit decides the match: the first to forfeit of a
+/// match both sides report, unless the series was won before it. Only games
+/// both sides saw the same, and that both played to the end, count for
+/// that: the game the forfeit broke off ends in a `disconnect`, and a side
+/// alone can't claim games and then forfeit to make them count.
+fn forfeit_decides(
+    sides: &Teams<Option<Reporter>>,
+    games: &[Compared],
+    best_of: i32,
+) -> Option<Side> {
+    let (Some(home), Some(away)) = (&sides.home, &sides.away) else {
+        return None;
+    };
+    let forfeiter = match (home.forfeited_at, away.forfeited_at) {
+        (Some(home_at), Some(away_at)) if away_at < home_at => Side::Away,
+        (Some(_), _) => Side::Home,
+        (None, Some(_)) => Side::Away,
+        (None, None) => return None,
+    };
+    let played: Vec<Compared> = games
+        .iter()
+        .filter(|game| game.status == Status::Agreed)
+        .filter(|game| {
+            [&game.home, &game.away]
+                .into_iter()
+                .flatten()
+                .all(|view| view.ending == "normal")
+        })
+        .cloned()
+        .collect();
+    let won = wins(&played);
+    let decided_before = Side::BOTH
+        .into_iter()
+        .any(|side| 2 * won.get(side) > best_of);
+    (!decided_before).then_some(forfeiter)
 }
 
 #[cfg(test)]
@@ -287,6 +337,7 @@ mod tests {
             sidekicks: Teams::default(),
             reason: None,
             cause: None,
+            forfeited_at: None,
             build: None,
             os: None,
             left_at: None,
@@ -507,6 +558,86 @@ mod tests {
             }
         );
         assert_eq!(outcome.captains.home, UNKNOWN);
+    }
+
+    fn forfeited(mut reporter: Reporter) -> Reporter {
+        reporter.reason = Some("abandoned".into());
+        reporter.forfeited_at = Some(OffsetDateTime::now_utc());
+        reporter
+    }
+
+    fn broke_off(home: i32, away: i32) -> View {
+        View {
+            ending: "disconnect".into(),
+            ..view(home, away)
+        }
+    }
+
+    #[test]
+    fn a_forfeit_gives_the_match_to_the_other_side() {
+        // Anosch won game 1 and leads game 2 when he leaves on purpose: both
+        // games report game 2 as broken off at his lead.
+        let anosch = forfeited(reporter("Anosch", "Sam", &[view(3, 1), broke_off(2, 0)]));
+        let sam = reporter("Sam", "Anosch", &[view(3, 1), broke_off(2, 0)]);
+        let outcome = settle(&both(anosch.clone(), sam.clone()), 3, false);
+        assert_eq!(
+            (outcome.state, outcome.winner, outcome.forfeited),
+            ("finished", Some(Side::Away), Some(Side::Home))
+        );
+        assert_eq!(outcome.wins, Teams { home: 2, away: 0 }, "the score stays");
+        // Sam's end changes nothing, nor do 30 quiet minutes.
+        let sam = ended(sam, "abandoned");
+        let outcome = settle(&both(anosch.clone(), sam.clone()), 3, true);
+        assert_eq!(
+            (outcome.state, outcome.winner),
+            ("finished", Some(Side::Away))
+        );
+        // Best of 1, the only game broken off at the forfeiter's lead.
+        let anosch = forfeited(reporter("Anosch", "Sam", &[broke_off(1, 0)]));
+        let sam = reporter("Sam", "Anosch", &[broke_off(1, 0)]);
+        let outcome = settle(&both(anosch, sam), 1, false);
+        assert_eq!(
+            (outcome.state, outcome.winner),
+            ("finished", Some(Side::Away))
+        );
+        // A disputed game doesn't stop it either.
+        let anosch = forfeited(reporter("Anosch", "Sam", &[view(3, 1)]));
+        let sam = reporter("Sam", "Anosch", &[view(1, 3)]);
+        let outcome = settle(&both(anosch, sam), 3, false);
+        assert_eq!(
+            (outcome.state, outcome.winner),
+            ("finished", Some(Side::Away))
+        );
+    }
+
+    #[test]
+    fn a_forfeit_after_the_decision_or_alone_changes_nothing() {
+        // Both saw Sam win the series before Anosch's game said forfeit.
+        let anosch = forfeited(reporter("Anosch", "Sam", &[view(0, 1), view(0, 2)]));
+        let sam = reporter("Sam", "Anosch", &[view(0, 1), view(0, 2)]);
+        let outcome = settle(&both(anosch, sam), 3, false);
+        assert_eq!(
+            (outcome.state, outcome.winner, outcome.forfeited),
+            ("finished", Some(Side::Away), None)
+        );
+        // Games Anosch's game alone claims don't decide it before his forfeit.
+        let anosch = forfeited(reporter("Anosch", "Sam", &[view(1, 0), view(1, 0)]));
+        let sam = reporter("Sam", "Anosch", &[]);
+        let outcome = settle(&both(anosch, sam), 3, false);
+        assert_eq!(
+            (outcome.winner, outcome.forfeited),
+            (Some(Side::Away), Some(Side::Home))
+        );
+        // Against a retail game (one reporter) a forfeit is an abandon.
+        let alone = Teams {
+            home: Some(forfeited(reporter("Anosch", "Sam", &[view(1, 0)]))),
+            away: None,
+        };
+        let outcome = settle(&alone, 3, false);
+        assert_eq!(
+            (outcome.state, outcome.winner, outcome.forfeited),
+            ("abandoned", None, None)
+        );
     }
 
     #[test]

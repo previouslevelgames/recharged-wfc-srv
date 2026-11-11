@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE profiles SET mii_data = sent.data, mii_stored_at = now()\n         FROM unnest($2::int4[], $3::bytea[]) AS sent(profile_id, data)\n         JOIN player_wfc_profiles bound ON bound.profile_id = sent.profile_id\n         WHERE profiles.profile_id = sent.profile_id AND bound.player_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int4Array",
+        "ByteaArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "91b89d50d2396d49739326cc4be53aadec0cdd5368b2ed7318baeda9c405b846"
+}

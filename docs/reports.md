@@ -89,7 +89,7 @@ without refusing the report:
 |---|---|
 | `build` | any report: the port's build, e.g. `1.1.0+g0123456789ab`; up to 64 printable characters |
 | `os` | any report: the operating system and CPU the game runs on, e.g. `Windows 11 (26100), x86_64`, `macOS 26.3.1, arm64`, `Linux (SteamOS), x86_64`, `Windows 10 (19045), x86_64, Wine 9.0 on Linux`; up to 64 printable characters. The match page shows it under the build |
-| `cause` | an end: why the series ended. `decided`; `desync` (out of sync); `disconnect` (the connection was lost); `offline` (the game's online session ended without a result: a disc error, the HOME menu; a network match has no pause menu) |
+| `cause` | an end: why the series ended. `decided`; `desync` (out of sync); `disconnect` (the connection was lost); `offline` (the game's online session ended without a result: a disc error, the HOME menu; a network match has no pause menu); `forfeit` (the player left the match on purpose, see [Forfeit](#forfeit)) |
 | `game.sync` | a game that ended in `desync`: `{"check": "checksum", "frame": 4812}`, the first of the game's checks that failed (`frame`, `checksum` or `seed`: both machines on the same frame, with the same state checksum and random seed) and on which frame |
 
 The server sees more itself. A game whose GPCM login ends while one of its
@@ -104,6 +104,33 @@ counted by profile with the last problem and address (`report_refusals`):
 those from another address than the profile's login's, and invalid ones from
 its login's addresses. A match that shows no reports from a Recharged side is
 often explained there.
+
+## Forfeit
+
+A player who leaves the match on purpose gives it up: the game's end says
+`"cause": "forfeit"` (with `reason` as usual, usually `abandoned`). The side
+keeps when it came (`online_match_sides.forfeited_at`; `cause` stays empty).
+Once both games report the match, the forfeit decides it: `finished`, won by
+the other side, whatever the games' score, and the match keeps the
+forfeiter's profile (`online_matches.forfeited_by`, `forfeited_at`). Only a
+series won before the forfeit stays as it was, counting the games both sides
+saw the same and played to the end (the game the forfeit broke off ends in
+a `disconnect`). The first side's forfeit counts; the other side's reports
+that come later change nothing. A match only one game reports (the other is
+a retail game, or its start never came) keeps the end as an abandon.
+
+The opponent's game, whose match broke off, asks whether its opponent
+forfeited: `GET /api/v1/wfc/forfeit?profile_id=<its own profile>`, from the
+profile's login ([Trust](#trust)).
+
+| Status | Body | |
+|---|---|---|
+| 200 | `{"forfeit": {"by": "Anosch", "at": "2026-11-10T12:00:00Z"}}` | the latest forfeit against the profile in the last 3 minutes: the forfeiter's Mii name as its own game showed it, and when its end came |
+| 200 | `{"forfeit": null}` | none |
+| 400 | `{"error": "profile_id: a WFC profile"}` | |
+| 403 | `{"error": "profile not logged in from this address"}` | |
+
+An older server answers 404: the game shows the broken-off match as before.
 
 ## Errors
 
@@ -276,7 +303,7 @@ does not count. Endings and lengths are each side's own.
 | State | When |
 |---|---|
 | `in_progress` | until one of the others |
-| `finished` | a side won more than half the series' games (2 of 3), with or without ends; or both sides ended without that: the side that won more games wins, or it is a draw |
+| `finished` | a side won more than half the series' games (2 of 3), with or without ends; or both sides ended without that: the side that won more games wins, or it is a draw; or a side forfeited ([Forfeit](#forfeit)) |
 | `disputed` | the series is over as above, and a game is disputed |
 | `abandoned` | a side ended with `abandoned` before the series was decided, or nothing came for 30 minutes and the games do not decide it |
 
@@ -298,8 +325,8 @@ does not count. Endings and lengths are each side's own.
 
 | Table | |
 |---|---|
-| `online_matches` | one row per match: release, mode, `best_of`, state, each team's Mii and captain, games won, winner, times |
-| `online_match_sides` | each side a game reported: profile, `series`, the names and captains it saw, sidekicks, the end's reason |
+| `online_matches` | one row per match: release, mode, `best_of`, state, each team's Mii and captain, games won, winner, times, the forfeit that decided it |
+| `online_match_sides` | each side a game reported: profile, `series`, the names and captains it saw, sidekicks, the end's reason, cause and forfeit |
 | `online_match_games` | each side's view of each game |
 | `online_match_events` | each report as it came, for the match's timeline |
 | `report_refusals` | the refused reports of each known profile: how many, the last problem and address |

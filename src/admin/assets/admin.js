@@ -1284,7 +1284,8 @@ function captainName(captain) {
 function onlineState(match, now) {
   const [name, tone] = ONLINE_STATES[match.state] || [match.state, null];
   const sub = match.ended_at ? ['ended ', ago(match.ended_at, now)] : ['last report ', ago(match.last_report_at, now)];
-  return [badge(tone, name), h('span', { class: 'sub' }, sub)];
+  const forfeit = match.forfeited_by && h('span', { class: 'sub' }, `forfeit by ${match[match.forfeited_by].mii}`);
+  return [badge(tone, name), forfeit, h('span', { class: 'sub' }, sub)];
 }
 
 function playerPath(profileId) {
@@ -1378,6 +1379,10 @@ function renderMatches(data, now) {
 /** What a finished match came to, for its banner. */
 function matchResult(match) {
   const score = `${match.score.home} – ${match.score.away}`;
+  if (match.forfeited_by) {
+    const forfeiter = match[match.forfeited_by].mii;
+    return `${match.winner === 'home' ? match.home.mii : match.away.mii} won, forfeit by ${forfeiter} at ${score}`;
+  }
   if (!match.winner) return `A draw, ${score}`;
   return `${match.winner === 'home' ? match.home.mii : match.away.mii} won, ${score}`;
 }
@@ -1430,6 +1435,7 @@ function sideEnd(side, now) {
   if (!reporter) return '—';
   const left = reporter.left_at && h('span', { class: 'sub' }, `Left WFC ${ago(reporter.left_at, now).textContent}: ${LEFT_HOW[reporter.left_how] || reporter.left_how}`);
   if (!reporter.reason) return [badge(null, 'No end yet'), h('span', { class: 'sub' }, ['last report ', ago(reporter.last_report_at, now)]), left];
+  if (reporter.forfeit) return [badge('warning', 'Forfeit'), h('span', { class: 'sub' }, ago(reporter.ended_at, now))];
   const [name, tone] = reporter.reason === 'decided' ? ['Decided', 'good'] : ['Abandoned', null];
   const cause = reporter.reason === 'abandoned' && CAUSES[reporter.cause];
   return [badge(tone, name), cause && h('span', { class: 'sub' }, cause[0]), h('span', { class: 'sub' }, ago(reporter.ended_at, now))];
@@ -2237,7 +2243,7 @@ function renderMonitoring(data, now) {
 function renderLeaderboards(data, now) {
   const content = data.content;
   if (!content) return [unreachable(data.error)];
-  const { totals, categories, top, found } = content;
+  const { totals, categories, current = [], top, found } = content;
 
   const choices = h(
     'div',
@@ -2258,7 +2264,10 @@ function renderLeaderboards(data, now) {
     ),
   );
   const leaders = top.filter((entry) => entry.category === category);
+  const currentBoard = current.find((board) => board.category === category);
   const past = (content.past || []).find((board) => board.category === category);
+  // Players with a game this season (or day), linked profiles as one.
+  const playersOf = (c) => (current.find((board) => board.category === c)?.players ?? 0);
   const standings = [
     { label: 'Rank', num: true, cell: (e) => `${e.rank}` },
     {
@@ -2277,6 +2286,9 @@ function renderLeaderboards(data, now) {
     { label: 'Losses', num: true, cell: (e) => (e.losses == null ? '—' : integer.format(e.losses)) },
   ];
   const daily = DAILY_BOARDS.has(category);
+  const leadersNote = currentBoard
+    ? `${calendarDay.formatRange(new Date(currentBoard.first_day), new Date(currentBoard.last_day))} · ${count(currentBoard.players)} ${currentBoard.players === 1 ? 'player' : 'players'} · the first 10, ranked as the game ranks them`
+    : `The first 10 of this ${daily ? 'day' : 'season'}, ranked as the game ranks them`;
   const pastNote = past
     ? `${calendarDay.formatRange(new Date(past.first_day), new Date(past.last_day))} · ${count(past.players)} ${past.players === 1 ? 'player' : 'players'} · kept when the game started the next one`
     : `The final standings, once a ${daily ? 'day' : 'season'} with scores has ended`;
@@ -2286,14 +2298,14 @@ function renderLeaderboards(data, now) {
       'section',
       { class: 'tiles', 'aria-label': 'Key figures' },
       tile('Entries', count(totals.entries), 'Rows in scores'),
-      tile('Players', count(totals.players), 'Distinct profile IDs'),
+      tile('Players', count(totals.players), 'This season, linked profiles as one'),
       tile('Last score', totals.last_put ? ago(totals.last_put, now) : '—', totals.last_put ? dateTime.format(new Date(totals.last_put)) : 'No scores yet'),
       tile('Boards in use', [`${categories.length}`, h('small', null, `/ ${CATEGORIES.length}`)], 'Categories with scores'),
     ),
     found &&
       card(
         'Found',
-        `The rows of every board that match “${pageSearch.text}”, with their rank`,
+        `The rows of the current boards that match “${pageSearch.text}”, with their rank`,
         table(
           [
             { label: 'Board', cell: (e) => CATEGORIES[e.category] || `${e.category}` },
@@ -2306,7 +2318,7 @@ function renderLeaderboards(data, now) {
       ),
     card(
       'Leaders',
-      'The first 10 of a board, ranked as the game ranks them',
+      leadersNote,
       table(
         [...standings, { label: 'Updated', cell: (e) => ago(e.updated_at, now) }],
         leaders,
@@ -2330,6 +2342,7 @@ function renderLeaderboards(data, now) {
         [
           { label: 'Category', cell: (c) => [CATEGORIES[c.category] || `Category ${c.category}`, h('span', { class: 'sub' }, `#${c.category}`)] },
           { label: 'Entries', num: true, cell: (c) => integer.format(c.players) },
+          { label: 'Players', num: true, cell: (c) => integer.format(playersOf(c.category)) },
           { label: 'JP', num: true, cell: (c) => integer.format(c.jp) },
           { label: 'US', num: true, cell: (c) => integer.format(c.us) },
           { label: 'EU', num: true, cell: (c) => integer.format(c.eu) },
@@ -2753,7 +2766,13 @@ function renderCompetitive(data, now) {
             return badge(tone, text);
           },
         },
-        { label: 'Winner', cell: (match) => match.winner || (match.state === 'finished' ? 'Draw' : h('span', { class: 'sub' }, '–')) },
+        {
+          label: 'Winner',
+          cell: (match) => {
+            if (match.forfeited_by) return [match.winner || '–', h('span', { class: 'sub' }, `forfeit by ${match.forfeited_by}`)];
+            return match.winner || (match.state === 'finished' ? 'Draw' : h('span', { class: 'sub' }, '–'));
+          },
+        },
       ],
       matches,
       'No matches yet.',

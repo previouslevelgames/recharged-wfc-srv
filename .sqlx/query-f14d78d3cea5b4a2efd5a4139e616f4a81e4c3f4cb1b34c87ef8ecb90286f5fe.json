@@ -1,0 +1,41 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT forfeiter.mii, m.forfeited_at AS \"forfeited_at!\"\n           FROM online_matches m\n           JOIN online_match_sides forfeiter\n             ON forfeiter.match_id = m.match_id AND forfeiter.profile_id = m.forfeited_by\n           JOIN online_match_sides opponent\n             ON opponent.match_id = m.match_id AND opponent.side <> forfeiter.side\n           WHERE m.forfeited_at > now() - make_interval(secs => $2)\n             AND opponent.profile_id = $1\n           ORDER BY m.forfeited_at DESC\n           LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "mii",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_match_sides",
+            "name": "mii"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "forfeited_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "online_matches",
+            "name": "forfeited_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "f14d78d3cea5b4a2efd5a4139e616f4a81e4c3f4cb1b34c87ef8ecb90286f5fe"
+}

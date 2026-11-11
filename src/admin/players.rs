@@ -26,7 +26,7 @@ use crate::{
     relay_store::{self, Relayed},
     reports::{
         self,
-        outcome::{self, Compared},
+        record::{self, Record},
         report::{Side, Teams, UNKNOWN},
     },
 };
@@ -42,8 +42,6 @@ const RELAYED_SHOWN: i64 = 50;
 const BUILDS_SHOWN: i64 = 10;
 const ERRORS_SHOWN: i64 = 50;
 const EVENTS_SHOWN: usize = 50;
-/// The modes of a match, as reports name them.
-const MODES: [&str; 2] = ["ranked", "friends"];
 
 #[derive(Serialize)]
 pub struct Players {
@@ -414,33 +412,12 @@ struct BoundProfile {
 #[derive(Default, Serialize)]
 struct ModeStats {
     mode: &'static str,
-    series: SeriesRecord,
-    games: GamesRecord,
+    /// `series` and `games`.
+    #[serde(flatten)]
+    record: Record,
     /// The captains the profile's team played its games with, most used
     /// first.
     captains: Vec<CaptainUse>,
-}
-
-#[derive(Default, Serialize)]
-struct SeriesRecord {
-    played: u32,
-    won: u32,
-    lost: u32,
-    drawn: u32,
-    disputed: u32,
-    abandoned: u32,
-    in_progress: u32,
-}
-
-/// The games that count (docs/reports.md, "Games and states").
-#[derive(Default, Serialize)]
-struct GamesRecord {
-    played: u32,
-    won: u32,
-    lost: u32,
-    drawn: u32,
-    goals_for: u32,
-    goals_against: u32,
 }
 
 #[derive(Serialize)]
@@ -698,61 +675,31 @@ async fn record(
     let ids: Vec<i64> = rows.iter().map(|row| row.match_id).collect();
     let reporters = reports::sides(conn, &ids).await?;
 
-    let mut stats: Vec<ModeStats> = MODES
+    let mut stats: Vec<ModeStats> = record::MODES
         .iter()
         .map(|&mode| ModeStats {
             mode,
             ..Default::default()
         })
         .collect();
-    let mut captains: Vec<BTreeMap<String, u32>> = vec![BTreeMap::new(); MODES.len()];
+    let mut captains: Vec<BTreeMap<String, u32>> = vec![BTreeMap::new(); record::MODES.len()];
     let mut played = Vec::new();
     for row in rows {
         let Some(side) = Side::parse(&row.side) else {
             continue;
         };
-        let Some(mode) = MODES.iter().position(|mode| *mode == row.mode) else {
+        let Some(mode) = record::MODES.iter().position(|mode| *mode == row.mode) else {
             continue;
         };
-        let winner = row.winner.as_deref().and_then(Side::parse);
-        let result = (row.state == "finished").then(|| match winner {
-            Some(winner) if winner == side => "won",
-            Some(_) => "lost",
-            None => "drawn",
-        });
-
-        let series = &mut stats[mode].series;
-        series.played += 1;
-        match (row.state.as_str(), result) {
-            (_, Some("won")) => series.won += 1,
-            (_, Some("lost")) => series.lost += 1,
-            (_, Some(_)) => series.drawn += 1,
-            ("disputed", _) => series.disputed += 1,
-            ("abandoned", _) => series.abandoned += 1,
-            _ => series.in_progress += 1,
-        }
-
-        let sides = reporters.get(&row.match_id);
-        let empty = BTreeMap::new();
-        let views = |side: Side| {
-            sides
-                .and_then(|sides| sides.get(side).as_ref())
-                .map_or(&empty, |reporter| &reporter.games)
+        let series = record::Series {
+            state: &row.state,
+            winner: row.winner.as_deref().and_then(Side::parse),
+            side,
         };
-        let games = &mut stats[mode].games;
-        for game in outcome::compare(views(Side::Home), views(Side::Away))
-            .iter()
-            .filter_map(Compared::counted)
-        {
-            let (mine, theirs) = (*game.score.get(side), *game.score.get(side.other()));
-            games.played += 1;
-            games.goals_for += mine as u32;
-            games.goals_against += theirs as u32;
-            match mine.cmp(&theirs) {
-                std::cmp::Ordering::Greater => games.won += 1,
-                std::cmp::Ordering::Less => games.lost += 1,
-                std::cmp::Ordering::Equal => games.drawn += 1,
-            }
+        let result = series.result();
+        let games = record::counted(reporters.get(&row.match_id));
+        stats[mode].record.add(&series, &games);
+        for game in &games {
             let captain = game.captains.get(side);
             if captain != UNKNOWN {
                 *captains[mode].entry(captain.clone()).or_default() += 1;
@@ -970,17 +917,35 @@ mod tests {
             panic!("two modes");
         };
         assert_eq!((ranked.mode, friends.mode), ("ranked", "friends"));
-        let series = &ranked.series;
+        let series = &ranked.record.series;
         assert_eq!(
             (series.played, series.won, series.lost, series.drawn),
             (1, 1, 0, 0)
         );
-        let played = &ranked.games;
+        let played = &ranked.record.games;
         assert_eq!((played.played, played.won, played.lost), (3, 2, 1));
         assert_eq!((played.goals_for, played.goals_against), (7, 5));
         assert_eq!(ranked.captains[0].captain, "mario");
         assert_eq!(ranked.captains[0].games, 3);
-        assert_eq!((friends.series.played, friends.series.in_progress), (1, 1));
+        assert_eq!(
+            (
+                friends.record.series.played,
+                friends.record.series.in_progress
+            ),
+            (1, 1)
+        );
+        // The page reads each mode's record as `series` and `games`.
+        assert_eq!(
+            serde_json::to_value(&detail.stats).unwrap()[0],
+            serde_json::json!({
+                "mode": "ranked",
+                "series": {"played": 1, "won": 1, "lost": 0, "drawn": 0, "disputed": 0,
+                           "abandoned": 0, "in_progress": 0},
+                "games": {"played": 3, "won": 2, "lost": 1, "drawn": 0, "goals_for": 7,
+                          "goals_against": 5},
+                "captains": [{"captain": "mario", "games": 3}],
+            })
+        );
 
         // 13 points: second with Profile 8, behind 20.
         let [season] = &detail.standing[..] else {
@@ -1008,8 +973,8 @@ mod tests {
 
         // Sam lost the same series.
         let sam = detail_of(&games, games.sam).await;
-        assert_eq!(sam.stats[0].series.lost, 1);
-        assert_eq!(sam.stats[0].games.goals_for, 5);
+        assert_eq!(sam.stats[0].record.series.lost, 1);
+        assert_eq!(sam.stats[0].record.games.goals_for, 5);
         assert!(
             super::detail(&games.pool, &gpcm, &now, 1_234_567_890)
                 .await

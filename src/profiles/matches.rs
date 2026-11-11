@@ -68,6 +68,10 @@ pub struct Match {
     /// The server sent the challenge for the challenger's search for a
     /// random opponent ([`super::search`]).
     pub random: bool,
+    /// The player who gave the set up while it was playing ([`forfeit`]):
+    /// it is `finished`, won by the other.
+    pub forfeited_by: Option<i64>,
+    pub forfeited_at: Option<OffsetDateTime>,
 }
 
 impl Match {
@@ -238,6 +242,8 @@ struct Row {
     playing_at: Option<OffsetDateTime>,
     rematch_of: Option<i64>,
     random: bool,
+    forfeited_by: Option<i64>,
+    forfeited_at: Option<OffsetDateTime>,
 }
 
 /// Ends the sets that waited too long or lost a player, and sends back the
@@ -352,7 +358,8 @@ pub async fn current(pool: &PgPool, player_id: i64) -> Result<Option<Match>, sql
     let row = sqlx::query_as!(
         Row,
         "SELECT match_id, state, home, away, rule_set, rules, rules_hash, winner, created_at,
-                home_ready_at, away_ready_at, go_at, playing_at, rematch_of, random
+                home_ready_at, away_ready_at, go_at, playing_at, rematch_of, random,
+                forfeited_by, forfeited_at
          FROM matches
          WHERE (home = $1 OR away = $1)
            AND (state IN ('challenged', 'accepted') OR updated_at > now() - interval '1 hour')
@@ -374,7 +381,8 @@ pub async fn get(
     let row = sqlx::query_as!(
         Row,
         "SELECT match_id, state, home, away, rule_set, rules, rules_hash, winner, created_at,
-                home_ready_at, away_ready_at, go_at, playing_at, rematch_of, random
+                home_ready_at, away_ready_at, go_at, playing_at, rematch_of, random,
+                forfeited_by, forfeited_at
          FROM matches WHERE match_id = $1 AND (home = $2 OR away = $2)",
         match_id,
         player_id,
@@ -435,6 +443,8 @@ pub async fn challenge(
         playing_at: None,
         rematch_of,
         random,
+        forfeited_by: None,
+        forfeited_at: None,
     }))
 }
 
@@ -726,7 +736,9 @@ pub async fn rematch(
 }
 
 /// `player_id`'s game reports the series. The second report settles it: the
-/// match is `finished` if both saw the same games, else `disputed`.
+/// match is `finished` if both saw the same games, else `disputed`. After
+/// the opponent's forfeit ([`forfeit`]) the report is kept, and changes
+/// nothing.
 pub async fn report(
     pool: &PgPool,
     match_id: i64,
@@ -736,20 +748,23 @@ pub async fn report(
     let Some(found) = get(pool, match_id, player_id).await? else {
         return Ok(Err(Refusal::NotFound));
     };
-    if let Err(problem) = check_report(&found.rules, games) {
+    if let Err(problem) = check_games(&found.rules, games, 1) {
         return Ok(Err(Refusal::BadReport(problem)));
     }
     let mut transaction = pool.begin().await?;
     // Both games report right after the final whistle: the second one must
     // see the first's report, and a cancel can't slip in between.
-    let state = sqlx::query_scalar!(
-        "SELECT state FROM matches WHERE match_id = $1 FOR UPDATE",
+    let locked = sqlx::query!(
+        "SELECT state, forfeited_by FROM matches WHERE match_id = $1 FOR UPDATE",
         match_id,
     )
     .fetch_one(&mut *transaction)
     .await?;
-    if state != "accepted" {
-        return Ok(Err(Refusal::State(state)));
+    let forfeited = locked
+        .forfeited_by
+        .is_some_and(|forfeiter| forfeiter != player_id);
+    if locked.state != "accepted" && !forfeited {
+        return Ok(Err(Refusal::State(locked.state)));
     }
     let inserted = sqlx::query!(
         "INSERT INTO match_reports (match_id, player_id, games) VALUES ($1, $2, $3)
@@ -763,6 +778,10 @@ pub async fn report(
     .rows_affected();
     if inserted == 0 {
         return Ok(Err(Refusal::Reported));
+    }
+    if forfeited {
+        transaction.commit().await?;
+        return Ok(Ok(found));
     }
     let opponent = found.opponent(player_id);
     let other = sqlx::query_scalar!(
@@ -780,6 +799,76 @@ pub async fn report(
     let settled = settle(&mut transaction, &found, player_id, games, &other).await?;
     transaction.commit().await?;
     Ok(Ok(settled))
+}
+
+/// `player_id` gives the playing set up (docs/profiles.md, "Forfeit"): it is
+/// `finished`, won by the opponent whatever the score, and `games`, the ones
+/// played to the end before (perhaps none), are the player's report. Only
+/// while the set plays (stage `playing`: accepted, the games met) and the
+/// player has not reported it.
+pub async fn forfeit(
+    pool: &PgPool,
+    match_id: i64,
+    player_id: i64,
+    games: &[Game],
+) -> Result<Result<Match, Refusal>, sqlx::Error> {
+    let Some(found) = get(pool, match_id, player_id).await? else {
+        return Ok(Err(Refusal::NotFound));
+    };
+    if let Err(problem) = check_games(&found.rules, games, 0) {
+        return Ok(Err(Refusal::BadReport(problem)));
+    }
+    let mut transaction = pool.begin().await?;
+    // The opponent's report or a sweep can't settle it in between.
+    let row = sqlx::query_as!(
+        Row,
+        "SELECT match_id, state, home, away, rule_set, rules, rules_hash, winner, created_at,
+                home_ready_at, away_ready_at, go_at, playing_at, rematch_of, random,
+                forfeited_by, forfeited_at
+         FROM matches WHERE match_id = $1 FOR UPDATE",
+        match_id,
+    )
+    .fetch_one(&mut *transaction)
+    .await?;
+    let Some(locked) = stored(row) else {
+        return Ok(Err(Refusal::NotFound));
+    };
+    if locked.stage() != "playing" {
+        return Ok(Err(Refusal::State(locked.stage().into())));
+    }
+    let inserted = sqlx::query!(
+        "INSERT INTO match_reports (match_id, player_id, games) VALUES ($1, $2, $3)
+         ON CONFLICT DO NOTHING",
+        match_id,
+        player_id,
+        serde_json::to_string(games).expect("games serialize"),
+    )
+    .execute(&mut *transaction)
+    .await?
+    .rows_affected();
+    if inserted == 0 {
+        return Ok(Err(Refusal::Reported));
+    }
+    let winner = locked.opponent(player_id);
+    let forfeited_at = sqlx::query_scalar!(
+        "UPDATE matches SET state = 'finished', winner = $2, forfeited_by = $3,
+                            forfeited_at = now(), updated_at = now()
+         WHERE match_id = $1
+         RETURNING forfeited_at AS \"forfeited_at!\"",
+        match_id,
+        winner,
+        player_id,
+    )
+    .fetch_one(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    Ok(Ok(Match {
+        state: "finished".into(),
+        winner: Some(winner),
+        forfeited_by: Some(player_id),
+        forfeited_at: Some(forfeited_at),
+        ..locked
+    }))
 }
 
 /// Whether `player_id` has reported `match_id`.
@@ -846,11 +935,11 @@ async fn settle(
     })
 }
 
-/// A report fits a series by `rules`: no more games than it has, plausible
-/// scores and names.
-fn check_report(rules: &Rules, games: &[Game]) -> Result<(), String> {
-    if games.is_empty() || games.len() > usize::from(rules.games).min(MAX_GAMES) {
-        return Err(format!("a report has 1 to {} games", rules.games));
+/// A report fits a series by `rules`: at least `fewest` games and no more
+/// than it has, plausible scores and names.
+fn check_games(rules: &Rules, games: &[Game], fewest: usize) -> Result<(), String> {
+    if games.len() < fewest || games.len() > usize::from(rules.games).min(MAX_GAMES) {
+        return Err(format!("a report has {fewest} to {} games", rules.games));
     }
     for (index, game) in games.iter().enumerate() {
         if game.my_score > 99 || game.opponent_score > 99 {
@@ -928,6 +1017,8 @@ fn stored(row: Row) -> Option<Match> {
         playing_at: row.playing_at,
         rematch_of: row.rematch_of,
         random: row.random,
+        forfeited_by: row.forfeited_by,
+        forfeited_at: row.forfeited_at,
     })
 }
 
@@ -1552,6 +1643,51 @@ mod tests {
         assert_eq!(sweep(&pool).await.unwrap(), [found.id]);
         let ended = get(&pool, found.id, mario).await.unwrap().unwrap();
         assert_eq!((ended.state.as_str(), ended.winner), ("dissolved", None));
+        assert!(!busy_now(&pool, mario, bowser).await);
+    }
+
+    #[sqlx::test]
+    async fn a_forfeit_settles_the_set_for_the_opponent(pool: PgPool) {
+        let (found, mario, bowser) = playing_set(&pool).await;
+        // Too many games for the series; nobody else's set.
+        assert!(matches!(
+            forfeit(&pool, found.id, mario, &vec![game(1, 0); 4])
+                .await
+                .unwrap(),
+            Err(Refusal::BadReport(_))
+        ));
+        let luigi = player(&pool, "Luigi").await;
+        assert_eq!(
+            forfeit(&pool, found.id, luigi, &[]).await.unwrap(),
+            Err(Refusal::NotFound)
+        );
+        // Bowser's game saw the match break off and reported first; then
+        // Mario's forfeit comes, ahead in the games.
+        report(&pool, found.id, bowser, &[game(0, 1), broke_off(0, 2, 0.5)])
+            .await
+            .unwrap()
+            .unwrap();
+        let ended = forfeit(&pool, found.id, mario, &[game(1, 0)])
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (ended.state.as_str(), ended.winner, ended.forfeited_by),
+            ("finished", Some(bowser), Some(mario))
+        );
+        assert_eq!(get(&pool, found.id, bowser).await.unwrap().unwrap(), ended);
+        assert_eq!(games(&pool, found.id, mario).await.unwrap(), [game(1, 0)]);
+        // Neither the sweep nor a report changes it.
+        seen(&pool, 61, &[mario, bowser]).await;
+        games_said_ready(&pool, found.id, [61, 61]).await;
+        assert!(sweep(&pool).await.unwrap().is_empty());
+        assert_eq!(
+            report(&pool, found.id, bowser, &[game(0, 1)])
+                .await
+                .unwrap(),
+            Err(Refusal::Reported)
+        );
+        assert_eq!(get(&pool, found.id, mario).await.unwrap().unwrap(), ended);
         assert!(!busy_now(&pool, mario, bowser).await);
     }
 

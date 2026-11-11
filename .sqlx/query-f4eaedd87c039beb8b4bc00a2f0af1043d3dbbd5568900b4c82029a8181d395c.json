@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE matches SET forfeited_by = $2 WHERE forfeited_by = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f4eaedd87c039beb8b4bc00a2f0af1043d3dbbd5568900b4c82029a8181d395c"
+}

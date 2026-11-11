@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE online_match_sides\n                 SET reason = $3, cause = $4, ended_at = now(),\n                     forfeited_at = CASE WHEN $5 THEN now() END\n                 WHERE match_id = $1 AND side = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Text",
+        "Text",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5c43cc5c4f6d884af0d54d3ff7e0bc8c540f8a6209e10d01021aadd231027b1a"
+}

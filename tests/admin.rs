@@ -573,7 +573,8 @@ async fn a_diagnostics_token_reads_the_pages_but_changes_nothing(pool: PgPool) {
     .fetch_one(&pool)
     .await
     .unwrap();
-    let mut browser = Browser::new(recharged_wfc_srv::App::new(pool).router(Some(config), None));
+    let mut browser =
+        Browser::new(recharged_wfc_srv::App::new(pool.clone()).router(Some(config), None));
     let bearer = |uri: &str, token: &str| {
         Request::get(uri).header(header::AUTHORIZATION, format!("Bearer {token}"))
     };
@@ -605,6 +606,31 @@ async fn a_diagnostics_token_reads_the_pages_but_changes_nothing(pool: PgPool) {
     assert_eq!(content["sides"][0]["name"], "Mario", "{body}");
     assert_eq!(content["sides"][1]["name"], "Bowser", "{body}");
     assert_eq!(content["pairing"]["pairing"], "waiting", "{body}");
+    assert!(content["set"]["forfeited_by"].is_null(), "{body}");
+    // Mario gives the set up: the set and the Competitive page say so.
+    sqlx::query(
+        "UPDATE matches SET state = 'finished', winner = away, forfeited_by = home,
+                            forfeited_at = now()
+         WHERE match_id = $1",
+    )
+    .bind(set)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (_, _, body) = browser.send(bearer(&timeline, TOKEN)).await;
+    let content = serde_json::from_str::<serde_json::Value>(&body).unwrap()["content"].clone();
+    assert_eq!(
+        content["set"]["forfeited_by"], content["sides"][0]["player_id"],
+        "{body}"
+    );
+    let (_, _, body) = browser.send(bearer("/admin/api/competitive", TOKEN)).await;
+    let content = serde_json::from_str::<serde_json::Value>(&body).unwrap()["content"].clone();
+    let listed = &content["matches"][0];
+    assert_eq!(
+        (&listed["winner"], &listed["forfeited_by"]),
+        (&serde_json::json!("Bowser"), &serde_json::json!("Mario")),
+        "{body}"
+    );
     let (_, _, body) = browser.send(bearer("/admin/api/sets/999999", TOKEN)).await;
     let data: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert!(data["content"].is_null(), "{body}");

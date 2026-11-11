@@ -331,7 +331,10 @@ profile stands for its player, so the game
 finds itself (NEAR, ORDER) and shows its own Mii; in FRIENDS, a listed
 profile stands for its player before the others. Rows of profiles no
 launcher proved stay as they are. The launcher's Leaderboard and the admin
-site's Leaders merge alike.
+site's Leaders merge alike, and they also leave out rows without a game (0
+points, no wins, no losses, the empty record of a season or day the game puts
+before it has played one): such a row counts no player there. The game's own
+boards keep them.
 
 ### Response
 

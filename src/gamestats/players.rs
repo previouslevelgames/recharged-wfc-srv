@@ -8,6 +8,11 @@
 //! day) add up: a row of an ended one stays in `scores` until its profile's
 //! next put, and stays a row of its own. Profiles of no player stay rows of
 //! their own.
+//!
+//! Recharged's own boards (the launcher's and the admin site's) also leave
+//! out the rows without a game ([`played`]): the game puts the empty record
+//! of a new season or day too, so such a row tells no one played. The game's
+//! own boards keep them, as the game expects.
 
 use std::collections::HashMap;
 
@@ -47,6 +52,14 @@ impl<T> Line<T> {
             members: vec![profile_id],
         }
     }
+}
+
+/// Whether a row of a board has a game on it: points, a win or a loss. The
+/// game also puts the record of a season (or day) it has not played yet (0
+/// points, no wins, no losses), which stands for no game.
+pub fn played(score: i32, userdata: &[u8]) -> bool {
+    let record = Submission::parse(userdata);
+    score != 0 || record.wins.unwrap_or(0) + record.losses.unwrap_or(0) > 0
 }
 
 /// The player of each of `profile_ids` that a launcher proved for one.
@@ -154,6 +167,16 @@ mod tests {
         // Signed, as the game puts it.
         submission::sign(&mut userdata);
         userdata
+    }
+
+    #[test]
+    fn only_rows_with_a_game_are_played() {
+        assert!(played(30, &userdata(3, 1, "Mario")));
+        assert!(played(0, &userdata(0, 2, "Luigi")));
+        assert!(played(12, &userdata(0, 0, "Peach")));
+        // The record of a new season or day, put before a game of it.
+        assert!(!played(0, &userdata(0, 0, "Wario")));
+        assert!(!played(0, &[]));
     }
 
     fn line(

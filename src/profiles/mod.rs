@@ -8,7 +8,9 @@
 //! takes a name. A player can also start without Discord, under a name of
 //! its own, and come back by its game's WFC login ([`mii_sign_in`]).
 //! Players, their accounts and sessions are in the database ([`players`]);
-//! the launcher sends its session as a bearer token.
+//! the launcher sends its session as a bearer token. It also sends the Miis
+//! of the player's WFC profiles, which show the player ([`mii_data`]), and
+//! reads the player's record in the online series ([`stats`]).
 //!
 //! Signed in, a player challenges another to a test match ([`matches`]) by
 //! a rule set the server's admins keep ([`rules`]). The port proves which
@@ -25,6 +27,7 @@ mod flow_tests;
 mod friends;
 mod leaderboard;
 mod matches;
+mod mii_data;
 mod mii_sign_in;
 mod miis;
 mod play;
@@ -33,6 +36,7 @@ pub(crate) mod rules;
 mod search;
 mod sign_in;
 mod social;
+mod stats;
 
 use std::{sync::Arc, time::Duration};
 
@@ -142,6 +146,8 @@ pub(crate) fn router(
         .route("/api/v1/me", get(me))
         .route("/api/v1/me/country", put(choose_country))
         .route("/api/v1/me/available", put(play::set_available))
+        .route("/api/v1/me/miis", post(mii_data::upload))
+        .route("/api/v1/me/stats", get(stats::stats))
         .route("/api/v1/rules", get(play::rule_sets))
         .route("/api/v1/wfc", post(play::bind))
         .route("/api/v1/matches", post(play::challenge))
@@ -175,6 +181,7 @@ pub(crate) fn router(
             get(play::chat_messages).post(play::send_chat),
         )
         .route("/api/v1/matches/{id}/report", post(play::report))
+        .route("/api/v1/matches/{id}/forfeit", post(play::forfeit))
         .route("/sign-in", get(sign_in_page))
         .route("/sign-in/test", post(page_test_sign_in))
         .route("/sign-in/sign-in.css", get(stylesheet))

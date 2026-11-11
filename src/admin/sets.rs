@@ -53,6 +53,10 @@ struct Set {
     /// The games found each other.
     #[serde(with = "time::serde::rfc3339::option")]
     playing_at: Option<OffsetDateTime>,
+    /// The player who gave the set up, which the other won.
+    forfeited_by: Option<i64>,
+    #[serde(with = "time::serde::rfc3339::option")]
+    forfeited_at: Option<OffsetDateTime>,
 }
 
 #[derive(Serialize)]
@@ -118,7 +122,7 @@ pub async fn timeline(
 ) -> Result<Option<Timeline>, sqlx::Error> {
     let Some(set) = sqlx::query!(
         "SELECT match_id, state, home, away, rule_set, random, rematch_of, winner,
-                created_at, updated_at, go_at, playing_at,
+                created_at, updated_at, go_at, playing_at, forfeited_by, forfeited_at,
                 home_ready_at, away_ready_at, home_game_ready_at, away_game_ready_at
          FROM matches WHERE match_id = $1",
         id,
@@ -256,6 +260,8 @@ pub async fn timeline(
             updated_at: set.updated_at,
             go_at: set.go_at,
             playing_at: set.playing_at,
+            forfeited_by: set.forfeited_by,
+            forfeited_at: set.forfeited_at,
         },
         pairing: pairings.view(id),
         sides,

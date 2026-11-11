@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT state, winner, home_wins, away_wins, forfeited_by FROM online_matches\n             WHERE match_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "state",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_matches",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "winner",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_matches",
+            "name": "winner"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "home_wins",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "online_matches",
+            "name": "home_wins"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "away_wins",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "online_matches",
+            "name": "away_wins"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "forfeited_by",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "online_matches",
+            "name": "forfeited_by"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "fb8ec87d80c69b58e3d22f23fac8a16fb4119f644cda2bc470eeeb9df2269b46"
+}

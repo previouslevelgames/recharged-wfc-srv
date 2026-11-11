@@ -1,7 +1,8 @@
 //! The Leaderboards page: the gamestats2 `scores`, by category and region,
-//! who leads each category, and how its last season (or day) ended
-//! (docs/gamestats2.md, "Seasons"). As on the game's boards, a Recharged
-//! player's WFC profiles are one row (`gamestats::players`).
+//! who leads each category's current season (or day) and how many play it,
+//! and how its last one ended (docs/gamestats2.md, "Seasons"). As on the
+//! game's boards, a Recharged player's WFC profiles are one row, and as on the
+//! launcher's, a row without a game counts no one (`gamestats::players`).
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -23,29 +24,48 @@ const MOST_SHOWN: usize = 1000;
 /// Rows a search shows at most, over all categories.
 const FOUND: usize = 100;
 
+/// The season's board (`NETWORK_PERSISTENT_SEASON`), whose players the key
+/// figures count.
+const SEASON: i32 = 0;
+
 #[derive(Serialize)]
 pub struct Leaderboards {
     totals: Totals,
     categories: Vec<Category>,
-    /// The first [`TOP`] rows of each category, in the game's order.
+    /// Each category's current season (or day) that has players.
+    current: Vec<Current>,
+    /// The first [`TOP`] rows of each category's current season (or day), in
+    /// the game's order.
     top: Vec<Entry>,
-    /// With a search: the rows of every category whose name, Recharged
+    /// With a search: the rows of the current boards whose name, Recharged
     /// player or profiles it names (at most [`FOUND`]), ranked like `top`.
     found: Option<Vec<Entry>>,
     /// Each category's last season that has ended, if it had scores.
     past: Vec<Past>,
 }
 
-/// All of `scores`.
+/// All of `scores`, and the players of the current season.
 #[derive(Serialize)]
 pub struct Totals {
     entries: i64,
-    players: i64,
+    /// Everyone with a game on the season's board, a player's WFC profiles
+    /// as one.
+    players: usize,
     #[serde(with = "time::serde::rfc3339::option")]
     last_put: Option<OffsetDateTime>,
 }
 
-/// The `scores` of one category.
+/// A category's current season (or day).
+#[derive(Serialize)]
+struct Current {
+    category: i32,
+    first_day: String,
+    last_day: String,
+    /// Everyone with a game on it, a player's WFC profiles as one.
+    players: usize,
+}
+
+/// The `scores` of one category, its rows of every season.
 #[derive(Serialize)]
 struct Category {
     category: i32,
@@ -124,29 +144,77 @@ pub async fn read(
     search: &Search,
     shown: &Shown,
 ) -> Result<Leaderboards, sqlx::Error> {
+    read_on(pool, search, shown, OffsetDateTime::now_utc().date()).await
+}
+
+/// [`read`] on `today` (the UTC date, as [`past`]).
+async fn read_on(
+    pool: &PgPool,
+    search: &Search,
+    shown: &Shown,
+    today: Date,
+) -> Result<Leaderboards, sqlx::Error> {
     let mut tx = snapshot(pool).await?;
-    let (top, found) = top(&mut tx, search, shown.rows()).await?;
+    let (top, found, current) = top(&mut tx, search, shown.rows(), today).await?;
     let leaderboards = Leaderboards {
-        totals: totals(&mut tx).await?,
+        totals: totals_on(&mut tx, today).await?,
         categories: categories(&mut tx).await?,
+        current,
         top,
         found,
-        past: past(&mut tx, OffsetDateTime::now_utc().date()).await?,
+        past: past(&mut tx, today).await?,
     };
     tx.commit().await?;
     Ok(leaderboards)
 }
 
 pub async fn totals(conn: &mut PgConnection) -> Result<Totals, sqlx::Error> {
-    sqlx::query_as!(
-        Totals,
+    totals_on(conn, OffsetDateTime::now_utc().date()).await
+}
+
+async fn totals_on(conn: &mut PgConnection, today: Date) -> Result<Totals, sqlx::Error> {
+    let stored = sqlx::query!(
         r#"SELECT count(*) AS "entries!",
                   count(DISTINCT profile_id) AS "players!",
                   max(updated_at) AS last_put
            FROM scores"#
     )
-    .fetch_one(conn)
-    .await
+    .fetch_one(&mut *conn)
+    .await?;
+    let season: Vec<Row> = current(&mut *conn, today)
+        .await?
+        .into_iter()
+        .filter(|row| row.category == SEASON)
+        .collect();
+    let owners = Owners::read(&mut *conn, &season).await?;
+    let (_, players) = leaders(SEASON, season, &owners);
+    Ok(Totals {
+        entries: stored.entries,
+        players,
+        last_put: stored.last_put,
+    })
+}
+
+/// The rows of each category's current season (or day) on `today` (the UTC
+/// date, as [`past`]) that have a game on them: a row of an ended one stays
+/// in `scores` until its profile's next put, and the game also puts the
+/// empty record of a new one ([`players::played`]).
+async fn current(conn: &mut PgConnection, today: Date) -> Result<Vec<Row>, sqlx::Error> {
+    Ok(sqlx::query_as!(
+        Row,
+        "SELECT category, profile_id, region, score, userdata, updated_at FROM scores"
+    )
+    .fetch_all(conn)
+    .await?
+    .into_iter()
+    .filter(|row| {
+        Submission::parse(&row.userdata)
+            .date
+            .map(|date| season::first_day(row.category, date))
+            == Some(season::first_day(row.category, today))
+            && players::played(row.score, &row.userdata)
+    })
+    .collect())
 }
 
 async fn categories(conn: &mut PgConnection) -> Result<Vec<Category>, sqlx::Error> {
@@ -168,19 +236,15 @@ async fn categories(conn: &mut PgConnection) -> Result<Vec<Category>, sqlx::Erro
     .await
 }
 
-/// The first `shown` rows of each category, and with a search the rows it
-/// finds.
+/// The first `shown` rows of each category's current season (or day) on
+/// `today`, with a search the rows it finds there, and how many play each.
 async fn top(
     conn: &mut PgConnection,
     search: &Search,
     shown: usize,
-) -> Result<(Vec<Entry>, Option<Vec<Entry>>), sqlx::Error> {
-    let rows = sqlx::query_as!(
-        Row,
-        "SELECT category, profile_id, region, score, userdata, updated_at FROM scores"
-    )
-    .fetch_all(&mut *conn)
-    .await?;
+    today: Date,
+) -> Result<(Vec<Entry>, Option<Vec<Entry>>, Vec<Current>), sqlx::Error> {
+    let rows = current(&mut *conn, today).await?;
     let owners = Owners::read(conn, &rows).await?;
     let mut boards: BTreeMap<i32, Vec<Row>> = BTreeMap::new();
     for row in rows {
@@ -191,8 +255,9 @@ async fn top(
     let searching = text.is_some();
     let mut top = Vec::new();
     let mut found = Vec::new();
+    let mut current = Vec::new();
     for (category, rows) in boards {
-        let (leaders, _, matches) = ranked(category, rows, &owners, shown, |entry| {
+        let (leaders, players, matches) = ranked(category, rows, &owners, shown, |entry| {
             entry.profile_ids.iter().any(|id| numbered.contains(id))
                 || text.as_deref().is_some_and(|text| {
                     [&entry.name, &entry.player]
@@ -205,9 +270,16 @@ async fn top(
         if searching {
             found.extend(matches);
         }
+        let first_day = season::first_day(category, today);
+        current.push(Current {
+            category,
+            first_day: first_day.to_string(),
+            last_day: season::last_day(category, first_day).to_string(),
+            players,
+        });
     }
     found.truncate(FOUND);
-    Ok((top, searching.then_some(found)))
+    Ok((top, searching.then_some(found), current))
 }
 
 /// Who the WFC profiles of some rows belong to, and those players' names.
@@ -307,8 +379,9 @@ fn ranked(
 
 /// Each category's latest season (or day) before `today` that has scores:
 /// the rows `past_scores` kept, and those of the players who have not played
-/// since, which are still in `scores`. `today` is the UTC date, the EU
-/// clock: US games start a season 8 hours later, JP games 9 hours earlier.
+/// since, which are still in `scores`; rows without a game count no one.
+/// `today` is the UTC date, the EU clock: US games start a season 8 hours
+/// later, JP games 9 hours earlier.
 async fn past(conn: &mut PgConnection, today: Date) -> Result<Vec<Past>, sqlx::Error> {
     let ended = |category, first_day| first_day < season::first_day(category, today);
     let unreplaced: Vec<(Date, Row)> = sqlx::query_as!(
@@ -320,7 +393,8 @@ async fn past(conn: &mut PgConnection, today: Date) -> Result<Vec<Past>, sqlx::E
     .into_iter()
     .filter_map(|row| {
         let first_day = season::first_day(row.category, Submission::parse(&row.userdata).date?);
-        ended(row.category, first_day).then_some((first_day, row))
+        (ended(row.category, first_day) && players::played(row.score, &row.userdata))
+            .then_some((first_day, row))
     })
     .collect();
     let kept_seasons = sqlx::query!(
@@ -359,7 +433,11 @@ async fn past(conn: &mut PgConnection, today: Date) -> Result<Vec<Past>, sqlx::E
         .into_iter()
         .filter(|(first_day, row)| last.get(&row.category) == Some(first_day))
         .map(|(_, row)| row);
-    let rows: Vec<Row> = kept.into_iter().chain(unreplaced).collect();
+    let rows: Vec<Row> = kept
+        .into_iter()
+        .filter(|row| players::played(row.score, &row.userdata))
+        .chain(unreplaced)
+        .collect();
     let owners = Owners::read(conn, &rows).await?;
     let mut boards: BTreeMap<i32, Vec<Row>> = BTreeMap::new();
     for row in rows {
@@ -386,9 +464,16 @@ async fn past(conn: &mut PgConnection, today: Date) -> Result<Vec<Past>, sqlx::E
 mod tests {
     use super::*;
 
-    /// A submission's userdata with `wins`, `losses` and a Mii `name`.
+    /// The day the tests read the boards on.
+    fn today() -> Date {
+        Date::from_calendar_date(2026, time::Month::October, 23).unwrap()
+    }
+
+    /// A submission's userdata with `wins`, `losses` and a Mii `name`, put
+    /// [`today`].
     fn userdata(wins: i32, losses: i32, name: &str) -> Vec<u8> {
         let mut userdata = vec![0; 128];
+        userdata[0..4].copy_from_slice(&[23, 10, 0xEA, 0x07]);
         userdata[0x04..0x08].copy_from_slice(&wins.to_le_bytes());
         userdata[0x08..0x0C].copy_from_slice(&losses.to_le_bytes());
         for (unit, at) in name.encode_utf16().zip((0x0E..).step_by(2)) {
@@ -448,7 +533,7 @@ mod tests {
             .await
             .unwrap();
         }
-        let boards = read(&pool, &Search::default(), &Shown::default())
+        let boards = read_on(&pool, &Search::default(), &Shown::default(), today())
             .await
             .unwrap();
         assert!(boards.found.is_none());
@@ -499,7 +584,7 @@ mod tests {
             ]
         );
         // `top` shows as many rows of each category as asked.
-        let first = read(&pool, &Search::default(), &Shown::new(1))
+        let first = read_on(&pool, &Search::default(), &Shown::new(1), today())
             .await
             .unwrap();
         assert_eq!(first.top.len(), 1);
@@ -511,7 +596,7 @@ mod tests {
             let pool = pool.clone();
             let search = Search::new(q);
             async move {
-                read(&pool, &search, &Shown::default())
+                read_on(&pool, &search, &Shown::default(), today())
                     .await
                     .unwrap()
                     .found
@@ -535,7 +620,16 @@ mod tests {
             (2, 0, 2, 30, "Mario"),
             (3, 0, 2, 30, "Luigi"),
             (2, 1, 2, 5, "Mario"),
+            // The season's record before a game of it: stored, no player.
+            (4, 0, 2, 0, "Wario"),
+            // Yesterday's day, not replaced yet: stored, no player today.
+            (3, 1, 2, 7, "Luigi"),
         ] {
+            let userdata = match (pid, category) {
+                (4, _) => userdata(0, 0, name),
+                (3, 1) => dated(22, name),
+                _ => userdata(score, 1, name),
+            };
             sqlx::query!(
                 "INSERT INTO scores (profile_id, category, region, score, userdata)
                  VALUES ($1, $2, $3, $4, $5)",
@@ -543,27 +637,46 @@ mod tests {
                 category,
                 region,
                 score,
-                &userdata(score, 1, name),
+                &userdata,
             )
             .execute(&pool)
             .await
             .unwrap();
         }
 
-        let leaderboards = read(&pool, &Search::default(), &Shown::default())
+        let leaderboards = read_on(&pool, &Search::default(), &Shown::default(), today())
             .await
             .unwrap();
 
         assert_eq!(
             (leaderboards.totals.entries, leaderboards.totals.players),
-            (4, 3)
+            (6, 3)
         );
         let categories: Vec<_> = leaderboards
             .categories
             .iter()
             .map(|c| (c.category, c.players, c.us, c.eu, c.top_score))
             .collect();
-        assert_eq!(categories, [(0, 3, 2, 1, 30), (1, 1, 1, 0, 5)]);
+        assert_eq!(categories, [(0, 4, 3, 1, 30), (1, 2, 2, 0, 7)]);
+        let current: Vec<_> = leaderboards
+            .current
+            .iter()
+            .map(|c| {
+                (
+                    c.category,
+                    c.first_day.as_str(),
+                    c.last_day.as_str(),
+                    c.players,
+                )
+            })
+            .collect();
+        assert_eq!(
+            current,
+            [
+                (0, "2026-10-22", "2026-10-28", 3),
+                (1, "2026-10-23", "2026-10-23", 1)
+            ]
+        );
 
         // Mario and Luigi tie: both rank 1, the earlier put first.
         let top: Vec<_> = leaderboards
@@ -598,6 +711,8 @@ mod tests {
             (2, 0, 30, 20, "Luigi"),
             (3, 0, 50, 9, "Daisy"),
             (2, 1, 4, 22, "Luigi"),
+            // Put before a game of that season, none since: no player of it.
+            (4, 0, 0, 16, "Wario"),
         ] {
             sqlx::query!(
                 "INSERT INTO scores (profile_id, category, region, score, userdata)

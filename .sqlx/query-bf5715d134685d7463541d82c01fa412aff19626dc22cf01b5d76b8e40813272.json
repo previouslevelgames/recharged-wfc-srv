@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT match_id, state, home, away, rule_set, random, rematch_of, winner,\n                created_at, updated_at, go_at, playing_at,\n                home_ready_at, away_ready_at, home_game_ready_at, away_game_ready_at\n         FROM matches WHERE match_id = $1",
+  "query": "SELECT match_id, state, home, away, rule_set, random, rematch_of, winner,\n                created_at, updated_at, go_at, playing_at, forfeited_by, forfeited_at,\n                home_ready_at, away_ready_at, home_game_ready_at, away_game_ready_at\n         FROM matches WHERE match_id = $1",
   "describe": {
     "columns": [
       {
@@ -137,6 +137,28 @@
       },
       {
         "ordinal": 12,
+        "name": "forfeited_by",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "forfeited_by"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "forfeited_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "forfeited_at"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
         "name": "home_ready_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -147,7 +169,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 15,
         "name": "away_ready_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -158,7 +180,7 @@
         }
       },
       {
-        "ordinal": 14,
+        "ordinal": 16,
         "name": "home_game_ready_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -169,7 +191,7 @@
         }
       },
       {
-        "ordinal": 15,
+        "ordinal": 17,
         "name": "away_game_ready_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -201,8 +223,10 @@
       true,
       true,
       true,
+      true,
+      true,
       true
     ]
   },
-  "hash": "ab6304c8839d0362b3f8d553e488e1666602570970e01e21d7c77661b54c1f59"
+  "hash": "bf5715d134685d7463541d82c01fa412aff19626dc22cf01b5d76b8e40813272"
 }
