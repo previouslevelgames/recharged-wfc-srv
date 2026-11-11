@@ -293,6 +293,18 @@ impl Gpcm {
             .collect()
     }
 
+    /// Whether an HTTP request from `address` (a report, a gamestats2 put)
+    /// may be some login's own: its GPCM connection's or its NAS login's, as
+    /// [`LoginAddresses::contains`]. Only for the game's HTTP, which some
+    /// networks send out by another address: what comes over GPCM's own
+    /// connection is [`Gpcm::logged_in_at`]'s, the GPCM address alone.
+    pub fn any_http_login_at(&self, address: IpAddr) -> bool {
+        let sessions = self.sessions.lock().unwrap();
+        sessions
+            .values()
+            .any(|session| session.address == address || session.nas_address == address)
+    }
+
     /// Where `profile_id`'s login came from, GPCM's connection and its NAS
     /// login, if it is logged in.
     pub fn login_addresses(&self, profile_id: i32) -> Option<LoginAddresses> {

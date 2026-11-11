@@ -22,10 +22,11 @@ use axum::{
     Json, Router,
     body::Bytes,
     extract::{
-        ConnectInfo, DefaultBodyLimit, Query, State,
+        ConnectInfo, DefaultBodyLimit, Query, Request, State,
         rejection::{BytesRejection, QueryRejection},
     },
     http::StatusCode,
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -56,21 +57,43 @@ struct ReportsState {
 /// name: the game sends them to its server's address. They need the caller's address: serve them with
 /// `into_make_service_with_connect_info::<SocketAddr>()`.
 pub fn router(pool: PgPool, gpcm: Arc<Gpcm>) -> Router {
-    // A dossier is bigger than a report.
+    let state = ReportsState {
+        pool,
+        gpcm,
+        limits: Arc::default(),
+    };
+    // A dossier is bigger than a report: its body is read only from where
+    // some profile is logged in.
     let desyncs = Router::new()
         .route("/api/v1/wfc/desyncs", post(receive_dossier))
-        .layer(DefaultBodyLimit::max(dossiers::MAX_BYTES));
+        .layer(DefaultBodyLimit::max(dossiers::MAX_BYTES))
+        .route_layer(middleware::from_fn_with_state(state.clone(), from_a_login));
     Router::new()
         .route("/api/v1/wfc/reports", post(receive))
         .route("/api/v1/wfc/errors", post(receive_error))
         .route("/api/v1/wfc/forfeit", get(forfeit))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .merge(desyncs)
-        .with_state(ReportsState {
-            pool,
-            gpcm,
-            limits: Arc::default(),
-        })
+        .with_state(state)
+}
+
+/// Before a dossier's body is read: a request from no login's address is
+/// refused as one from another profile's would be, without reading its
+/// bytes. The handler then checks the dossier's own profile.
+async fn from_a_login(
+    State(state): State<ReportsState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if !state.gpcm.any_http_login_at(peer.ip()) {
+        warn!(target: "reports", %peer, "dossier from no login");
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "profile not logged in from this address",
+        );
+    }
+    next.run(request).await
 }
 
 async fn receive(
@@ -791,6 +814,34 @@ mod tests {
             server.forfeit(SAM_HOME, sam).await,
             (StatusCode::OK, json!({"forfeit": null}))
         );
+    }
+
+    /// A dossier from where no profile is logged in is refused before its
+    /// body is read: one too big gets the 403, not the 413 its reading
+    /// would. From a login's NAS address it is read.
+    #[sqlx::test]
+    async fn a_dossier_from_no_login_is_not_read(pool: PgPool) {
+        const DESYNCS: &str = "/api/v1/wfc/desyncs";
+        const GPCM: [u8; 4] = [12, 75, 123, 129];
+        const NAS: [u8; 4] = [12, 75, 115, 108];
+        let server = Server::new(pool);
+        let anosch = server.log_in(1, "Anosch", GPCM).await;
+        let too_big = vec![0u8; dossiers::MAX_BYTES + 1];
+        let (status, answer) = server.post_to(DESYNCS, SAM_HOME, too_big.clone()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{answer}");
+        assert_eq!(answer["error"], "profile not logged in from this address");
+        let (status, _) = server.post_to(DESYNCS, NAS, too_big.clone()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        server
+            .gpcm
+            .fake_login_via(anosch, IpAddr::from(GPCM), IpAddr::from(NAS));
+        let (status, _) = server.post_to(DESYNCS, NAS, too_big).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        let mut d = dossier(Side::Home);
+        d.profile_id = anosch;
+        let (status, answer) = server.post_to(DESYNCS, NAS, d.encode()).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
     }
 
     /// Both sides' dossiers of a game, and where they diverge.
