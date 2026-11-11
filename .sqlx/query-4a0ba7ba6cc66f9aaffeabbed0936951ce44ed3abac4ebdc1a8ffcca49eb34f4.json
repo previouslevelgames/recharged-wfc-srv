@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "WITH m AS (\n                 INSERT INTO online_matches (release, mode, best_of, home_mii, away_mii,\n                                             home_captain, away_captain)\n                 VALUES ('R4QE', 'ranked', 3, 'Anosch', 'Sam', 'mario', 'luigi')\n                 RETURNING match_id)\n             INSERT INTO desync_dossiers\n                 (match_id, side, game, profile_id, release, build, platform, frame,\n                  written_at, body)\n             SELECT m.match_id, 'home', game, $1, 'R4QE', '1.1.6', '', 1, now(),\n                    convert_to(repeat('x', 250000), 'UTF8')\n             FROM m, generate_series(1, 9) AS game",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4a0ba7ba6cc66f9aaffeabbed0936951ce44ed3abac4ebdc1a8ffcca49eb34f4"
+}

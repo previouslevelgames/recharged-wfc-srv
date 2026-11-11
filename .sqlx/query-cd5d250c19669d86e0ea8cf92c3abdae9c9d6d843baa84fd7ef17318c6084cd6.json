@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM desync_dossiers WHERE game > 7",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "cd5d250c19669d86e0ea8cf92c3abdae9c9d6d843baa84fd7ef17318c6084cd6"
+}

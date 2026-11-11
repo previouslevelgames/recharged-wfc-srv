@@ -22,10 +22,11 @@ use axum::{
     Json, Router,
     body::Bytes,
     extract::{
-        ConnectInfo, DefaultBodyLimit, Query, State,
+        ConnectInfo, DefaultBodyLimit, Query, Request, State,
         rejection::{BytesRejection, QueryRejection},
     },
     http::StatusCode,
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -56,21 +57,43 @@ struct ReportsState {
 /// name: the game sends them to its server's address. They need the caller's address: serve them with
 /// `into_make_service_with_connect_info::<SocketAddr>()`.
 pub fn router(pool: PgPool, gpcm: Arc<Gpcm>) -> Router {
-    // A dossier is bigger than a report.
+    let state = ReportsState {
+        pool,
+        gpcm,
+        limits: Arc::default(),
+    };
+    // A dossier is bigger than a report: its body is read only from where
+    // some profile is logged in.
     let desyncs = Router::new()
         .route("/api/v1/wfc/desyncs", post(receive_dossier))
-        .layer(DefaultBodyLimit::max(dossiers::MAX_BYTES));
+        .layer(DefaultBodyLimit::max(dossiers::MAX_BYTES))
+        .route_layer(middleware::from_fn_with_state(state.clone(), from_a_login));
     Router::new()
         .route("/api/v1/wfc/reports", post(receive))
         .route("/api/v1/wfc/errors", post(receive_error))
         .route("/api/v1/wfc/forfeit", get(forfeit))
         .layer(DefaultBodyLimit::max(MAX_BODY))
         .merge(desyncs)
-        .with_state(ReportsState {
-            pool,
-            gpcm,
-            limits: Arc::default(),
-        })
+        .with_state(state)
+}
+
+/// Before a dossier's body is read: a request from no login's address is
+/// refused as one from another profile's would be, without reading its
+/// bytes. The handler then checks the dossier's own profile.
+async fn from_a_login(
+    State(state): State<ReportsState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if !state.gpcm.any_http_login_at(peer.ip()) {
+        warn!(target: "reports", %peer, "dossier from no login");
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "profile not logged in from this address",
+        );
+    }
+    next.run(request).await
 }
 
 async fn receive(
@@ -340,7 +363,7 @@ mod tests {
     use crate::{
         accounts,
         reports::{
-            dossiers::tests::{dossier, step},
+            dossiers::tests::{dossier, machine_input, step},
             report::{Side, tests::start},
         },
     };
@@ -793,6 +816,80 @@ mod tests {
         );
     }
 
+    /// Nor more than so many bytes a day, however few dossiers they make.
+    #[sqlx::test]
+    async fn a_profile_sends_so_many_bytes_a_day(pool: PgPool) {
+        let server = Server::new(pool.clone());
+        let anosch = server.log_in(1, "Anosch", ANOSCH_HOME).await;
+        let mut body = start();
+        body["profile_id"] = json!(anosch);
+        server.report(ANOSCH_HOME, &body).await;
+        // Nine large dossiers of another match, 2.1 MiB together.
+        sqlx::query!(
+            "WITH m AS (
+                 INSERT INTO online_matches (release, mode, best_of, home_mii, away_mii,
+                                             home_captain, away_captain)
+                 VALUES ('R4QE', 'ranked', 3, 'Anosch', 'Sam', 'mario', 'luigi')
+                 RETURNING match_id)
+             INSERT INTO desync_dossiers
+                 (match_id, side, game, profile_id, release, build, platform, frame,
+                  written_at, body)
+             SELECT m.match_id, 'home', game, $1, 'R4QE', '1.1.6', '', 1, now(),
+                    convert_to(repeat('x', 250000), 'UTF8')
+             FROM m, generate_series(1, 9) AS game",
+            anosch,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let mut home = dossier(Side::Home);
+        home.profile_id = anosch;
+        home.series = 1_792_000_000;
+        let (status, _) = server
+            .post_to("/api/v1/wfc/desyncs", ANOSCH_HOME, home.encode())
+            .await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+
+        // With two of them gone, it fits.
+        sqlx::query!("DELETE FROM desync_dossiers WHERE game > 7")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let (status, answer) = server
+            .post_to("/api/v1/wfc/desyncs", ANOSCH_HOME, home.encode())
+            .await;
+        assert_eq!(status, StatusCode::OK, "{answer}");
+    }
+
+    /// A dossier from where no profile is logged in is refused before its
+    /// body is read: one too big gets the 403, not the 413 its reading
+    /// would. From a login's NAS address it is read.
+    #[sqlx::test]
+    async fn a_dossier_from_no_login_is_not_read(pool: PgPool) {
+        const DESYNCS: &str = "/api/v1/wfc/desyncs";
+        const GPCM: [u8; 4] = [12, 75, 123, 129];
+        const NAS: [u8; 4] = [12, 75, 115, 108];
+        let server = Server::new(pool);
+        let anosch = server.log_in(1, "Anosch", GPCM).await;
+        let too_big = vec![0u8; dossiers::MAX_BYTES + 1];
+        let (status, answer) = server.post_to(DESYNCS, SAM_HOME, too_big.clone()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{answer}");
+        assert_eq!(answer["error"], "profile not logged in from this address");
+        let (status, _) = server.post_to(DESYNCS, NAS, too_big.clone()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        server
+            .gpcm
+            .fake_login_via(anosch, IpAddr::from(GPCM), IpAddr::from(NAS));
+        let (status, _) = server.post_to(DESYNCS, NAS, too_big).await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        let mut d = dossier(Side::Home);
+        d.profile_id = anosch;
+        let (status, answer) = server.post_to(DESYNCS, NAS, d.encode()).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{answer}");
+    }
+
     /// Both sides' dossiers of a game, and where they diverge.
     #[sqlx::test]
     async fn the_two_dossiers_of_a_desync_meet(pool: PgPool) {
@@ -811,7 +908,20 @@ mod tests {
         let mut away = dossier(Side::Away);
         away.profile_id = sam;
         away.series = 1_792_000_002;
-        away.steps[1] = step(4812, &[1, 9, 3]);
+        // The largest dossiers: every field, every machine's inputs.
+        let values: Vec<u32> = (1..=512).collect();
+        let mut nine = values.clone();
+        nine[1] = 9;
+        for (d, last) in [(&mut home, &values), (&mut away, &nine)] {
+            d.steps = (4797..4812).map(|frame| step(frame, &values)).collect();
+            d.steps.push(step(4812, last));
+            let netplay = d.netplay.as_mut().unwrap();
+            netplay.machines = 4;
+            for step in &mut netplay.inputs {
+                step.machines.resize(4, machine_input(0));
+            }
+        }
+        assert_eq!(away.encode().len(), dossiers::MAX_BYTES);
 
         // Only from its login, of a series its profile played, on its side.
         let (status, _) = server.post_to(DESYNCS, SAM_HOME, home.encode()).await;
