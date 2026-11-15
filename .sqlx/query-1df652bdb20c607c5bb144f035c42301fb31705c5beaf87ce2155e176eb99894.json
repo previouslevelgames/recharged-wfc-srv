@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT profile_id, score, userdata, updated_at,\n                    held_score, held_wins, held_losses, held_on\n             FROM scores WHERE category = $1 AND profile_id = ANY($2)\n             ORDER BY profile_id\n             FOR UPDATE",
+  "query": "SELECT profile_id, score, userdata, updated_at,\n                    held_score, held_wins, held_losses, held_on, provisional\n             FROM scores WHERE category = $1 AND profile_id = ANY($2)\n             ORDER BY profile_id\n             FOR UPDATE",
   "describe": {
     "columns": [
       {
@@ -90,6 +90,17 @@
             "name": "held_on"
           }
         }
+      },
+      {
+        "ordinal": 8,
+        "name": "provisional",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "scores",
+            "name": "provisional"
+          }
+        }
       }
     ],
     "parameters": {
@@ -106,8 +117,9 @@
       true,
       true,
       true,
+      true,
       true
     ]
   },
-  "hash": "418fe4b759c8c1ef075b9efb84a3d11eecc378eaeaa495bdf0927ac2ccd68da1"
+  "hash": "1df652bdb20c607c5bb144f035c42301fb31705c5beaf87ce2155e176eb99894"
 }

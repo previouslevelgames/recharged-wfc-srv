@@ -10,7 +10,20 @@ ALTER TABLE scores
     ADD COLUMN held_losses INTEGER,
     -- The date the game held it on, by the game's own clock: a put dated in
     -- a later season (or day) by that clock starts from nothing.
-    ADD COLUMN held_on     DATE;
+    ADD COLUMN held_on     DATE,
+    -- The points a provisional loss took at kickoff
+    -- (`ReportDefaultDisconnectLoss`), not counted until the series shows
+    -- whether its result gives them back; NULL without one.
+    ADD COLUMN provisional INTEGER;
+
+-- Every game puts and reads the season's (0) and the day's (1) boards: the EU
+-- alternate country group's rows (3 and 4) join them, where their profile has
+-- none there yet. There were none when this was written.
+UPDATE scores alternate SET category = alternate.category - 3
+WHERE category IN (3, 4)
+  AND NOT EXISTS (SELECT 1 FROM scores main
+                  WHERE main.profile_id = alternate.profile_id
+                    AND main.category = alternate.category - 3);
 
 -- Every put and what the server made of it, so the boards can be checked and
 -- counted again without the logs: `counted` on the boards, `set` (a

@@ -270,6 +270,37 @@ struct Counted {
     share: Tally,
 }
 
+/// What a game's gain `raw` since it held `before` adds to its player's
+/// total, and the provisional loss left waiting: the points it took, or none.
+///
+/// At kickoff the game takes up to 5 points off its total and books a loss
+/// (`ReportDefaultDisconnectLoss`); the series' result gives them back and
+/// turns the loss into the result. So a kickoff counts nothing yet: the
+/// result then counts alone, in the season (or day) it comes in, however
+/// long the series took. A kickoff before any result gave the last one back
+/// (a series left, the game closed) counts that one now, a loss with its
+/// points. A gain without a win or loss more than before (`raw`'s wins and
+/// losses adding up to nothing or less) is a result giving one back.
+fn settle(raw: Tally, before: Tally, waiting: Option<i32>) -> (Tally, Option<i32>) {
+    let provisional = |taken: i32| Tally {
+        score: -taken,
+        wins: 0,
+        losses: 1,
+    };
+    if raw.wins == 0 && raw.losses == 1 && raw.score == -before.score.clamp(0, 5) {
+        (
+            waiting.map_or(Tally::default(), provisional),
+            Some(-raw.score),
+        )
+    } else if let Some(taken) = waiting
+        && raw.wins + raw.losses <= 0
+    {
+        (raw + provisional(taken), None)
+    } else {
+        (raw, waiting)
+    }
+}
+
 /// Takes what `own` lacks below nothing, field by field, from `others`,
 /// the most first: a profile's share of its player's total goes below
 /// nothing when its game loses points the player won on another (a series'
@@ -428,11 +459,12 @@ impl Leaderboard {
     /// its whole running total, which starts from the total it was last
     /// shown, its player's: the put adds what the total gained since the game
     /// last held one (its last put, or the row a NEAR answer showed it) to
-    /// its profile's share of the season (or day), by UTC. A total of 0, 0
-    /// and 0 is the game starting a season, a day or its first login again,
-    /// and adds nothing; a put dated in a later season (or day) than what the
-    /// game held, by its own clock, starts from nothing. A set's put (`kept`)
-    /// adds nothing either. Either way the game now holds the put.
+    /// its profile's share of the season (or day), by UTC, a provisional loss
+    /// once its series is decided ([`settle`]). A put dated in a later season
+    /// (or day) than what the game held, by its own clock, starts from
+    /// nothing. A total of 0, 0 and 0 without a row of this season (or day)
+    /// is the game starting one, or its first login, and adds nothing; so
+    /// does a set's put (`kept`). Either way the game now holds the put.
     ///
     /// A share that would go below nothing takes the rest from the player's
     /// other shares ([`cover`]). A row of an ended season (or day), by the
@@ -447,22 +479,32 @@ impl Leaderboard {
         let category = board(put.category);
         let period = season::first_day(category, now.date());
         let mut tx = self.pool.begin().await?;
-        // The player's rows, locked in one order: another of its games may
-        // put at once.
-        let mut profiles: Vec<i32> = sqlx::query_scalar!(
-            "SELECT theirs.profile_id FROM player_wfc_profiles theirs
-             JOIN player_wfc_profiles mine ON mine.player_id = theirs.player_id
-             WHERE mine.profile_id = $1",
+        // One put of a player at a time: another of their games may put at
+        // once, and its row may not exist yet to be locked.
+        let player = sqlx::query_scalar!(
+            "SELECT player_id FROM player_wfc_profiles WHERE profile_id = $1",
             put.pid,
         )
-        .fetch_all(&mut *tx)
+        .fetch_optional(&mut *tx)
         .await?;
-        if !profiles.contains(&put.pid) {
-            profiles.push(put.pid);
+        let mut profiles = vec![put.pid];
+        if let Some(player) = player {
+            sqlx::query!(
+                "SELECT player_id FROM players WHERE player_id = $1 FOR UPDATE",
+                player
+            )
+            .fetch_optional(&mut *tx)
+            .await?;
+            profiles = sqlx::query_scalar!(
+                "SELECT profile_id FROM player_wfc_profiles WHERE player_id = $1",
+                player
+            )
+            .fetch_all(&mut *tx)
+            .await?;
         }
         let rows = sqlx::query!(
             "SELECT profile_id, score, userdata, updated_at,
-                    held_score, held_wins, held_losses, held_on
+                    held_score, held_wins, held_losses, held_on, provisional
              FROM scores WHERE category = $1 AND profile_id = ANY($2)
              ORDER BY profile_id
              FOR UPDATE",
@@ -479,6 +521,13 @@ impl Leaderboard {
         let own = rows.iter().find(|row| row.profile_id == put.pid);
         let current = own.filter(|row| period_of(&row.userdata, row.updated_at) == period);
         let share = current.map_or(Tally::default(), |row| Tally::of(row.score, &row.userdata));
+        let others: Vec<_> = rows
+            .iter()
+            .filter(|row| {
+                row.profile_id != put.pid && period_of(&row.userdata, row.updated_at) == period
+            })
+            .map(|row| (row, Tally::of(row.score, &row.userdata)))
+            .collect();
         let holding = own.and_then(|row| {
             let tally = Tally {
                 score: row.held_score?,
@@ -487,37 +536,37 @@ impl Leaderboard {
             };
             Some((tally, row.held_on))
         });
+        // A game whose clock began a season (or day) since it held its total
+        // starts from nothing, its series decided.
+        let fresh = matches!((holding, put.date), (Some((_, Some(on))), Some(date))
+            if season::first_day(category, date) != season::first_day(category, on));
         // What the game held before this put.
         let before = match holding {
-            Some((_, Some(on)))
-                if put.date.is_some_and(|date| {
-                    season::first_day(category, date) != season::first_day(category, on)
-                }) =>
-            {
-                Tally::default()
-            }
+            _ if fresh => Tally::default(),
             Some((tally, _)) => tally,
-            // A game not seen since the server counted shares holds its row,
-            // as it put it.
-            None => share,
+            // A row from before the server counted shares: its game holds
+            // what it was last shown, its player's total (its own row alone).
+            None if own.is_some() => others
+                .iter()
+                .fold(share, |total, (_, other)| total + *other),
+            // No row, so no game holding one: its login put an empty one.
+            None => Tally::default(),
         };
-        let change = if kept || put.total == Tally::default() {
-            Tally::default()
+        let waiting = own.and_then(|row| row.provisional).filter(|_| !fresh);
+        let starting = put.total == Tally::default() && current.is_none();
+        let (change, waiting) = if kept {
+            (Tally::default(), waiting)
+        } else if starting {
+            (Tally::default(), None)
         } else {
-            put.total - before
+            settle(put.total - before, before, waiting)
         };
         let mut new = share + change;
-        let others: Vec<_> = rows
-            .iter()
-            .filter(|row| {
-                row.profile_id != put.pid && period_of(&row.userdata, row.updated_at) == period
-            })
-            .map(|row| (row, Tally::of(row.score, &row.userdata)))
-            .collect();
         let mut given: Vec<Tally> = others.iter().map(|(_, tally)| *tally).collect();
         // What the game holds from now on, with what the board could not
         // take: its next gain pays that back first.
-        let held = put.total + cover(&mut new, &mut given);
+        let owed = cover(&mut new, &mut given);
+        let held = put.total + owed;
         for ((row, before), after) in others.iter().zip(given) {
             if *before == after {
                 continue;
@@ -608,6 +657,17 @@ impl Leaderboard {
         } else {
             Self::hold_in(&mut tx, put.pid, category, held, put.date).await?;
         }
+        sqlx::query!(
+            "UPDATE scores SET provisional = $3 WHERE profile_id = $1 AND category = $2",
+            put.pid,
+            category,
+            waiting,
+        )
+        .execute(&mut *tx)
+        .await?;
+        // What the player's total gained: what the board could not take
+        // stays owed.
+        let change = change + owed;
         let outcome = if kept { Outcome::Set } else { Outcome::Counted };
         Self::record_in(&mut tx, put, outcome, (!kept).then_some(change), now).await?;
         tx.commit().await?;
@@ -1659,6 +1719,9 @@ mod tests {
         category: u32,
         /// Its total, and the date on it by the game's clock.
         total: Option<(Tally, Date)>,
+        /// The points its provisional loss took, until the series' result
+        /// gives them back. A NEAR answer leaves it, a login drops it.
+        provisional: Option<i32>,
         mii: &'static str,
     }
 
@@ -1669,6 +1732,7 @@ mod tests {
                 region,
                 category,
                 total: None,
+                provisional: None,
                 mii: "BKXO",
             }
         }
@@ -1703,6 +1767,7 @@ mod tests {
         /// Logs in: takes its row, or puts an empty one first.
         async fn log_in(&mut self, state: &GamestatsState, now: OffsetDateTime) {
             self.total = None;
+            self.provisional = None;
             self.near(state, now).await;
             if self.total.is_none() {
                 self.total = Some((Tally::default(), self.today(now)));
@@ -1735,30 +1800,62 @@ mod tests {
             goals: i32,
             now: OffsetDateTime,
         ) {
-            let points = if won { 10 } else { 1 } + goals.min(10);
+            self.kick_off(state, now).await;
+            self.finish(state, Some(won), goals, now).await;
+        }
+
+        /// `ReportDefaultDisconnectLoss`: up to 5 points off and a loss more,
+        /// unless its clock began a season (or day) since its total's date.
+        async fn kick_off(&mut self, state: &GamestatsState, now: OffsetDateTime) {
             let (mut total, on) = self.total.unwrap();
-            let today = self.today(now);
             if self.new_period(on, now) {
-                // `ReportGameResult` starts fresh; no provisional loss first.
+                return;
+            }
+            let lost = total.score.min(5);
+            total.score -= lost;
+            total.losses += 1;
+            self.provisional = Some(lost);
+            self.total = Some((total, self.today(now)));
+            self.put(state, now).await;
+        }
+
+        /// `ReportGameResult`: won, lost, or broken off (`None`, result 4:
+        /// its goals only, no win or loss).
+        async fn finish(
+            &mut self,
+            state: &GamestatsState,
+            won: Option<bool>,
+            goals: i32,
+            now: OffsetDateTime,
+        ) {
+            let points = match won {
+                Some(true) => 10,
+                Some(false) => 1,
+                None => 0,
+            } + goals.min(10);
+            let (mut total, on) = self.total.unwrap();
+            if self.new_period(on, now) {
+                // A fresh start, from this game alone.
+                self.provisional = None;
                 total = Tally {
                     score: points,
-                    wins: i32::from(won),
-                    losses: i32::from(!won),
+                    wins: i32::from(won == Some(true)),
+                    losses: i32::from(won == Some(false)),
                 };
-            } else {
-                // `ReportDefaultDisconnectLoss`, then the result.
-                let lost = total.score.min(5);
-                total.score -= lost;
-                total.losses += 1;
-                self.total = Some((total, today));
-                self.put(state, now).await;
+            } else if let Some(lost) = self.provisional.take() {
+                // The provisional loss given back, the loss the result's.
                 total.score += lost + points;
-                if won {
-                    total.wins += 1;
-                    total.losses -= 1;
+                match won {
+                    Some(true) => (total.wins, total.losses) = (total.wins + 1, total.losses - 1),
+                    Some(false) => {}
+                    None => total.losses -= 1,
                 }
+            } else {
+                total.score += points;
+                total.wins += i32::from(won == Some(true));
+                total.losses += i32::from(won == Some(false));
             }
-            self.total = Some((total, today));
+            self.total = Some((total, self.today(now)));
             self.put(state, now).await;
         }
     }
@@ -1844,10 +1941,10 @@ mod tests {
                 losses: 1
             }
         );
-        // Its provisional loss takes 5 points its own share does not have;
-        // the result gives them back: 5-0 won (15 points).
+        // Its provisional loss counts nothing until the result, which counts
+        // alone: 5-0 won (15 points).
         eu.play(&state, true, 5, now).await;
-        assert_eq!(season_board(&state, other, now).await, [(europe, 31, 2, 1)]);
+        assert_eq!(season_board(&state, other, now).await, [(us, 31, 2, 1)]);
         // It asks again and again: nothing counts twice.
         for _ in 0..3 {
             eu.near(&state, now).await;
@@ -1919,8 +2016,8 @@ mod tests {
         na.near(&state, at(2026, 11, 18, 2)).await;
         // Not on the 18th's board yet: it keeps its total of 12.
         assert_eq!(na.total.unwrap().0.score, 12);
-        // Its provisional loss takes 5 points the 18th does not hold; the
-        // result gives them back: 3-4 lost, 4 points.
+        // Its provisional loss waits for the result, which counts alone on
+        // the 18th: 3-4 lost, 4 points.
         na.play(&state, false, 3, at(2026, 11, 18, 2)).await;
         assert_eq!(board(at(2026, 11, 18, 3)).await, [(1, 7, 4)]);
         // 09:00 UTC: the game's clock begins the 18th and it starts afresh
@@ -2040,6 +2137,197 @@ mod tests {
         assert_eq!(Submission::parse(&userdata).name.as_deref(), Some("Anosch"));
         assert!(submission::signed(&userdata));
         assert_eq!(after, updated_at);
+    }
+
+    /// `(pid, score, wins, losses)` of each row of a board, asked by pid 8.
+    async fn rows_of(
+        state: &GamestatsState,
+        category: u32,
+        now: OffsetDateTime,
+    ) -> Vec<(i32, i32, i32, i32)> {
+        let body = get_body(category, MODE_TOPLIST, &[DESCENDING, 10, 1]);
+        let reply = get_at(state, 8, &body, now).await.unwrap();
+        let mut rows = Vec::new();
+        let mut at = 12;
+        for _ in 0..word(&reply, 1).unwrap() {
+            let row = &reply[at..];
+            let size = word(row, 5).unwrap() as usize;
+            let record = Submission::parse(&row[24..24 + size]);
+            rows.push((
+                word(row, 1).unwrap() as i32,
+                word(row, 2).unwrap() as i32,
+                record.wins.unwrap(),
+                record.losses.unwrap(),
+            ));
+            at += 24 + size;
+        }
+        rows
+    }
+
+    #[sqlx::test]
+    async fn a_match_dropped_after_kickoff_leaves_no_loss(pool: PgPool) {
+        let state = GamestatsState::with_pool(pool.clone());
+        let now = at(2026, 11, 13, 12);
+        // A new player's first match: its provisional loss takes no points,
+        // and the opponent drops before a goal (result 4).
+        let mut game = Game::new(7, 4, 1);
+        game.log_in(&state, now).await;
+        game.kick_off(&state, now).await;
+        game.finish(&state, None, 0, now).await;
+        assert_eq!(game.total.unwrap().0, Tally::default());
+        assert_eq!(rows_of(&state, 1, now).await, [(7, 0, 0, 0)]);
+    }
+
+    #[sqlx::test]
+    async fn a_series_across_midnight_counts_on_the_day_of_its_result(pool: PgPool) {
+        let (europe, us, _) = two_games_of_one_player(&pool).await;
+        let state = GamestatsState::with_pool(pool.clone());
+        let mut na = Game::new(us, 2, 1);
+        let mut eu = Game::new(europe, 4, 1);
+        // The US game wins on the 17th, then kicks off at 23:58 UTC.
+        na.log_in(&state, at(2026, 11, 17, 20)).await;
+        na.play(&state, true, 2, at(2026, 11, 17, 20)).await;
+        na.kick_off(&state, at(2026, 11, 17, 23) + Duration::minutes(58))
+            .await;
+        // On the 18th by UTC, the European game loses 2-4 (3 points)...
+        let after_midnight = at(2026, 11, 18, 0) + Duration::minutes(1);
+        eu.log_in(&state, after_midnight).await;
+        eu.play(&state, false, 2, after_midnight).await;
+        // ...and the US game's result comes, its clock still on the 17th:
+        // 3-1 won, 13 points.
+        let result = at(2026, 11, 18, 0) + Duration::minutes(5);
+        na.finish(&state, Some(true), 3, result).await;
+        assert_eq!(rows_of(&state, 1, result).await, [(us, 16, 1, 1)]);
+        // The 17th kept its win alone.
+        let past: Vec<(i32, i32)> =
+            sqlx::query_as("SELECT profile_id, score FROM past_scores WHERE category = 1")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(past, [(us, 12)]);
+    }
+
+    #[sqlx::test]
+    async fn a_series_left_counts_its_loss_at_the_next_kickoff(pool: PgPool) {
+        let state = GamestatsState::with_pool(pool.clone());
+        let now = at(2026, 11, 13, 12);
+        let mut game = Game::new(7, 2, 0);
+        game.log_in(&state, now).await;
+        game.play(&state, true, 2, now).await;
+        // It kicks off, then the game is closed: no result comes.
+        game.kick_off(&state, now).await;
+        assert_eq!(rows_of(&state, 0, now).await, [(7, 12, 1, 0)]);
+        // Its next login is shown 12 points; its next kickoff counts the
+        // series it left as a loss, with its 5 points.
+        game.log_in(&state, now).await;
+        game.kick_off(&state, now).await;
+        assert_eq!(rows_of(&state, 0, now).await, [(7, 7, 1, 1)]);
+        game.finish(&state, Some(true), 1, now).await;
+        assert_eq!(rows_of(&state, 0, now).await, [(7, 18, 2, 1)]);
+    }
+
+    #[sqlx::test]
+    async fn a_near_answer_between_kickoff_and_result_changes_nothing(pool: PgPool) {
+        let state = GamestatsState::with_pool(pool.clone());
+        let mut na = Game::new(7, 2, 1);
+        na.log_in(&state, at(2026, 11, 17, 20)).await;
+        na.play(&state, true, 2, at(2026, 11, 17, 20)).await;
+        // 02:00 UTC on the 18th, the US clock on the 17th: a kickoff, a NEAR
+        // answer showing the 18th's empty row, then a 3-4 loss.
+        let now = at(2026, 11, 18, 2);
+        na.kick_off(&state, now).await;
+        na.near(&state, now).await;
+        assert_eq!(na.total.unwrap().0, Tally::default());
+        na.finish(&state, Some(false), 3, now).await;
+        assert_eq!(rows_of(&state, 1, now).await, [(7, 4, 0, 1)]);
+    }
+
+    #[sqlx::test]
+    async fn a_linked_game_not_seen_before_counts_from_its_players_total(pool: PgPool) {
+        // Rows from before the server counted shares, without what their
+        // games hold; the US game was last shown the player's total, 150.
+        let (europe, us, other) = two_games_of_one_player(&pool).await;
+        let state = GamestatsState::with_pool(pool.clone());
+        let now = at(2026, 11, 13, 12);
+        for (pid, region, score, wins, losses) in [(europe, 4, 100, 6, 2), (us, 2, 50, 3, 1)] {
+            let mut game = Game::new(pid, region, 0);
+            game.total = Some((
+                Tally {
+                    score,
+                    wins,
+                    losses,
+                },
+                date(2026, 11, 13),
+            ));
+            game.put(&state, now - Duration::HOUR).await;
+        }
+        sqlx::query("UPDATE scores SET held_score = NULL, held_wins = NULL, held_losses = NULL")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut na = Game::new(us, 2, 0);
+        na.total = Some((
+            Tally {
+                score: 150,
+                wins: 9,
+                losses: 3,
+            },
+            na.today(now),
+        ));
+        // A 12-point win.
+        na.play(&state, true, 2, now).await;
+        assert_eq!(
+            season_board(&state, other, now).await,
+            [(europe, 162, 10, 3)]
+        );
+    }
+
+    #[test]
+    fn a_provisional_loss_waits_for_the_series_result() {
+        let tally = |score, wins, losses| Tally {
+            score,
+            wins,
+            losses,
+        };
+        let held = tally(40, 3, 1);
+        // Kickoff: nothing yet, 5 points waiting.
+        assert_eq!(
+            settle(tally(-5, 0, 1), held, None),
+            (Tally::default(), Some(5))
+        );
+        // From a total under 5 points it takes them all.
+        assert_eq!(
+            settle(tally(-2, 0, 1), tally(2, 0, 0), None),
+            (Tally::default(), Some(2))
+        );
+        // The result gives them back: a win counts alone...
+        assert_eq!(
+            settle(tally(5 + 13, 1, -1), held, Some(5)),
+            (tally(13, 1, 0), None)
+        );
+        // ...and so do a loss and a game broken off.
+        assert_eq!(
+            settle(tally(5 + 4, 0, 0), held, Some(5)),
+            (tally(4, 0, 1), None)
+        );
+        assert_eq!(
+            settle(tally(5 + 2, 0, -1), held, Some(5)),
+            (tally(2, 0, 0), None)
+        );
+        // A series' earlier game, before its result: counts, still waiting.
+        assert_eq!(
+            settle(tally(12, 1, 0), held, Some(5)),
+            (tally(12, 1, 0), Some(5))
+        );
+        assert_eq!(
+            settle(tally(3, 0, 1), held, Some(5)),
+            (tally(3, 0, 1), Some(5))
+        );
+        // A kickoff before the last one was given back counts that one.
+        assert_eq!(
+            settle(tally(-5, 0, 1), held, Some(5)),
+            (tally(-5, 0, 1), Some(5))
+        );
     }
 
     #[test]

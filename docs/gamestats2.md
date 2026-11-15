@@ -219,17 +219,25 @@ gained since the game last held one**, not the total itself
   (`held_*`): the last total it put, or the row a NEAR answer showed it, with
   the date on it by the game's clock.
 - A put adds `put − held` to the share and the game then holds the put. A
-  put of 0 points, no wins and no losses (the game starting a season, a day,
-  or as a first-time user) adds nothing. A put dated in a later season (or
-  day) than what the game held, by its own clock, is its first game there and
-  adds all of itself.
-- A share never goes below nothing: a provisional loss on a game whose own
-  share is small takes the rest from the player's other shares of the season
-  (or day). What none of them has (a loss from a total of the season before)
-  stays owed in what the game holds, and its next gain pays it back first,
-  as the series' result does.
-- A game not seen since the server began counting this way holds its row as
-  it put it, and its put replaces the share, as before.
+  put dated in a later season (or day) than what the game held, by its own
+  clock, is its first game there and adds all of itself. A put of 0 points,
+  no wins and no losses without a row of this season (or day) is the game
+  starting one, or a first-time user, and adds nothing; with a row it is a
+  gain like any other (a match from a total of nothing broken off after
+  kickoff).
+- A kickoff's provisional loss counts nothing yet (`provisional` keeps its
+  points): the series' result gives it back and counts alone, in the season
+  (or day) it comes in, so a series across midnight UTC counts on the day of
+  its result. A kickoff before any result gave the last one back (a series
+  left, the game closed) counts that one then, a loss with its points. A
+  result after the game's clock began a new season (or day) starts afresh,
+  its provisional loss with it.
+- A share never goes below nothing: a loss on a game whose own share is
+  small takes the rest from the player's other shares of the season (or
+  day). What none of them has stays owed in what the game holds, and its next
+  gain pays it back first. One put of a player is counted at a time.
+- A row from before the server began counting this way holds no `held_*`:
+  its game holds what it was last shown, the player's total.
 
 So no game counts another game's points again, however often it asks, and
 switching games mid-season, linking or unlinking a profile, or two games
@@ -248,9 +256,11 @@ player"), a game logged in at the time still holds its old totals and would
 put them back after its next match: its puts are answered as stored and
 change nothing until it logs in again, finds no row and starts from 0.
 
-Every put goes to `score_puts`, with what it counted (`counted`), or why not
-(`set`, `deleted`): the boards can be checked, and counted again, without the
-logs.
+Every put of the two boards goes to `score_puts`, with what it added to its
+player's total (`counted`), or why it added nothing (`set`, `deleted`): the
+boards can be checked, and counted again, without the logs. Deleting a
+player, or wiping the leaderboards, deletes their puts too. The EU friends
+board's puts (below) are not kept.
 
 ### Seasons
 
@@ -299,7 +309,8 @@ The server keeps two boards for every game: the season's (0) and the day's
 (1). The alternate country group's season (3) and day (4) count on them and
 read them. An EU game with European rankings puts every season game to the
 friends board (2) too: those puts count nothing more, and its gets read the
-season's board. Each board holds a different score for the same player
+season's board. The rows of 2 from before stay in `scores`, off every board;
+those of 3 and 4 joined 0 and 1 (migration 20261116090000). Each board holds a different score for the same player
 (season total compared with today's total), so rows are keyed by
 `(pid, category)`.
 

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT DISTINCT category AS \"category!\", first_day AS \"first_day!\" FROM past_scores",
+  "query": "SELECT DISTINCT category AS \"category!\", first_day AS \"first_day!\" FROM past_scores\n           WHERE category IN (0, 1)",
   "describe": {
     "columns": [
       {
@@ -34,5 +34,5 @@
       false
     ]
   },
-  "hash": "7b53467393d5df256dce7b3a27508b1d9261cf8dadf5b353669a03ba66ef61bf"
+  "hash": "297d223c7cce6f45b210395e38441347b5d3958a879642927241759f059c7a86"
 }

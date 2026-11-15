@@ -1,6 +1,8 @@
 //! The Leaderboards page: the gamestats2 `scores`, by category and region,
 //! who leads each category's current season (or day) and how many play it,
-//! and how its last one ended (docs/gamestats2.md, "Seasons"). As on the
+//! and how its last one ended (docs/gamestats2.md, "Seasons"): the season's
+//! and the day's boards, which every game puts and reads (the EU friends
+//! board's rows from before stay out). As on the
 //! game's boards, a Recharged player's WFC profiles are one row, and as on the
 //! launcher's, a row without a game counts no one (`gamestats::players`).
 
@@ -177,7 +179,7 @@ async fn totals_on(conn: &mut PgConnection, today: Date) -> Result<Totals, sqlx:
         r#"SELECT count(*) AS "entries!",
                   count(DISTINCT profile_id) AS "players!",
                   max(updated_at) AS last_put
-           FROM scores"#
+           FROM scores WHERE category IN (0, 1)"#
     )
     .fetch_one(&mut *conn)
     .await?;
@@ -202,7 +204,8 @@ async fn totals_on(conn: &mut PgConnection, today: Date) -> Result<Totals, sqlx:
 async fn current(conn: &mut PgConnection, today: Date) -> Result<Vec<Row>, sqlx::Error> {
     Ok(sqlx::query_as!(
         Row,
-        "SELECT category, profile_id, region, score, userdata, updated_at FROM scores"
+        "SELECT category, profile_id, region, score, userdata, updated_at FROM scores
+         WHERE category IN (0, 1)"
     )
     .fetch_all(conn)
     .await?
@@ -229,6 +232,7 @@ async fn categories(conn: &mut PgConnection) -> Result<Vec<Category>, sqlx::Erro
                   max(score) AS "top_score!",
                   max(updated_at) AS "last_put!"
            FROM scores
+           WHERE category IN (0, 1)
            GROUP BY category
            ORDER BY category"#
     )
@@ -386,7 +390,8 @@ async fn past(conn: &mut PgConnection, today: Date) -> Result<Vec<Past>, sqlx::E
     let ended = |category, first_day| first_day < season::first_day(category, today);
     let unreplaced: Vec<(Date, Row)> = sqlx::query_as!(
         Row,
-        "SELECT category, profile_id, region, score, userdata, updated_at FROM scores"
+        "SELECT category, profile_id, region, score, userdata, updated_at FROM scores
+         WHERE category IN (0, 1)"
     )
     .fetch_all(&mut *conn)
     .await?
@@ -398,7 +403,8 @@ async fn past(conn: &mut PgConnection, today: Date) -> Result<Vec<Past>, sqlx::E
     })
     .collect();
     let kept_seasons = sqlx::query!(
-        r#"SELECT DISTINCT category AS "category!", first_day AS "first_day!" FROM past_scores"#
+        r#"SELECT DISTINCT category AS "category!", first_day AS "first_day!" FROM past_scores
+           WHERE category IN (0, 1)"#
     )
     .fetch_all(&mut *conn)
     .await?;
