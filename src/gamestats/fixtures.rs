@@ -103,13 +103,24 @@ fn decodes_the_captured_puts() {
     }
 }
 
+/// Noon UTC on the day of the capture: the 17th on every game's clock.
+fn captured_at() -> time::OffsetDateTime {
+    Date::from_calendar_date(2026, Month::October, 17)
+        .unwrap()
+        .with_hms(12, 0, 0)
+        .unwrap()
+        .assume_utc()
+}
+
 #[sqlx::test]
 async fn replays_the_match(pool: sqlx::PgPool) {
     let state = GamestatsState::with_pool(pool);
     let mut userdata = Vec::new();
     for data in [PUT_P4_SEASON, PUT_P3_SEASON] {
         let (pid, body) = decode_data(data).unwrap();
-        leaderboard::put(&state, pid, &body).await.unwrap();
+        leaderboard::put_at(&state, pid, &body, captured_at())
+            .await
+            .unwrap();
         userdata.push(body[16..].to_vec());
     }
     let expected = vec![
@@ -119,8 +130,11 @@ async fn replays_the_match(pool: sqlx::PgPool) {
 
     for (data, mode) in [(GET_P3_SEASON_TOP, 1), (GET_P4_SEASON_FRIENDS, 3)] {
         let (pid, body) = decode_data(data).unwrap();
-        let reply = leaderboard::get(&state, pid, &body).await.unwrap();
-        // mode, count 2, total 2: the winner first, userdata as it was put.
+        let reply = leaderboard::get_at(&state, pid, &body, captured_at())
+            .await
+            .unwrap();
+        // mode, count 2, total 2: the winner first, userdata as it was put
+        // (dated the 17th by UTC and by the asking game's clock alike).
         assert_eq!(
             [word(&reply, 0), word(&reply, 1), word(&reply, 2)],
             [mode, 2, 2]

@@ -1,9 +1,21 @@
 //! The game's seasons (`docs/gamestats2.md`, "Seasons"): weekly from fixed
-//! dates, and a day for striker of the day. The dates are the game's own, from
-//! a row's userdata; the server keeps each player's last row of a season or day
-//! that has ended.
+//! dates, and a day for striker of the day. The boards run them by UTC: a
+//! row's userdata is dated by UTC when the server writes it (rows put before
+//! that carry their game's own date); the server keeps each player's last row
+//! of a season or day that has ended.
 
 use time::{Date, Month};
+
+/// Hours a game's clock runs ahead of UTC (`g_nAddHoursTime`,
+/// `NetworkUpdateTask.cpp`), by the DWC region its requests carry: JP (1)
+/// and KR (8) 9, US (2) -8, EU (4) none.
+pub fn clock_offset(region: u32) -> i64 {
+    match region {
+        1 | 8 => 9,
+        2 => -8,
+        _ => 0,
+    }
+}
 
 /// The days a season starts on, as month and day: `sNetworkSeasonDates` in
 /// `NetworkSeasonCalendar.cpp`, every week from 1 January.

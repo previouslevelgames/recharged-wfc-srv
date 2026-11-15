@@ -184,36 +184,77 @@ The client ignores the response content (no callback): any payload of at least
 The client keeps the running total and sends it whole. In
 `NetworkStatsManager::ReportGameResult`, for every persistent category:
 
-- `mLocalStats[category].mScore += pointsScored`;
+- `mLocalStats[category].mScore += pointsScored`: 10 for a win, 1 for
+  anything else (a draw counts as a loss), plus the goals scored, at most 10;
+  a game broken off (`result` 4) gives its goals only, and no win or loss;
 - a new day (striker of the day) or a new season (the others) restarts it from
   the points of this game, with wins and losses reset;
-- score is clamped to 999999, wins and losses to 9999;
+- score is clamped to 999999 (99999 on the JP and KR versions), wins and
+  losses to 9999;
 - then one `put2` per category with `mLocalStats[category]` as score and
   userdata.
 
-`PostResetMyPlayerStats` sends a score of 0 with zeroed wins and losses.
+At kickoff (`ReportDefaultDisconnectLoss`) the game books a provisional loss
+and puts it: up to 5 points off and a loss more. The series' result gives the
+points back and turns the loss into the result; a series that breaks off keeps
+it.
 
-So **a put replaces the stored row**: the server keeps the last value per
-`(pid, category)`. Adding puts up would count every past game again on each
-match and could never reset.
+`PostResetMyPlayerStats` sends a score of 0 with zeroed wins and losses, or,
+after a change of Mii, the total unchanged.
+
+The game starts its total from the row a NEAR answer shows it: at login, and
+whenever it asks again (`ApplyLeaderboardToSave` takes the row with its own
+pid as `mLocalStats`).
+
+### What a put counts
+
+A player's games add up on one row (below, "One row per player"), whichever
+of their games they play, so each game is shown the player's total as its
+own row, and starts from it. A put therefore counts **what the game's total
+gained since the game last held one**, not the total itself
+(`Leaderboard::count` in `src/gamestats/leaderboard.rs`):
+
+- Each row of `scores` is its profile's share of its player's total in the
+  season (or day). The row also keeps what the profile's game holds
+  (`held_*`): the last total it put, or the row a NEAR answer showed it, with
+  the date on it by the game's clock.
+- A put adds `put − held` to the share and the game then holds the put. A
+  put of 0 points, no wins and no losses (the game starting a season, a day,
+  or as a first-time user) adds nothing. A put dated in a later season (or
+  day) than what the game held, by its own clock, is its first game there and
+  adds all of itself.
+- A share never goes below nothing: a provisional loss on a game whose own
+  share is small takes the rest from the player's other shares of the season
+  (or day). What none of them has (a loss from a total of the season before)
+  stays owed in what the game holds, and its next gain pays it back first,
+  as the series' result does.
+- A game not seen since the server began counting this way holds its row as
+  it put it, and its put replaces the share, as before.
+
+So no game counts another game's points again, however often it asks, and
+switching games mid-season, linking or unlinking a profile, or two games
+playing at once all add up right.
 
 A Recharged set's games (docs/profiles.md, "Sets") meet in RANKED only to find
 each other, so their puts stay off the boards: a put of a profile whose game
 is kept for a set, or whose player's set is playing or ended less than 2
-minutes ago, is answered as stored but changes nothing. Retail RANKED, which a
+minutes ago, is answered as stored but counts nothing; the game holds it, so
+its next RANKED put counts only what it gained since. Retail RANKED, which a
 player chooses (the game's own menu, or Play RANKED in the Recharged Game
-Menu), counts as before; a FRIENDS battle never puts. The game reads its
-score back from the board when it goes online, so a set's points are gone
-from its menus then too.
+Menu), counts; a FRIENDS battle never puts.
 
 When an admin deletes a player's rows (docs/profiles.md, "Deleting a
 player"), a game logged in at the time still holds its old totals and would
 put them back after its next match: its puts are answered as stored and
 change nothing until it logs in again, finds no row and starts from 0.
 
+Every put goes to `score_puts`, with what it counted (`counted`), or why not
+(`set`, `deleted`): the boards can be checked, and counted again, without the
+logs.
+
 ### Seasons
 
-The game resets its scores itself; the server only stores what it puts.
+The game resets its own total by its clock; the boards run on UTC.
 
 - Seasons (season, alternate season, EU friends) are weekly, on the fixed
   dates of `sNetworkSeasonDates` (`NetworkSeasonCalendar.cpp`): 1 January,
@@ -222,18 +263,25 @@ The game resets its scores itself; the server only stores what it puts.
 - The game's clock is the NAS `datetime` (UTC), shifted by `g_nAddHoursTime`
   (`NetworkUpdateTask.cpp`): -8 hours for the US version, +9 for JP and KR,
   none for EU. A US day starts at 08:00 UTC.
+- The boards' seasons and days are UTC's, for every game: a put counts on
+  the season (or day) it comes in by UTC. Its row is dated by UTC when it is
+  written; a row of an ended season (or day) moves to `past_scores` with its
+  profile's next put.
 
-At login the game asks for its own rows (NEAR) with `since` set to the
-minutes since the start of the season or the day. A reset follows in two
+At login the game asks for its own rows (NEAR). A reset follows in two
 cases:
 
 - no row of its own comes back;
 - the row's date (`day`, `month`, `year` in the userdata) lies in an earlier
   season (`IsNewNetworkSeason`) or day (`IsNewNetworkDay`).
 
-The reset is a put of score 0 (`PostResetMyPlayerStats`). Rows from earlier
-seasons stay in `scores` until such a put replaces them; gets leave them out,
-since they are older than `since`.
+The reset is a put of score 0 (`PostResetMyPlayerStats`), which counts
+nothing. The server dates every row it shows a game by that game's own
+today, so a game takes the boards' season (or day) as its own at any hour:
+between 00:00 and 08:00 UTC a US game is shown today's boards though its
+clock still says yesterday. When its own clock then begins the day, it
+restarts its total from its next game, which counts that game only; asking
+again shows it the board's total.
 
 ### Categories
 
@@ -247,9 +295,13 @@ since they are older than `since`.
 | 3 | `NETWORK_PERSISTENT_ALTERNATE_SEASON` | EU, alternate country group |
 | 4 | `NETWORK_PERSISTENT_ALTERNATE_STRIKER_OF_DAY` | EU, alternate country group |
 
-Each category holds a different score for the same player (season total
-compared with today's total), so rows are keyed by `(pid, category)` even with a
-single, region-less leaderboard.
+The server keeps two boards for every game: the season's (0) and the day's
+(1). The alternate country group's season (3) and day (4) count on them and
+read them. An EU game with European rankings puts every season game to the
+friends board (2) too: those puts count nothing more, and its gets read the
+season's board. Each board holds a different score for the same player
+(season total compared with today's total), so rows are keyed by
+`(pid, category)`.
 
 ## `get2.asp`
 
@@ -281,9 +333,8 @@ What the game asks for (`NetworkRanking::GetLeaderboardStats`):
 - **`since` is in minutes**: for categories 1 and 4, minutes since the start of
   the network day (`GetMinutesSinceNetworkDayStart`); for the others, since
   the start of the season (`GetMinutesSinceNetworkSeasonStart`); always >= 1.
-  Only rows updated in the last `since` minutes belong in the answer. The
-  client works out the day and season boundaries; the server only needs each
-  row's last update time. "Network time" is the NAS-adjusted clock.
+  "Network time" is the NAS-adjusted clock, so each region's season and day
+  start at another hour.
 - FRIENDS sends the 64 friend slots of the save; empty slots are presumably 0.
   `since = 0` there, and the client filters by season itself
   (`FilterCurrentSeason`).
@@ -293,16 +344,19 @@ What the game asks for (`NetworkRanking::GetLeaderboardStats`):
 The client does not settle these; the server (`src/gamestats/leaderboard.rs`)
 chooses:
 
-- One leaderboard per category for every region: the request's region is
-  ignored.
+- The same two boards for every region and release (above, "Categories"),
+  with the rows of this season (or day) by UTC: `since` is not read. The
+  request's region tells the asking game's clock: every row it is shown is
+  dated by its own today and signed again, so `FilterCurrentSeason` and
+  `IsNewNetworkSeason` keep it; and its score range (99999 for JP and KR).
 - One row per player (below): the WFC profiles of one Recharged player count
   as one row.
 - Rows are sorted by score in the asked order, the earlier update first on a
   tie. Equal scores share a rank ("1, 2, 2, 4"). `total` is the number of rows
-  that pass the `since` filter, a player's counting once.
-- `since = 0` keeps every row, in every mode.
+  of the season (or day), a player's counting once.
 - NEAR: `limit` rows centred on the caller, shifted to stay inside the board;
-  the top of the board when the caller has no row.
+  the top of the board when the caller has no row. The caller's row is what
+  its game holds from then on (above, "What a put counts").
 - FRIENDS: the rows of the listed pids (zero slots skipped) and of the caller,
   best first, at most `limit`, with their rank on the whole board. A player's
   row counts when any of their profiles is listed.
@@ -315,15 +369,15 @@ A player who plays the US and the European game has a WFC profile in each
 (the profile belongs to the game code), and so a row in each: two rows on
 one board for one player. The profiles a launcher proved for one Recharged
 player (`player_wfc_profiles`, docs/profiles.md "Friend codes") are that
-player's, so their rows are merged before a get is answered
-(`src/gamestats/players.rs`): the score, wins and losses (userdata 0x04 and
-0x08) added up (at most 999999 and 9999, as a put and the game allow), and
+player's, so their rows, each profile's share (above, "What a put counts"),
+are merged before a get is answered (`src/gamestats/players.rs`): the score,
+wins and losses (userdata 0x04 and 0x08) added up (at most 999999 and 9999,
+as a put and the game allow), and
 the row of the player's best profile otherwise (its pid, region, Mii and the
 rest of its userdata), last updated when the latest of them was. Only rows
 of one season (or, on the daily boards, one day) add up, by the date in
-their userdata: a row of an ended season stays in `scores` until its
-profile's next put, and stays a row of its own, which the game drops by that
-date (FRIENDS). Changing the wins and losses breaks the userdata's digest
+their userdata; a get shows only this season's (or day's). Changing the
+wins and losses breaks the userdata's digest
 (0x70), and the game blanks a row whose digest fails, so the server makes
 the digest again with `sRankingHmacKey` (`src/gamestats/submission.rs`);
 userdata whose digest failed already stays as it was. The caller's own
