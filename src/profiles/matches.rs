@@ -933,6 +933,22 @@ pub async fn forfeit(
     }))
 }
 
+/// Whether a report of `match_id` ends with a game that broke off (a player
+/// left or lost the connection).
+pub async fn broke_off(
+    executor: impl sqlx::PgExecutor<'_>,
+    match_id: i64,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar!(
+        "SELECT EXISTS (SELECT 1 FROM match_reports
+                        WHERE match_id = $1 AND games::jsonb -> -1 ->> 'interrupted' = 'true')
+         AS \"broke!\"",
+        match_id,
+    )
+    .fetch_one(executor)
+    .await
+}
+
 /// Whether `player_id` has reported `match_id`.
 pub async fn reported(pool: &PgPool, match_id: i64, player_id: i64) -> Result<bool, sqlx::Error> {
     Ok(sqlx::query_scalar!(

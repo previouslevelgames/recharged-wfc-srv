@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT tournament_set_id, index, side, round, position, games, state, home, away,\n                winner, decided_by, home_wins, away_wins, match_id\n         FROM tournament_sets WHERE tournament_id = $1 ORDER BY index",
+  "query": "SELECT tournament_set_id, index, side, round, position, games, state, home, away,\n                winner, decided_by, home_wins, away_wins, match_id, resume\n         FROM tournament_sets WHERE tournament_id = $1 ORDER BY index",
   "describe": {
     "columns": [
       {
@@ -156,6 +156,17 @@
             "name": "match_id"
           }
         }
+      },
+      {
+        "ordinal": 14,
+        "name": "resume",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "resume"
+          }
+        }
       }
     ],
     "parameters": {
@@ -177,8 +188,9 @@
       true,
       true,
       true,
+      true,
       true
     ]
   },
-  "hash": "8f75e59b1701ff15ff4eac28943394ae1e0fa5e886dbe710ee1c074cf2e59d45"
+  "hash": "2e4d9201fe1dd670d53432816fa5c81cfeaa2d70bd28cdf624747782fe04e718"
 }

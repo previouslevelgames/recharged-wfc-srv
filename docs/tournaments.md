@@ -53,9 +53,19 @@ as that player's Ready to play!; the other's READY makes it go. Its winner
 has one more game (`home_wins`, `away_wins`), and the set is theirs once
 they have more than half of its `games`; until then it is `ready` for the
 next game. A game without a winner is played again. A player who forfeits
-a game gives that game up and the set goes on, as a game they broke off by
-closing their game counts at its score once enough of it was played. The
-players take the game's home side in turn: the lower seed (the higher
+a game gives that game up and the set goes on.
+
+A game that breaks off (a player closed their game or lost the connection)
+is not counted: the set's next game goes on from it. Its `resume`, from the
+game's own match report ([reports.md](reports.md): the last game either
+player's game reported with `"ending": "disconnect"` since the match was
+played), says the stadium, the seconds on its clock, and each team as it
+was: its player, captain, sidekicks and score. The next game's match is
+played in that stadium, on the same sides (`game_home` is the resumed game's
+home player), and the games skip the draft and start from that score and
+clock. Without such a report (or with a team's captain or sidekicks
+unknown) the game is played again from the start. A game that ends normally
+clears it. The players take the game's home side in turn: the lower seed (the higher
 number) in the first game, the other in the second, and so on
 (`game_home`; the game swaps its sides to follow it). From there it is a
 set like any other: the games meet in RANKED, report, may forfeit. A READY
@@ -88,8 +98,10 @@ A match's view has `tournament`, `{"id", "name", "set", "side", "round",
 "home"}` for a tournament set's match, `null` otherwise: the set's best of,
 the games each place has won so far, the same as the player's (`won`) and
 the opponent's (`lost`), the set's `state`, its `winner` once finished
-(`"you"` or `"opponent"`), and who plays at home in its next game (`"you"`
-or `"opponent"`).
+(`"you"` or `"opponent"`), who plays at home in its next game (`"you"`
+or `"opponent"`), and `resume`, `null` or the game the next one goes on
+from: `{"stadium", "seconds", "home": "you" | "opponent", "you":
+{"captain", "sidekicks", "score"}, "opponent": {...}}`.
 
 ## The admin page
 

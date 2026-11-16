@@ -1,0 +1,137 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT g.home_score, g.away_score, g.home_captain, g.away_captain, g.stadium, g.seconds,\n                s.side, s.home_sidekicks, s.away_sidekicks, bound.player_id\n         FROM online_match_games g\n         JOIN online_match_sides s ON s.match_id = g.match_id AND s.side = g.side\n         JOIN player_wfc_profiles bound ON bound.profile_id = s.profile_id\n         WHERE bound.player_id = ANY($1) AND g.ending = 'disconnect' AND g.reported_at >= $2\n         ORDER BY g.reported_at DESC LIMIT 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "home_score",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "online_match_games",
+            "name": "home_score"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "away_score",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "online_match_games",
+            "name": "away_score"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "home_captain",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_match_games",
+            "name": "home_captain"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "away_captain",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_match_games",
+            "name": "away_captain"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "stadium",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_match_games",
+            "name": "stadium"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "seconds",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "online_match_games",
+            "name": "seconds"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "side",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_match_sides",
+            "name": "side"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "home_sidekicks",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "online_match_sides",
+            "name": "home_sidekicks"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "away_sidekicks",
+        "type_info": "TextArray",
+        "origin": {
+          "Table": {
+            "table": "online_match_sides",
+            "name": "away_sidekicks"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "player_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "player_wfc_profiles",
+            "name": "player_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8Array",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "32d0fd4880fae6fc291f8f71f5c03fbbd3a99d936a9862a8eb41bede12637c90"
+}

@@ -3,7 +3,7 @@
 //! by [`super::bracket`] from the results and who left; this keeps its sets'
 //! players and states up to date with it.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
 
@@ -105,6 +105,56 @@ pub struct Set {
     pub away_wins: Option<i16>,
     #[serde(rename = "match")]
     pub match_id: Option<i64>,
+    /// Where its next game goes on from: its last game broke off.
+    pub resume: Option<Resume>,
+}
+
+/// A team of a set's game that broke off, as it was then.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ResumeTeam {
+    pub player: i64,
+    pub captain: String,
+    /// Three sidekicks, the game's names.
+    pub sidekicks: Vec<String>,
+    pub score: i32,
+}
+
+/// A set's game that broke off (a disconnect, not a forfeit): the next game
+/// goes on from it, on the same sides with the same teams in the same
+/// stadium, from its score and its clock.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Resume {
+    pub stadium: String,
+    /// Seconds on its clock when it broke off.
+    pub seconds: i32,
+    /// The game's home and away teams.
+    pub home: ResumeTeam,
+    pub away: ResumeTeam,
+}
+
+impl Resume {
+    /// The team of `player_id`, and the other.
+    pub fn teams_of(&self, player_id: i64) -> (&ResumeTeam, &ResumeTeam) {
+        if self.home.player == player_id {
+            (&self.home, &self.away)
+        } else {
+            (&self.away, &self.home)
+        }
+    }
+
+    /// `player_id`'s view: the stadium and clock, who is at home, and both
+    /// teams as `you` and `opponent`.
+    pub fn view(&self, player_id: i64) -> serde_json::Value {
+        let (you, opponent) = self.teams_of(player_id);
+        let team = |team: &ResumeTeam| serde_json::json!({ "captain": team.captain, "sidekicks": team.sidekicks, "score": team.score });
+        serde_json::json!({
+            "stadium": self.stadium,
+            "seconds": self.seconds,
+            "home": if self.home.player == player_id { "you" } else { "opponent" },
+            "you": team(you),
+            "opponent": team(opponent),
+        })
+    }
 }
 
 impl Set {
@@ -116,6 +166,10 @@ impl Set {
     /// the players' seeds (`seed_of`, from 0 the best): the lower seed in the
     /// first, then each in turn. None until both are known.
     pub fn game_home(&self, seed_of: impl Fn(i64) -> Option<i32>) -> Option<i64> {
+        // A game that goes on keeps its sides.
+        if let Some(resume) = &self.resume {
+            return Some(resume.home.player);
+        }
         game_home(
             (self.home?, self.away?),
             seed_of,
@@ -306,7 +360,7 @@ pub async fn entrants(pool: &PgPool, id: i64) -> Result<Vec<Entrant>, sqlx::Erro
 pub async fn sets(pool: &PgPool, id: i64) -> Result<Vec<Set>, sqlx::Error> {
     let rows = sqlx::query!(
         "SELECT tournament_set_id, index, side, round, position, games, state, home, away,
-                winner, decided_by, home_wins, away_wins, match_id
+                winner, decided_by, home_wins, away_wins, match_id, resume
          FROM tournament_sets WHERE tournament_id = $1 ORDER BY index",
         id,
     )
@@ -329,6 +383,9 @@ pub async fn sets(pool: &PgPool, id: i64) -> Result<Vec<Set>, sqlx::Error> {
             home_wins: row.home_wins,
             away_wins: row.away_wins,
             match_id: row.match_id,
+            resume: row
+                .resume
+                .and_then(|resume| serde_json::from_value(resume).ok()),
         })
         .collect())
 }
@@ -347,7 +404,8 @@ pub async fn set_context(
                 (SELECT seed FROM tournament_entrants e
                  WHERE e.tournament_id = s.tournament_id AND e.player_id = s.home) AS home_seed,
                 (SELECT seed FROM tournament_entrants e
-                 WHERE e.tournament_id = s.tournament_id AND e.player_id = s.away) AS away_seed
+                 WHERE e.tournament_id = s.tournament_id AND e.player_id = s.away) AS away_seed,
+                s.resume
          FROM tournament_sets s
          JOIN tournaments t USING (tournament_id) WHERE s.tournament_set_id = $1",
         set_id,
@@ -363,7 +421,12 @@ pub async fn set_context(
             _ => None,
         };
         let seeds = (row.home_seed, row.away_seed);
+        let resume: Option<Resume> = row
+            .resume
+            .and_then(|resume| serde_json::from_value(resume).ok());
         let game_home = match (row.home, row.away) {
+            // A game that goes on keeps its sides.
+            _ if resume.is_some() => resume.as_ref().map(|resume| resume.home.player),
             (Some(home), Some(away)) => game_home(
                 (home, away),
                 |player| {
@@ -387,6 +450,7 @@ pub async fn set_context(
             "state": row.state,
             "winner": winner,
             "home": game_home.map(|home| if home == player_id { "you" } else { "opponent" }),
+            "resume": resume.map(|resume| resume.view(player_id)),
         })
     }))
 }
@@ -753,8 +817,14 @@ pub async fn ready(
         }
         "ready" if !ready => Ok(Ok(None)),
         "ready" => {
-            // One game at a time: each is drafted again.
-            let rules = tournament.rules_for(1);
+            // One game at a time: each is drafted again, but for one that
+            // goes on from a game that broke off: its stadium (the game
+            // takes its teams, sides, score and clock from the set).
+            let mut rules = tournament.rules_for(1);
+            if let Some(resume) = &set.resume {
+                rules.rules.stadium = resume.stadium.clone();
+                rules.hash = rules.rules.hash();
+            }
             let made =
                 match matches::tournament_set(pool, home, away, &rules, set.id, player_id).await? {
                     Ok(made) => made,
@@ -820,6 +890,24 @@ pub async fn advance(pool: &PgPool) -> Result<(), sqlx::Error> {
         let Some(home) = home else {
             continue;
         };
+        // A game that broke off (not one given up) is not counted: the set's
+        // next game goes on from it, from its own game's report (else it is
+        // played again from the start).
+        if found.forfeited_by.is_none() && matches::broke_off(&mut *transaction, found.id).await? {
+            let resume = resume_of(&mut transaction, &found).await?;
+            sqlx::query!(
+                "UPDATE tournament_sets SET state = 'ready', resume = $2, updated_at = now()
+                 WHERE tournament_set_id = $1",
+                row.tournament_set_id,
+                resume.as_ref().map(|resume| serde_json::json!(resume)),
+            )
+            .execute(&mut *transaction)
+            .await?;
+            tracing::info!(target: "profiles", tournament_id = row.tournament_id, set_id = row.tournament_set_id, match_id = row.match_id, goes_on = resume.is_some(), "tournament set's game broke off");
+            refresh(&mut transaction, row.tournament_id).await?;
+            transaction.commit().await?;
+            continue;
+        }
         match (found.state.as_str(), found.winner) {
             ("finished", Some(winner)) => {
                 // A match is one game of the set: its winner has one more
@@ -843,7 +931,7 @@ pub async fn advance(pool: &PgPool) -> Result<(), sqlx::Error> {
                     "UPDATE tournament_sets SET result = $2,
                             decided_by = CASE WHEN $2::smallint IS NULL THEN NULL ELSE 'match' END,
                             state = CASE WHEN $2::smallint IS NULL THEN 'ready' ELSE state END,
-                            home_wins = $3, away_wins = $4, updated_at = now()
+                            home_wins = $3, away_wins = $4, resume = NULL, updated_at = now()
                      WHERE tournament_set_id = $1",
                     row.tournament_set_id,
                     result,
@@ -856,7 +944,7 @@ pub async fn advance(pool: &PgPool) -> Result<(), sqlx::Error> {
             // A game without a winner (a draw) is played again.
             ("finished", None) => {
                 sqlx::query!(
-                    "UPDATE tournament_sets SET state = 'ready', updated_at = now()
+                    "UPDATE tournament_sets SET state = 'ready', resume = NULL, updated_at = now()
                      WHERE tournament_set_id = $1",
                     row.tournament_set_id,
                 )
@@ -865,7 +953,7 @@ pub async fn advance(pool: &PgPool) -> Result<(), sqlx::Error> {
             }
             ("disputed", _) => {
                 sqlx::query!(
-                    "UPDATE tournament_sets SET state = 'disputed', updated_at = now()
+                    "UPDATE tournament_sets SET state = 'disputed', resume = NULL, updated_at = now()
                      WHERE tournament_set_id = $1",
                     row.tournament_set_id,
                 )
@@ -887,6 +975,67 @@ pub async fn advance(pool: &PgPool) -> Result<(), sqlx::Error> {
         transaction.commit().await?;
     }
     Ok(())
+}
+
+/// Where the set's next game goes on from, after `found`'s game broke off:
+/// the game's own report of it (online_match_games, the last that broke off
+/// by a disconnect since the match was played, from either player's game),
+/// with both teams' captains and sidekicks known; None without one.
+async fn resume_of(
+    transaction: &mut Transaction<'_, Postgres>,
+    found: &Match,
+) -> Result<Option<Resume>, sqlx::Error> {
+    let since = found.playing_at.unwrap_or(found.created_at);
+    let Some(row) = sqlx::query!(
+        "SELECT g.home_score, g.away_score, g.home_captain, g.away_captain, g.stadium, g.seconds,
+                s.side, s.home_sidekicks, s.away_sidekicks, bound.player_id
+         FROM online_match_games g
+         JOIN online_match_sides s ON s.match_id = g.match_id AND s.side = g.side
+         JOIN player_wfc_profiles bound ON bound.profile_id = s.profile_id
+         WHERE bound.player_id = ANY($1) AND g.ending = 'disconnect' AND g.reported_at >= $2
+         ORDER BY g.reported_at DESC LIMIT 1",
+        &[found.home, found.away][..],
+        since,
+    )
+    .fetch_optional(&mut **transaction)
+    .await?
+    else {
+        return Ok(None);
+    };
+    let known = |captain: &str, sidekicks: &[String]| captain != "unknown" && sidekicks.len() == 3;
+    if !known(&row.home_captain, &row.home_sidekicks)
+        || !known(&row.away_captain, &row.away_sidekicks)
+        || !crate::profiles::rules::STADIUMS.contains(&row.stadium.as_str())
+    {
+        return Ok(None);
+    }
+    // The reporter's team is its side; the other player has the other.
+    let other = if row.player_id == found.home {
+        found.away
+    } else {
+        found.home
+    };
+    let (home, away) = if row.side == "home" {
+        (row.player_id, other)
+    } else {
+        (other, row.player_id)
+    };
+    Ok(Some(Resume {
+        stadium: row.stadium,
+        seconds: row.seconds,
+        home: ResumeTeam {
+            player: home,
+            captain: row.home_captain,
+            sidekicks: row.home_sidekicks,
+            score: row.home_score,
+        },
+        away: ResumeTeam {
+            player: away,
+            captain: row.away_captain,
+            sidekicks: row.away_sidekicks,
+            score: row.away_score,
+        },
+    }))
 }
 
 /// Works the bracket out again from the results and who left, and writes
@@ -1457,6 +1606,97 @@ mod tests {
         let seeds = |player: i64| Some(if player == 1 { 3 } else { 0 });
         assert_eq!(game_home((1, 2), seeds, 0), Some(1));
         assert_eq!(game_home((1, 2), seeds, 3), Some(2));
+    }
+
+    #[sqlx::test]
+    async fn a_game_that_broke_off_goes_on_from_where_it_was(pool: PgPool) {
+        // Mario's and Luigi's games are Anosch's and Sam's WFC profiles.
+        let games = crate::admin::Games::new(pool).await;
+        let pool = games.pool.clone();
+        let (id, p) = tournament(&pool, Format::Single, &["Mario", "Luigi"]).await;
+        players::bind_wfc(&pool, p[0], games.anosch).await.unwrap();
+        players::bind_wfc(&pool, p[1], games.sam).await.unwrap();
+        start(&pool, id, Seeding::Joined).await.unwrap().unwrap();
+        let set = set_of(&pool, id, p[0]).await;
+        let made = ready(&pool, id, set.id, p[0], true)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        ready(&pool, id, set.id, p[1], true).await.unwrap().unwrap();
+        matches::game_ready(&pool, made.id, 0, true).await.unwrap();
+        // Sam's game (Luigi, at home in it) saw it break off at 2-1 after 70
+        // seconds, at the Palace.
+        let mut luigi = games.report(games.sam, 300, "home", "start");
+        luigi["sidekicks"] = serde_json::json!({"home": ["toad", "boo", "koopa"], "away": ["birdo", "boo", "shy_guy"]});
+        games.send(&luigi).await;
+        let mut broke = crate::admin::Games::game(luigi, 1, 2, 1);
+        broke["game"]["ending"] = serde_json::json!("disconnect");
+        broke["game"]["seconds"] = serde_json::json!(70);
+        games.send(&broke).await;
+        for (player_id, mine, theirs) in [(p[0], 1, 2), (p[1], 2, 1)] {
+            let mut seen = game(mine, theirs);
+            seen.interrupted = true;
+            seen.played = Some(0.4);
+            if player_id == p[1] {
+                std::mem::swap(&mut seen.my_captain, &mut seen.opponent_captain);
+            }
+            matches::report(&pool, made.id, player_id, &[seen])
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        advance(&pool).await.unwrap();
+        // Not counted: the set's next game goes on from it.
+        let now = sets(&pool, id).await.unwrap().remove(0);
+        assert_eq!(now.state, "ready");
+        assert_eq!((now.home_wins, now.away_wins), (None, None));
+        let resume = now.resume.clone().expect("the game goes on");
+        assert_eq!(
+            (resume.stadium.as_str(), resume.seconds),
+            ("the_palace", 70)
+        );
+        assert_eq!((resume.home.player, resume.home.score), (p[1], 2));
+        assert_eq!(resume.home.sidekicks, ["toad", "boo", "koopa"]);
+        assert_eq!(
+            (
+                resume.away.player,
+                resume.away.captain.as_str(),
+                resume.away.score
+            ),
+            (p[0], "bowser", 1)
+        );
+        assert_eq!(now.game_home(|_| None), Some(p[1]));
+        let mario = set_context(&pool, set.id, p[0]).await.unwrap().unwrap();
+        assert_eq!(mario["home"], "opponent");
+        assert_eq!(mario["resume"]["you"]["score"], 1);
+        assert_eq!(mario["resume"]["opponent"]["captain"], "mario");
+        assert_eq!(mario["resume"]["home"], "opponent");
+        // Its match is played in the same stadium; a result clears it.
+        let next = ready(&pool, id, set.id, p[0], true)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(next.rules.stadium, "the_palace");
+        ready(&pool, id, set.id, p[1], true).await.unwrap().unwrap();
+        matches::game_ready(&pool, next.id, 0, true).await.unwrap();
+        for (player_id, mine, theirs) in [(p[0], 1, 3), (p[1], 3, 1)] {
+            let mut seen = game(mine, theirs);
+            if player_id == p[1] {
+                std::mem::swap(&mut seen.my_captain, &mut seen.opponent_captain);
+            }
+            matches::report(&pool, next.id, player_id, &[seen])
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        advance(&pool).await.unwrap();
+        let after = sets(&pool, id).await.unwrap().remove(0);
+        assert_eq!(
+            (after.home_wins, after.away_wins, after.resume),
+            (Some(0), Some(1), None)
+        );
     }
 
     async fn set_of_state(pool: &PgPool, id: i64, set_id: i64) -> String {
