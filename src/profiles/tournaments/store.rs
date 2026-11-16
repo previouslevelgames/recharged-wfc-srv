@@ -822,10 +822,10 @@ pub async fn advance(pool: &PgPool) -> Result<(), sqlx::Error> {
         };
         match (found.state.as_str(), found.winner) {
             ("finished", Some(winner)) => {
-                // A match is one game of the set: its winner has one more,
-                // and the set is theirs once they have enough (or the other
-                // gave it up). Until then it is to be played again: the next
-                // game, drafted again.
+                // A match is one game of the set: its winner has one more
+                // (a forfeit gives that game up, as a game broken off), and
+                // the set is theirs once they have enough. Until then it is
+                // to be played again: the next game, drafted again.
                 let side = if Some(winner) == home { 0 } else { 1 };
                 let set = sqlx::query!(
                     "SELECT games, coalesce(home_wins, 0::smallint) AS \"home_wins!\",
@@ -838,8 +838,7 @@ pub async fn advance(pool: &PgPool) -> Result<(), sqlx::Error> {
                 let mut wins = [set.home_wins, set.away_wins];
                 wins[side] += 1;
                 let needed = set.games / 2 + 1;
-                let result =
-                    (wins[side] >= needed || found.forfeited_by.is_some()).then_some(side as i16);
+                let result = (wins[side] >= needed).then_some(side as i16);
                 sqlx::query!(
                     "UPDATE tournament_sets SET result = $2,
                             decided_by = CASE WHEN $2::smallint IS NULL THEN NULL ELSE 'match' END,
@@ -1372,10 +1371,11 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn a_forfeit_gives_the_whole_set_up(pool: PgPool) {
+    async fn a_forfeit_gives_the_game_up(pool: PgPool) {
         let (id, p) = tournament(&pool, Format::Single, &["Mario", "Luigi"]).await;
         start(&pool, id, Seeding::Joined).await.unwrap().unwrap();
-        // The final is a best of 5; Luigi leaves the first game on purpose.
+        // The final is a best of 5; Luigi leaves the first game on purpose:
+        // Mario has that game, and the set goes on.
         let set = set_of(&pool, id, p[0]).await;
         assert_eq!(set.games, 5);
         let made = ready(&pool, id, set.id, p[0], true)
@@ -1391,12 +1391,9 @@ mod tests {
             .unwrap();
         advance(&pool).await.unwrap();
         let done = sets(&pool, id).await.unwrap();
-        assert_eq!(
-            (done[0].state.as_str(), done[0].winner),
-            ("finished", Some(p[0]))
-        );
+        assert_eq!((done[0].state.as_str(), done[0].winner), ("ready", None));
         assert_eq!((done[0].home_wins, done[0].away_wins), (Some(1), Some(0)));
-        assert_eq!(get(&pool, id).await.unwrap().unwrap().state, "finished");
+        assert_eq!(get(&pool, id).await.unwrap().unwrap().state, "running");
     }
 
     #[sqlx::test]

@@ -52,11 +52,12 @@ match, accepted at once, by the tournament's rules with one game, and counts
 as that player's Ready to play!; the other's READY makes it go. Its winner
 has one more game (`home_wins`, `away_wins`), and the set is theirs once
 they have more than half of its `games`; until then it is `ready` for the
-next game. A game without a winner is played again; a player who forfeits a
-game gives the whole set up. The players take the game's home side in
-turn: the lower seed (the higher number) in the first game, the other in the
-second, and so on (`game_home`; the game swaps its sides to follow it). From
-there it is a
+next game. A game without a winner is played again. A player who forfeits
+a game gives that game up and the set goes on, as a game they broke off by
+closing their game counts at its score once enough of it was played. The
+players take the game's home side in turn: the lower seed (the higher
+number) in the first game, the other in the second, and so on
+(`game_home`; the game swaps its sides to follow it). From there it is a
 set like any other: the games meet in RANKED, report, may forfeit. A READY
 while either player has another match to play is refused (409), and a
 player's match still waiting for both is called off by another set of
