@@ -327,6 +327,7 @@ const ICONS = {
   monitoring: 'M22 12h-4l-3 9L9 3l-3 9H2',
   leaderboards: 'M6 9H4.5a2.5 2.5 0 0 1 0-5H6M18 9h1.5a2.5 2.5 0 0 0 0-5H18M4 22h16M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22M18 2H6v7a6 6 0 0 0 12 0V2z',
   competitive: 'M4 22v-7M4 15V3h13l-3 6 3 6H4',
+  tournaments: 'M3 4h6v5H3zM3 15h6v5H3zM9 6.5h3v11H9M12 12h4M16 9.5h5v5h-5z',
   moderation: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z',
   database: 'M12 8c4.97 0 9-1.34 9-3s-4.03-3-9-3-9 1.34-9 3 4.03 3 9 3zM21 12c0 1.66-4 3-9 3s-9-1.34-9-3M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5',
   logs: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M16 13H8M16 17H8M10 9H8',
@@ -397,6 +398,16 @@ const SECTIONS = [
     intro: 'Recharged profiles: the rules matches are played by, the players who signed in from the launcher, and their matches.',
     api: 'competitive',
     render: renderCompetitive,
+    editor: true,
+  },
+  {
+    path: '/admin/tournaments',
+    group: 'Game',
+    name: 'Tournaments',
+    icon: 'tournaments',
+    intro: 'Brackets of single or double elimination the server runs: players with Discord join from the game, their sets are matches.',
+    api: 'tournaments',
+    render: renderTournaments,
     editor: true,
   },
   {
@@ -3010,6 +3021,229 @@ const editor = {
       poll();
     } catch (error) {
       this.status(error.message, 'critical');
+    }
+  },
+};
+
+// --- Tournaments ---------------------------------------------------------
+
+const TOURNAMENT_STATES = {
+  registration: ['Open for entries', 'accent'],
+  running: ['Running', 'warning'],
+  finished: ['Finished', 'good'],
+  cancelled: ['Called off', null],
+};
+
+const SET_STATES = {
+  pending: ['Waiting for players', null],
+  ready: ['To play', 'accent'],
+  playing: ['Playing', 'warning'],
+  finished: ['Finished', 'good'],
+  disputed: ['Disputed', 'serious'],
+  void: ['Not played', null],
+};
+
+const SIDE_NAMES = {
+  winners: 'Winners',
+  losers: 'Losers',
+  grand_final: 'Grand final',
+  grand_final_reset: 'Grand final reset',
+};
+
+/** A tournament's action, then the page again; errors in its status line. */
+async function tournamentAction(id, method, path, body, confirmText) {
+  if (confirmText && !window.confirm(confirmText)) return;
+  const status = document.getElementById(`tournament-status-${id}`);
+  try {
+    await send(method, path, body);
+    if (status) status.textContent = '';
+    poll();
+  } catch (error) {
+    if (status) {
+      status.textContent = error.message;
+      status.dataset.tone = 'critical';
+    }
+  }
+}
+
+function renderTournament(tournament) {
+  const names = new Map(tournament.entrants.map((entrant) => [entrant.player_id, entrant.name]));
+  const name = (id) => (id == null ? h('span', { class: 'sub' }, '–') : names.get(id) || `#${id}`);
+  const [stateText, stateTone] = TOURNAMENT_STATES[tournament.state] || [tournament.state, null];
+  const base = `/admin/api/tournaments/${tournament.id}`;
+  const running = tournament.state === 'running';
+  const entrants = table(
+    [
+      { label: 'Seed', num: true, cell: (entrant) => (entrant.seed == null ? '–' : integer.format(entrant.seed + 1)) },
+      { label: 'Player', cell: (entrant) => [h('strong', null, entrant.name), entrant.dropped && h('span', { class: 'sub' }, ' left')] },
+      { label: 'Place', num: true, cell: (entrant) => (entrant.place ? integer.format(entrant.place) : '–') },
+      {
+        label: '',
+        class: 'actions',
+        cell: (entrant) =>
+          ['registration', 'running'].includes(tournament.state) &&
+          !entrant.dropped &&
+          h(
+            'button',
+            {
+              class: 'button',
+              type: 'button',
+              onclick: () =>
+                tournamentAction(
+                  tournament.id,
+                  'POST',
+                  `${base}/entrants/${entrant.player_id}/drop`,
+                  null,
+                  running ? `Disqualify ${entrant.name}? They lose their open sets.` : `Take ${entrant.name} out?`,
+                ),
+            },
+            running ? 'Disqualify' : 'Remove',
+          ),
+      },
+    ],
+    tournament.entrants,
+    'Nobody has joined yet.',
+  );
+  const decide = (set, winner, label) =>
+    h('button', { class: 'button', type: 'button', onclick: () => tournamentAction(tournament.id, 'POST', `${base}/sets/${set.id}/decide`, { winner }, winner == null ? 'Have this set played again?' : `${names.get(winner)} wins this set?`) }, label);
+  const sets = tournament.sets.length
+    ? table(
+        [
+          { label: 'Round', cell: (set) => `${SIDE_NAMES[set.side] || set.side}${set.side.startsWith('grand') ? '' : ` ${set.round}`}` },
+          { label: 'Home', cell: (set) => (set.winner && set.winner === set.home ? h('strong', null, name(set.home)) : name(set.home)) },
+          { label: 'Away', cell: (set) => (set.winner && set.winner === set.away ? h('strong', null, name(set.away)) : name(set.away)) },
+          { label: 'Score', cell: (set) => (set.home_wins == null ? '–' : `${set.home_wins} - ${set.away_wins}`) },
+          { label: 'Best of', num: true, cell: (set) => integer.format(set.games) },
+          {
+            label: 'State',
+            cell: (set) => {
+              const [text, tone] = SET_STATES[set.state] || [set.state, null];
+              const how = set.decided_by && set.decided_by !== 'match' ? h('span', { class: 'sub' }, ` by ${set.decided_by}`) : null;
+              return [badge(tone, text), how];
+            },
+          },
+          {
+            label: '',
+            class: 'actions',
+            cell: (set) => {
+              const open = ['ready', 'playing', 'disputed'].includes(set.state);
+              const changeable = set.state === 'finished' && set.decided_by !== 'walkover';
+              if (!running || !(open || changeable) || set.home == null || set.away == null) return null;
+              return [decide(set, set.home, 'Home wins'), ' ', decide(set, set.away, 'Away wins'), ' ', decide(set, null, 'Play again')];
+            },
+          },
+        ],
+        tournament.sets,
+        '',
+      )
+    : null;
+  const tools = [
+    tournament.state === 'registration' &&
+      h('button', { class: 'button primary', type: 'button', disabled: tournament.entrants.length < 2, onclick: () => tournamentAction(tournament.id, 'POST', `${base}/start`, { seeding: 'joined' }, 'Start it with the entrants seeded in the order they joined? Entries close.') }, 'Start'),
+    tournament.state === 'registration' &&
+      h('button', { class: 'button', type: 'button', disabled: tournament.entrants.length < 2, onclick: () => tournamentAction(tournament.id, 'POST', `${base}/start`, { seeding: 'shuffled' }, 'Start it with the entrants seeded at random? Entries close.') }, 'Start shuffled'),
+    ['registration', 'running'].includes(tournament.state) &&
+      h('button', { class: 'button danger', type: 'button', onclick: () => tournamentAction(tournament.id, 'POST', `${base}/cancel`, null, `Call ${tournament.name} off? Its open matches end.`) }, 'Call off'),
+    h('span', { class: 'editor-status', id: `tournament-status-${tournament.id}`, role: 'status' }),
+  ];
+  const format = tournament.format === 'double' ? 'Double elimination' : 'Single elimination';
+  const limit = tournament.max_entrants ? ` of ${integer.format(tournament.max_entrants)}` : '';
+  return h(
+    'section',
+    { class: 'card' },
+    h(
+      'header',
+      { class: 'card-head' },
+      h('h2', null, tournament.name, ' ', badge(stateTone, stateText)),
+      h('p', null, `${format} · ${tournament.rule_set}, best of ${tournament.best_of} (finals ${tournament.finals_best_of}) · ${integer.format(tournament.entrants.length)}${limit} entrants`),
+    ),
+    h('div', { class: 'card-tools' }, tools),
+    h('div', { class: 'table-wrap' }, entrants),
+    sets && h('div', { class: 'table-wrap' }, sets),
+  );
+}
+
+function renderTournaments(data) {
+  if (!data.content) return [unreachable(data.error)];
+  const { tournaments, rule_sets: ruleSets, series } = data.content;
+  const open = tournaments.filter((tournament) => ['registration', 'running'].includes(tournament.state));
+  tournamentForm.load(ruleSets, series, open.length === 0);
+  return [
+    h(
+      'div',
+      { class: 'tiles' },
+      tile('Open or running', count(open.length), `${count(tournaments.length - open.length)} ended lately`),
+      tile('Entrants', count(open.reduce((sum, tournament) => sum + tournament.entrants.length, 0)), 'in the open ones'),
+    ),
+    ...(tournaments.length ? tournaments.map(renderTournament) : [h('p', { class: 'empty' }, 'No tournaments yet: make one above.')]),
+  ];
+}
+
+/** The form for a new tournament, above the list that grows. It stays out
+ * of the polled page, so typing survives each refresh; folded while a
+ * tournament is open or running, open when there is none. */
+const tournamentForm = {
+  node: null,
+
+  load(ruleSets, series, unfolded) {
+    if (this.node) return;
+    const field = (label, control) => h('label', { class: 'editor-field' }, h('span', null, label), control);
+    const select = (id, values, selected) =>
+      h('select', { id }, values.map(([value, text]) => h('option', { value, selected: String(value) === String(selected) }, text)));
+    const bestOf = series.map((games) => [games, `Best of ${games}`]);
+    const body = h(
+      'form',
+      { class: 'editor', onsubmit: (event) => { event.preventDefault(); this.save(); } },
+      field('Name', h('input', { id: 'tournament-name', maxlength: '64', required: true })),
+      h(
+        'div',
+        { class: 'editor-row' },
+        field('Format', select('tournament-format', [['single', 'Single elimination'], ['double', 'Double elimination']], 'double')),
+        field('Rules', select('tournament-rules', ruleSets.map((set) => [set.id, set.name]), (ruleSets.find((set) => set.name === 'Competitive') || {}).id)),
+      ),
+      h(
+        'div',
+        { class: 'editor-row' },
+        field('Sets', select('tournament-best-of', bestOf, 3)),
+        field('Finals', select('tournament-finals', bestOf, 5)),
+        field('Most entrants', h('input', { id: 'tournament-max', type: 'number', min: '2', max: '256', placeholder: 'no limit' })),
+      ),
+      h(
+        'div',
+        { class: 'editor-actions' },
+        h('button', { class: 'button primary', type: 'submit' }, 'Make tournament'),
+        h('span', { class: 'editor-status', id: 'tournament-form-status', role: 'status' }),
+      ),
+    );
+    this.node = h(
+      'details',
+      { class: 'card new-tournament', open: unfolded },
+      h('summary', { class: 'card-head' }, h('h2', null, 'New tournament'), h('p', null, 'It opens for entries at once; start it here when everybody is in.')),
+      body,
+    );
+    document.getElementById('body').before(this.node);
+  },
+
+  async save() {
+    const value = (id) => document.getElementById(id).value;
+    const status = document.getElementById('tournament-form-status');
+    const max = value('tournament-max');
+    try {
+      await send('POST', '/admin/api/tournaments', {
+        name: value('tournament-name'),
+        format: value('tournament-format'),
+        rule_set: Number(value('tournament-rules')),
+        best_of: Number(value('tournament-best-of')),
+        finals_best_of: Number(value('tournament-finals')),
+        max_entrants: max ? Number(max) : null,
+      });
+      document.getElementById('tournament-name').value = '';
+      status.textContent = 'Made';
+      status.dataset.tone = 'good';
+      poll();
+    } catch (error) {
+      status.textContent = error.message;
+      status.dataset.tone = 'critical';
     }
   },
 };

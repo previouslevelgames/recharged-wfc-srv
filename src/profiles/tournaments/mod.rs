@@ -4,6 +4,4 @@
 
 pub mod bracket;
 pub mod routes;
-// The admin page (next) makes, starts and decides tournaments.
-#[allow(dead_code)]
 pub mod store;

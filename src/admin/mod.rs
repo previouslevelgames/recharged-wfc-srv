@@ -35,6 +35,7 @@ mod players;
 mod preview;
 mod session;
 mod sets;
+mod tournaments;
 
 /// Reported matches for tests elsewhere, e.g. a player's stats.
 #[cfg(test)]
@@ -77,7 +78,7 @@ use session::{SESSION_TTL, Sessions};
 
 /// The dashboard's pages, Overview first. The script in `assets/admin.js`
 /// knows the same list.
-const PAGES: [&str; 11] = [
+const PAGES: [&str; 12] = [
     "/admin",
     "/admin/players",
     "/admin/matchmaking",
@@ -85,6 +86,7 @@ const PAGES: [&str; 11] = [
     "/admin/monitoring",
     "/admin/leaderboards",
     "/admin/competitive",
+    "/admin/tournaments",
     "/admin/moderation",
     "/admin/database",
     "/admin/logs",
@@ -206,6 +208,26 @@ pub(crate) fn router(
         .route("/admin/api/database", get(api_database))
         .route("/admin/api/leaderboards", get(api_leaderboards))
         .route("/admin/api/competitive", get(api_competitive))
+        .route(
+            "/admin/api/tournaments",
+            get(api_tournaments).post(tournaments::create),
+        )
+        .route(
+            "/admin/api/tournaments/{id}/start",
+            post(tournaments::start),
+        )
+        .route(
+            "/admin/api/tournaments/{id}/cancel",
+            post(tournaments::cancel),
+        )
+        .route(
+            "/admin/api/tournaments/{id}/entrants/{player}/drop",
+            post(tournaments::drop_entrant),
+        )
+        .route(
+            "/admin/api/tournaments/{id}/sets/{set}/decide",
+            post(tournaments::decide),
+        )
         .route("/admin/api/logs", get(api_logs))
         .route("/admin/api/logs/{day}", get(log_file))
         .route("/admin/api/desyncs/{match_id}/{game}", get(dossier_text))
@@ -760,6 +782,16 @@ async fn api_competitive(
 ) -> Response {
     state
         .page_data(&jar, &headers, competitive::read(&state.pool))
+        .await
+}
+
+async fn api_tournaments(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    headers: HeaderMap,
+) -> Response {
+    state
+        .page_data(&jar, &headers, tournaments::read(&state.pool))
         .await
 }
 

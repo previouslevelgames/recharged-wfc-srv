@@ -25,7 +25,7 @@ const CLIENT_SECRET: &str = "client-secret";
 const CODE: &str = "the-code";
 
 /// The pages every admin sees: all but the owners' Maintenance page.
-const PAGES: [&str; 10] = [
+const PAGES: [&str; 11] = [
     "/admin",
     "/admin/players",
     "/admin/matchmaking",
@@ -33,6 +33,7 @@ const PAGES: [&str; 10] = [
     "/admin/monitoring",
     "/admin/leaderboards",
     "/admin/competitive",
+    "/admin/tournaments",
     "/admin/moderation",
     "/admin/database",
     "/admin/logs",
@@ -692,6 +693,7 @@ async fn a_diagnostics_token_reads_the_pages_but_changes_nothing(pool: PgPool) {
         "/admin/api/overview",
         "/admin/api/matchmaking",
         "/admin/api/competitive",
+        "/admin/api/tournaments",
         "/admin/api/logs",
         timeline.as_str(),
     ] {
@@ -753,6 +755,8 @@ async fn a_diagnostics_token_reads_the_pages_but_changes_nothing(pool: PgPool) {
         ("POST", "/admin/api/maintenance/launcher-message"),
         ("DELETE", "/admin/api/maintenance/launcher-message"),
         ("POST", "/admin/api/rules"),
+        ("POST", "/admin/api/tournaments"),
+        ("POST", "/admin/api/tournaments/1/start"),
     ] {
         let request = Request::builder()
             .method(method)

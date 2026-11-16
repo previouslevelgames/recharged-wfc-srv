@@ -1320,6 +1320,25 @@ code.fields {
   font-size: 12px;
 }
 
+/* The new tournament's card, folded to its head. */
+.new-tournament > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.new-tournament > summary::-webkit-details-marker {
+  display: none;
+}
+
+.new-tournament > summary h2::before {
+  content: '▸ ';
+  color: var(--muted);
+}
+
+.new-tournament[open] > summary h2::before {
+  content: '▾ ';
+}
+
 .card-tools {
   padding: 0 20px 12px;
 }
