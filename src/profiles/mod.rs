@@ -168,6 +168,16 @@ pub(crate) fn router(
             post(play::ready_to_play),
         )
         .route("/api/v1/matches/{id}/rematch", post(play::rematch))
+        .route("/api/v1/tournaments", get(tournaments::routes::list))
+        .route("/api/v1/tournaments/{id}", get(tournaments::routes::get))
+        .route(
+            "/api/v1/tournaments/{id}/join",
+            post(tournaments::routes::join).delete(tournaments::routes::leave),
+        )
+        .route(
+            "/api/v1/tournaments/{id}/sets/{set}/ready",
+            post(tournaments::routes::ready),
+        )
         .route("/api/v1/players", get(play::players))
         .route("/api/v1/players/discord", post(social::players_by_discord))
         .route("/api/v1/leaderboard", get(leaderboard::leaderboard))

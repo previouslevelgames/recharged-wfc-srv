@@ -2301,3 +2301,118 @@ async fn the_launcher_shows_the_newest_message_until_it_ends_or_goes(pool: PgPoo
         .unwrap();
     assert_eq!(shown().await, json!({ "message": null }));
 }
+
+#[sqlx::test]
+async fn a_tournament_set_from_join_to_ready(pool: PgPool) {
+    use super::tournaments::{bracket::Format, store};
+
+    let world = World::new(pool);
+    let rule_set = super::rules::list(&world.pool)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|set| set.name == "Competitive")
+        .unwrap();
+    let id = store::create(
+        &world.pool,
+        &store::NewTournament {
+            name: "Recharged Cup".into(),
+            organizer: None,
+            format: Format::Single,
+            rule_set,
+            best_of: 3,
+            finals_best_of: 5,
+            max_entrants: None,
+            starts_at: None,
+        },
+    )
+    .await
+    .unwrap();
+    let mario = world.sign_in("Mario").await;
+    let bowser = world.sign_in("Bowser").await;
+    let uri = format!("/api/v1/tournaments/{id}");
+
+    // Anybody sees the list and the page; a session adds the player's own.
+    let (status, listed) = world
+        .send("GET", "/api/v1/tournaments", "", Value::Null)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(listed["tournaments"][0]["name"], "Recharged Cup");
+    assert_eq!(listed["tournaments"][0]["joined"], Value::Null);
+    let (_, page) = world.send("GET", &uri, "", Value::Null).await;
+    assert_eq!(page["me"], Value::Null);
+
+    // A Mii player needs Discord; test players play on a test server.
+    let (_, toad) = world.mii_sign_in("Toad", "198.51.100.1").await;
+    let toad = toad["token"].as_str().unwrap().to_owned();
+    let (_, page) = world.send("GET", &uri, &toad, Value::Null).await;
+    assert_eq!(
+        (&page["me"]["eligible"], &page["me"]["reason"]),
+        (&json!(false), &json!("discord_required"))
+    );
+    let (status, refused) = world
+        .send("POST", &format!("{uri}/join"), &toad, Value::Null)
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(refused["error"], "discord_required");
+    for token in [&mario, &bowser] {
+        let (status, page) = world
+            .send("POST", &format!("{uri}/join"), token, Value::Null)
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(page["me"]["entrant"], true);
+    }
+    let (status, _) = world
+        .send("POST", &format!("{uri}/join"), &mario, Value::Null)
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let (_, listed) = world
+        .send("GET", "/api/v1/tournaments", &mario, Value::Null)
+        .await;
+    assert_eq!(
+        (
+            &listed["tournaments"][0]["joined"],
+            &listed["tournaments"][0]["entrants"]
+        ),
+        (&json!(true), &json!(2))
+    );
+
+    // It starts: the one set is Mario's and Bowser's, best of 5 (a final).
+    store::start(&world.pool, id, store::Seeding::Joined)
+        .await
+        .unwrap()
+        .unwrap();
+    let (_, page) = world.send("GET", &uri, &mario, Value::Null).await;
+    let set = page["me"]["set"].as_i64().unwrap();
+    assert_eq!(page["sets"][0]["state"], "ready");
+    assert_eq!(page["sets"][0]["games"], 5);
+    assert_eq!(page["entrants"][0]["player"]["name"], "Mario");
+    let ready_uri = format!("{uri}/sets/{set}/ready");
+    let (status, _) = world
+        .send("POST", &ready_uri, &toad, json!({ "ready": true }))
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // Mario's READY makes the match; it is his current one, with the
+    // tournament's rules; Bowser's makes it go.
+    let (status, made) = world
+        .send("POST", &ready_uri, &mario, json!({ "ready": true }))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(made["match"]["stage"], "open");
+    assert_eq!(made["match"]["rules"]["games"], 5);
+    assert_eq!(made["match"]["tournament"]["name"], "Recharged Cup");
+    assert_eq!(made["match"]["tournament"]["set"], set);
+    let (_, current) = world
+        .send("GET", "/api/v1/matches/current", &bowser, Value::Null)
+        .await;
+    assert_eq!(current["match"]["id"], made["match"]["id"]);
+    assert_eq!(current["match"]["opponent_ready"], true);
+    let (_, going) = world
+        .send("POST", &ready_uri, &bowser, json!({ "ready": true }))
+        .await;
+    assert_eq!(going["match"]["stage"], "go");
+    let (_, page) = world.send("GET", &uri, &bowser, Value::Null).await;
+    assert_eq!(page["sets"][0]["state"], "playing");
+    assert_eq!(page["sets"][0]["match"], made["match"]["id"]);
+}

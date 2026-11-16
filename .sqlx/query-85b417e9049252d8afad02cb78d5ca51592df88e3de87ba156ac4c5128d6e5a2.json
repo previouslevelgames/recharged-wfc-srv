@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT t.tournament_id, t.name, s.side, s.round FROM tournament_sets s\n         JOIN tournaments t USING (tournament_id) WHERE s.tournament_set_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tournament_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tournaments",
+            "name": "tournament_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tournaments",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "side",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "side"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "round",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "round"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "85b417e9049252d8afad02cb78d5ca51592df88e3de87ba156ac4c5128d6e5a2"
+}

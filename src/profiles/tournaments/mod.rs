@@ -3,6 +3,7 @@
 //! who signed in with Discord.
 
 pub mod bracket;
-// The routes (next) use the rest of it.
+pub mod routes;
+// The admin page (next) makes, starts and decides tournaments.
 #[allow(dead_code)]
 pub mod store;

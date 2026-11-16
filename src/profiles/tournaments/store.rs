@@ -301,6 +301,30 @@ pub async fn sets(pool: &PgPool, id: i64) -> Result<Vec<Set>, sqlx::Error> {
         .collect())
 }
 
+/// What a match's view says of the tournament set it plays
+/// (docs/profiles.md, "Matches"): `{id, name, set, side, round}`.
+pub async fn set_context(
+    pool: &PgPool,
+    set_id: i64,
+) -> Result<Option<serde_json::Value>, sqlx::Error> {
+    let row = sqlx::query!(
+        "SELECT t.tournament_id, t.name, s.side, s.round FROM tournament_sets s
+         JOIN tournaments t USING (tournament_id) WHERE s.tournament_set_id = $1",
+        set_id,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|row| {
+        serde_json::json!({
+            "id": row.tournament_id,
+            "name": row.name,
+            "set": set_id,
+            "side": row.side,
+            "round": row.round,
+        })
+    }))
+}
+
 /// The tournament's row, locked for the rest of the transaction: its
 /// changes happen one at a time.
 async fn lock(
