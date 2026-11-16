@@ -110,7 +110,8 @@ async fn summary(state: &ProfilesState, tournament: &Tournament) -> Result<Value
 }
 
 /// `GET /api/v1/tournaments`: open for entries or running, then the last
-/// that ended; with a session, whether the player is in each.
+/// that ended; with a session, whether the player is in each and their
+/// place once it ended.
 pub(in crate::profiles) async fn list(
     State(state): State<Arc<ProfilesState>>,
     headers: HeaderMap,
@@ -137,7 +138,9 @@ pub(in crate::profiles) async fn list(
                 Ok(entrants) => entrants,
                 Err(error) => return database_error(error),
             };
-            view["joined"] = json!(entrants.iter().any(|e| e.player_id == player.id));
+            let entrant = entrants.iter().find(|e| e.player_id == player.id);
+            view["joined"] = json!(entrant.is_some());
+            view["place"] = json!(entrant.and_then(|e| e.place));
         }
         listed.push(view);
     }

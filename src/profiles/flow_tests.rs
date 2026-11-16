@@ -2372,9 +2372,10 @@ async fn a_tournament_set_from_join_to_ready(pool: PgPool) {
     assert_eq!(
         (
             &listed["tournaments"][0]["joined"],
-            &listed["tournaments"][0]["entrants"]
+            &listed["tournaments"][0]["entrants"],
+            &listed["tournaments"][0]["place"]
         ),
-        (&json!(true), &json!(2))
+        (&json!(true), &json!(2), &Value::Null)
     );
 
     // It starts: the one set is Mario's and Bowser's, best of 5 (a final).
