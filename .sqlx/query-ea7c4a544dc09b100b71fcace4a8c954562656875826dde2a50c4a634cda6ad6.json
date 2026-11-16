@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT format, (SELECT count(*) FROM tournament_entrants e\n                         WHERE e.tournament_id = t.tournament_id AND seed IS NOT NULL) AS \"count!\"\n         FROM tournaments t WHERE tournament_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "format",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tournaments",
+            "name": "format"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "ea7c4a544dc09b100b71fcace4a8c954562656875826dde2a50c4a634cda6ad6"
+}

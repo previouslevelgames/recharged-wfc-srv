@@ -1,0 +1,112 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT tournament_set_id, state, home, away, result, decided_by, winner, match_id\n         FROM tournament_sets WHERE tournament_id = $1 ORDER BY index",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tournament_set_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "tournament_set_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "state",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "home",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "home"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "away",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "away"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "result",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "result"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "decided_by",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "decided_by"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "winner",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "winner"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "match_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "match_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "e2ced8c095ffe8b69568699d3868a33d0169c847feab1db0a21ca4d58135ad99"
+}

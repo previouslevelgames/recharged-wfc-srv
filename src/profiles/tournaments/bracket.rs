@@ -14,6 +14,23 @@ pub enum Format {
     Double,
 }
 
+impl Format {
+    pub fn name(self) -> &'static str {
+        match self {
+            Format::Single => "single",
+            Format::Double => "double",
+        }
+    }
+
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "single" => Some(Format::Single),
+            "double" => Some(Format::Double),
+            _ => None,
+        }
+    }
+}
+
 /// The part of the bracket a set is in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Side {
@@ -24,6 +41,17 @@ pub enum Side {
     /// Played only when the player from the losers' bracket won the grand
     /// final: then both have lost once.
     GrandFinalReset,
+}
+
+impl Side {
+    pub fn name(self) -> &'static str {
+        match self {
+            Side::Winners => "winners",
+            Side::Losers => "losers",
+            Side::GrandFinal => "grand_final",
+            Side::GrandFinalReset => "grand_final_reset",
+        }
+    }
 }
 
 /// Where a set's player comes from.

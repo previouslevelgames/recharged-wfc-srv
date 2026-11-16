@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT home FROM tournament_sets WHERE tournament_set_id = $1 AND state = 'playing'",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "home",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "home"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "505e5e68861fedd349e90b3b3a5691568d8355f2c8a2677abd387bb36a530b29"
+}

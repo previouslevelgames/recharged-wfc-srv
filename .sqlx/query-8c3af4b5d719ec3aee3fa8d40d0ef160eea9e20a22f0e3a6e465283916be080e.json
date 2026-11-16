@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tournament_sets SET result = $2, state = 'ready',\n                decided_by = CASE WHEN $2::smallint IS NULL THEN NULL ELSE 'organizer' END,\n                home_wins = NULL, away_wins = NULL, updated_at = now()\n         WHERE tournament_set_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int2"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8c3af4b5d719ec3aee3fa8d40d0ef160eea9e20a22f0e3a6e465283916be080e"
+}

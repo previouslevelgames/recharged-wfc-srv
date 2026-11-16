@@ -1,0 +1,77 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT state, home, away, decided_by, match_id FROM tournament_sets\n         WHERE tournament_id = $1 AND tournament_set_id = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "state",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "home",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "home"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "away",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "away"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "decided_by",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "decided_by"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "match_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "match_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "5b5fd1489ab2b1deb8081d04ac6954369eb95fffcdd9c3a45204fc9c0d8dbfe0"
+}

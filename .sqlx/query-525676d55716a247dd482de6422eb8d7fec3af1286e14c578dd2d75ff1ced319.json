@@ -1,0 +1,35 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT player_id, dropped_at IS NOT NULL AS \"dropped!\" FROM tournament_entrants\n         WHERE tournament_id = $1 AND seed IS NOT NULL ORDER BY seed",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "player_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tournament_entrants",
+            "name": "player_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "dropped!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "525676d55716a247dd482de6422eb8d7fec3af1286e14c578dd2d75ff1ced319"
+}

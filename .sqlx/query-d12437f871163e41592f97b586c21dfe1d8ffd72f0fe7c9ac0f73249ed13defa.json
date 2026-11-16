@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT match_id, state, home, away, rule_set, rules, rules_hash, winner, created_at,\n                home_ready_at, away_ready_at, go_at, playing_at, rematch_of, random,\n                forfeited_by, forfeited_at\n         FROM matches WHERE match_id = $1 FOR UPDATE",
+  "query": "SELECT match_id, state, home, away, rule_set, rules, rules_hash, winner, created_at,\n                home_ready_at, away_ready_at, go_at, playing_at, rematch_of, random,\n                forfeited_by, forfeited_at, tournament_set_id\n         FROM matches WHERE match_id = $1",
   "describe": {
     "columns": [
       {
@@ -189,6 +189,17 @@
             "name": "forfeited_at"
           }
         }
+      },
+      {
+        "ordinal": 17,
+        "name": "tournament_set_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "tournament_set_id"
+          }
+        }
       }
     ],
     "parameters": {
@@ -213,8 +224,9 @@
       true,
       false,
       true,
+      true,
       true
     ]
   },
-  "hash": "20037f78cfa4297156d7d7c98a68816cd2b7ed0e72c0e5b9ae533b23ee13e4e8"
+  "hash": "d12437f871163e41592f97b586c21dfe1d8ffd72f0fe7c9ac0f73249ed13defa"
 }

@@ -923,6 +923,10 @@ impl ProfilesState {
         for match_id in matches::sweep(&self.pool).await.map_err(database_error)? {
             self.pairings.end(match_id);
         }
+        // Tournament sets go on from their matches' ends.
+        super::tournaments::store::advance(&self.pool)
+            .await
+            .map_err(database_error)?;
         // Searches ask their next player.
         search::advance(&self.pool, &self.busy_profiles())
             .await

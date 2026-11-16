@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tournaments SET state = 'cancelled', ended_at = now() WHERE tournament_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ace1a5962b6455a7a4b1db0b4d9b5812b73de043e4f48ce950ce79bec9f906cc"
+}

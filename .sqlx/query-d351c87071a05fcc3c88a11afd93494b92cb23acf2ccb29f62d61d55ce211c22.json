@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT match_id, state, home, away, rule_set, rules, rules_hash, winner, created_at,\n                home_ready_at, away_ready_at, go_at, playing_at, rematch_of, random,\n                forfeited_by, forfeited_at\n         FROM matches WHERE match_id = $1 AND (home = $2 OR away = $2)",
+  "query": "SELECT match_id, state, home, away, rule_set, rules, rules_hash, winner, created_at,\n                home_ready_at, away_ready_at, go_at, playing_at, rematch_of, random,\n                forfeited_by, forfeited_at, tournament_set_id\n         FROM matches\n         WHERE (home = $1 OR away = $1)\n           AND (state IN ('challenged', 'accepted') OR updated_at > now() - interval '1 hour')\n         ORDER BY state IN ('challenged', 'accepted') DESC, created_at DESC\n         LIMIT 1",
   "describe": {
     "columns": [
       {
@@ -189,11 +189,21 @@
             "name": "forfeited_at"
           }
         }
+      },
+      {
+        "ordinal": 17,
+        "name": "tournament_set_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "tournament_set_id"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
-        "Int8",
         "Int8"
       ]
     },
@@ -214,8 +224,9 @@
       true,
       false,
       true,
+      true,
       true
     ]
   },
-  "hash": "5df4663e8a3fbc829a50f0b0fdf459d9dc0c41a85fbb8004731f5f5768ad4d23"
+  "hash": "d351c87071a05fcc3c88a11afd93494b92cb23acf2ccb29f62d61d55ce211c22"
 }

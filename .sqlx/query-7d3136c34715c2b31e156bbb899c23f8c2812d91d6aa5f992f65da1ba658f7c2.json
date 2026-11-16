@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tournament_entrants SET dropped_at = now()\n             WHERE tournament_id = $1 AND player_id = $2 AND dropped_at IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7d3136c34715c2b31e156bbb899c23f8c2812d91d6aa5f992f65da1ba658f7c2"
+}

@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT index FROM tournament_sets WHERE tournament_set_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "index",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "index"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "39453f9a72b522e1e312950b514b6976d3aad915f122a4bebcc1ff9873cde69b"
+}

@@ -2,6 +2,7 @@
 //! double elimination whose sets are the server's own matches, for players
 //! who signed in with Discord.
 
-// The store (next) is what uses it.
-#[allow(dead_code)]
 pub mod bracket;
+// The routes (next) use the rest of it.
+#[allow(dead_code)]
+pub mod store;

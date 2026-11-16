@@ -72,6 +72,8 @@ pub struct Match {
     /// it is `finished`, won by the other.
     pub forfeited_by: Option<i64>,
     pub forfeited_at: Option<OffsetDateTime>,
+    /// The tournament set it plays ([`super::tournaments`]).
+    pub tournament_set: Option<i64>,
 }
 
 impl Match {
@@ -244,6 +246,7 @@ struct Row {
     random: bool,
     forfeited_by: Option<i64>,
     forfeited_at: Option<OffsetDateTime>,
+    tournament_set_id: Option<i64>,
 }
 
 /// Ends the sets that waited too long or lost a player, and sends back the
@@ -359,7 +362,7 @@ pub async fn current(pool: &PgPool, player_id: i64) -> Result<Option<Match>, sql
         Row,
         "SELECT match_id, state, home, away, rule_set, rules, rules_hash, winner, created_at,
                 home_ready_at, away_ready_at, go_at, playing_at, rematch_of, random,
-                forfeited_by, forfeited_at
+                forfeited_by, forfeited_at, tournament_set_id
          FROM matches
          WHERE (home = $1 OR away = $1)
            AND (state IN ('challenged', 'accepted') OR updated_at > now() - interval '1 hour')
@@ -382,10 +385,25 @@ pub async fn get(
         Row,
         "SELECT match_id, state, home, away, rule_set, rules, rules_hash, winner, created_at,
                 home_ready_at, away_ready_at, go_at, playing_at, rematch_of, random,
-                forfeited_by, forfeited_at
+                forfeited_by, forfeited_at, tournament_set_id
          FROM matches WHERE match_id = $1 AND (home = $2 OR away = $2)",
         match_id,
         player_id,
+    )
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.and_then(stored))
+}
+
+/// Match `match_id`, whoever's it is.
+pub async fn find(pool: &PgPool, match_id: i64) -> Result<Option<Match>, sqlx::Error> {
+    let row = sqlx::query_as!(
+        Row,
+        "SELECT match_id, state, home, away, rule_set, rules, rules_hash, winner, created_at,
+                home_ready_at, away_ready_at, go_at, playing_at, rematch_of, random,
+                forfeited_by, forfeited_at, tournament_set_id
+         FROM matches WHERE match_id = $1",
+        match_id,
     )
     .fetch_optional(pool)
     .await?;
@@ -445,7 +463,73 @@ pub async fn challenge(
         random,
         forfeited_by: None,
         forfeited_at: None,
+        tournament_set: None,
     }))
+}
+
+/// The match of tournament set `tournament_set` between `home` and `away`,
+/// by `rule_set`: accepted at once (the players are in by the bracket), with
+/// `ready`'s Ready to play!. Like a challenge, it waits while either player
+/// has a match to be played, and calls off their stopped ones.
+pub async fn tournament_set(
+    pool: &PgPool,
+    home: i64,
+    away: i64,
+    rule_set: &RuleSet,
+    tournament_set: i64,
+    ready: i64,
+) -> Result<Result<Match, Refusal>, sqlx::Error> {
+    let mut transaction = pool.begin().await?;
+    lock_players(&mut transaction, home, away).await?;
+    if busy(&mut transaction, home, away).await? {
+        return Ok(Err(Refusal::Busy));
+    }
+    release_stopped(&mut transaction, home, None).await?;
+    release_stopped(&mut transaction, away, None).await?;
+    let match_id = sqlx::query_scalar!(
+        "INSERT INTO matches (kind, state, home, away, rule_set, rules, rules_hash,
+                              home_ready_at, away_ready_at, tournament_set_id)
+         VALUES ('test', 'accepted', $1, $2, $3, $4, $5,
+                 CASE WHEN $6 THEN now() END, CASE WHEN $7 THEN now() END, $8)
+         RETURNING match_id",
+        home,
+        away,
+        rule_set.name,
+        rule_set.rules.to_json(),
+        rule_set.hash,
+        ready == home,
+        ready == away,
+        tournament_set,
+    )
+    .fetch_one(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    match get(pool, match_id, home).await? {
+        Some(found) => Ok(Ok(found)),
+        None => Ok(Err(Refusal::NotFound)),
+    }
+}
+
+/// The games each side won in a set with a result, home first: from the
+/// home player's report, else the away player's; the games that count.
+pub async fn wins(pool: &PgPool, found: &Match) -> Result<Option<[u32; 2]>, sqlx::Error> {
+    for (side, player_id) in [(0, found.home), (1, found.away)] {
+        let games = games(pool, found.id, player_id).await?;
+        if games.is_empty() {
+            continue;
+        }
+        let counted = games.iter().filter(|game| game.counts(&found.rules));
+        let mut wins = [0, 0];
+        for game in counted {
+            if game.my_score > game.opponent_score {
+                wins[side] += 1;
+            } else if game.my_score < game.opponent_score {
+                wins[1 - side] += 1;
+            }
+        }
+        return Ok(Some(wins));
+    }
+    Ok(None)
 }
 
 /// Sets one player reported while the other's report won't come any more:
@@ -824,7 +908,7 @@ pub async fn forfeit(
         Row,
         "SELECT match_id, state, home, away, rule_set, rules, rules_hash, winner, created_at,
                 home_ready_at, away_ready_at, go_at, playing_at, rematch_of, random,
-                forfeited_by, forfeited_at
+                forfeited_by, forfeited_at, tournament_set_id
          FROM matches WHERE match_id = $1 FOR UPDATE",
         match_id,
     )
@@ -1019,6 +1103,7 @@ fn stored(row: Row) -> Option<Match> {
         random: row.random,
         forfeited_by: row.forfeited_by,
         forfeited_at: row.forfeited_at,
+        tournament_set: row.tournament_set_id,
     })
 }
 
