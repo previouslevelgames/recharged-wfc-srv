@@ -2387,6 +2387,10 @@ async fn a_tournament_set_from_join_to_ready(pool: PgPool) {
     assert_eq!(page["sets"][0]["state"], "ready");
     assert_eq!(page["sets"][0]["games"], 5);
     assert_eq!(page["entrants"][0]["player"]["name"], "Mario");
+    assert_eq!(
+        page["sets"][0]["from"],
+        json!([{ "seed": 0 }, { "seed": 1 }])
+    );
     let ready_uri = format!("{uri}/sets/{set}/ready");
     let (status, _) = world
         .send("POST", &ready_uri, &toad, json!({ "ready": true }))

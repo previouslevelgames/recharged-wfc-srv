@@ -15,7 +15,10 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tracing::info;
 
-use super::store::{self, Refusal, Set, Tournament};
+use super::{
+    bracket::{self, Format},
+    store::{self, Refusal, Set, Tournament},
+};
 use crate::profiles::{
     ProfilesState, bearer, database_error, json_error,
     players::{self, Player},
@@ -162,8 +165,39 @@ pub(in crate::profiles) async fn get(
     }
 }
 
-fn set_view(set: &Set) -> Value {
+/// Where a set's two players come from, by the bracket: `{"seed": n}` (from
+/// 0; a bye past the entrants), or `{"winner": <set id>}` / `{"loser": …}`.
+fn sources(tournament: &Tournament, entrants: usize, sets: &[Set]) -> Vec<Value> {
+    let Some(format) = Format::parse(tournament.format) else {
+        return Vec::new();
+    };
+    if sets.is_empty() || !(2..=bracket::MAX_ENTRANTS).contains(&entrants) {
+        return Vec::new();
+    }
+    let plan = bracket::plan(format, entrants);
+    if plan.len() != sets.len() {
+        return Vec::new();
+    }
+    let id = |index: usize| sets[index].id;
+    plan.iter()
+        .map(|set| {
+            Value::Array(
+                set.from
+                    .iter()
+                    .map(|from| match *from {
+                        bracket::From::Seed(seed) => json!({ "seed": seed }),
+                        bracket::From::Winner(at) => json!({ "winner": id(at) }),
+                        bracket::From::Loser(at) => json!({ "loser": id(at) }),
+                    })
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+fn set_view(set: &Set, from: Option<&Value>) -> Value {
     json!({
+        "from": from,
         "id": set.id,
         "index": set.index,
         "side": set.side,
@@ -217,6 +251,8 @@ async fn page(
             })
         })
         .collect();
+    let seeded = entrants.iter().filter(|e| e.seed.is_some()).count();
+    let from = sources(&tournament, seeded, &sets);
     let me = match player {
         Some(player) => {
             let entrant = entrants.iter().find(|e| e.player_id == player.id);
@@ -244,7 +280,11 @@ async fn page(
     Ok(Some(json!({
         "tournament": summary(state, &tournament).await?,
         "entrants": entrant_views,
-        "sets": sets.iter().map(set_view).collect::<Vec<_>>(),
+        "sets": sets
+            .iter()
+            .enumerate()
+            .map(|(index, set)| set_view(set, from.get(index)))
+            .collect::<Vec<_>>(),
         "me": me,
         "poll_interval": POLL_INTERVAL,
     })))
