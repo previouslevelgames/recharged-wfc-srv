@@ -38,6 +38,7 @@ mod search;
 mod sign_in;
 mod social;
 mod stats;
+pub(crate) mod tournaments;
 
 use std::{sync::Arc, time::Duration};
 
