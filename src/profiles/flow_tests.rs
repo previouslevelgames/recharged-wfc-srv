@@ -2404,7 +2404,11 @@ async fn a_tournament_set_from_join_to_ready(pool: PgPool) {
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(made["match"]["stage"], "open");
-    assert_eq!(made["match"]["rules"]["games"], 5);
+    // One game at a time, each drafted again: the set's best of 5 is the
+    // tournament's to count.
+    assert_eq!(made["match"]["rules"]["games"], 1);
+    assert_eq!(made["match"]["tournament"]["games"], 5);
+    assert_eq!(made["match"]["tournament"]["home_wins"], 0);
     assert_eq!(made["match"]["tournament"]["name"], "Recharged Cup");
     assert_eq!(made["match"]["tournament"]["set"], set);
     let (_, current) = world

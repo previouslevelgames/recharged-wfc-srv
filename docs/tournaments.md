@@ -46,9 +46,14 @@ wins the grand final.
 | `disputed` | The two games reported different series, or a draw: the organizer decides |
 | `void` | Nobody plays it: both places are empty, or a reset that isn't needed |
 
-A set is played as a match: the first player's READY makes it, accepted at
-once, by the tournament's rules with the set's games, and counts as that
-player's Ready to play!; the other's READY makes it go. From there it is a
+A set is played one game at a time, each a match of one game, so the
+players draft again before each: the first player's READY makes the game's
+match, accepted at once, by the tournament's rules with one game, and counts
+as that player's Ready to play!; the other's READY makes it go. Its winner
+has one more game (`home_wins`, `away_wins`), and the set is theirs once
+they have more than half of its `games`; until then it is `ready` for the
+next game. A game without a winner is played again; a player who forfeits a
+game gives the whole set up. From there it is a
 set like any other: the games meet in RANKED, report, may forfeit. A READY
 while either player has another match to play is refused (409), and a
 player's match still waiting for both is called off by another set of
@@ -74,8 +79,9 @@ then has a `place` (players out in the same round share one).
 | `DELETE /api/v1/tournaments/<id>/join` | Leave: before the start, out of it; once it runs, the player gives up (see "Sets"). |
 | `POST /api/v1/tournaments/<id>/sets/<set>/ready` | `{"ready": true}` or `false`: READY for the player's set, or taken back. `{"match": …}`, the set's match as `GET /api/v1/matches/current` shows it, or `null` for a READY taken back before there was one. 404 for a set not the player's, 409 for a set not to be played or a player with another match. |
 
-A match's view has `tournament`, `{"id", "name", "set", "side", "round"}`
-for a tournament set's match, `null` otherwise.
+A match's view has `tournament`, `{"id", "name", "set", "side", "round",
+"games", "home_wins", "away_wins"}` for a tournament set's match (the set's
+best of and the games each won before this one), `null` otherwise.
 
 ## The admin page
 

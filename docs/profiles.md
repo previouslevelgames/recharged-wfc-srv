@@ -627,7 +627,8 @@ A match as the player sees it:
  "forfeited_by": null, "forfeited_at": null, "tournament": null}
 ```
 
-`tournament` is `{"id", "name", "set", "side", "round"}` for the match of a
+`tournament` is `{"id", "name", "set", "side", "round", "games", "home_wins",
+"away_wins"}` for the match of a
 tournament's set ([tournaments.md](tournaments.md)), `null` otherwise.
 
 `forfeited_by` is `you` or `opponent` for a set one of them gave up (see

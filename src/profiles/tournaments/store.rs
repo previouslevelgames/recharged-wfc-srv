@@ -302,13 +302,15 @@ pub async fn sets(pool: &PgPool, id: i64) -> Result<Vec<Set>, sqlx::Error> {
 }
 
 /// What a match's view says of the tournament set it plays
-/// (docs/profiles.md, "Matches"): `{id, name, set, side, round}`.
+/// (docs/profiles.md, "Matches"): `{id, name, set, side, round, games,
+/// home_wins, away_wins}`: the set's best of and its games won so far.
 pub async fn set_context(
     pool: &PgPool,
     set_id: i64,
 ) -> Result<Option<serde_json::Value>, sqlx::Error> {
     let row = sqlx::query!(
-        "SELECT t.tournament_id, t.name, s.side, s.round FROM tournament_sets s
+        "SELECT t.tournament_id, t.name, s.side, s.round, s.games, s.home_wins, s.away_wins
+         FROM tournament_sets s
          JOIN tournaments t USING (tournament_id) WHERE s.tournament_set_id = $1",
         set_id,
     )
@@ -321,6 +323,9 @@ pub async fn set_context(
             "set": set_id,
             "side": row.side,
             "round": row.round,
+            "games": row.games,
+            "home_wins": row.home_wins.unwrap_or(0),
+            "away_wins": row.away_wins.unwrap_or(0),
         })
     }))
 }
@@ -687,7 +692,8 @@ pub async fn ready(
         }
         "ready" if !ready => Ok(Ok(None)),
         "ready" => {
-            let rules = tournament.rules_for(set.games);
+            // One game at a time: each is drafted again.
+            let rules = tournament.rules_for(1);
             let made =
                 match matches::tournament_set(pool, home, away, &rules, set.id, player_id).await? {
                     Ok(made) => made,
@@ -755,28 +761,49 @@ pub async fn advance(pool: &PgPool) -> Result<(), sqlx::Error> {
         };
         match (found.state.as_str(), found.winner) {
             ("finished", Some(winner)) => {
-                // The match's players are the set's, in the same places.
-                let result: i16 = if Some(winner) == home { 0 } else { 1 };
-                let wins = matches::wins(pool, &found).await?.map(|wins| {
-                    if Some(found.home) == home {
-                        wins
-                    } else {
-                        [wins[1], wins[0]]
-                    }
-                });
+                // A match is one game of the set: its winner has one more,
+                // and the set is theirs once they have enough (or the other
+                // gave it up). Until then it is to be played again: the next
+                // game, drafted again.
+                let side = if Some(winner) == home { 0 } else { 1 };
+                let set = sqlx::query!(
+                    "SELECT games, coalesce(home_wins, 0::smallint) AS \"home_wins!\",
+                            coalesce(away_wins, 0::smallint) AS \"away_wins!\"
+                     FROM tournament_sets WHERE tournament_set_id = $1",
+                    row.tournament_set_id,
+                )
+                .fetch_one(&mut *transaction)
+                .await?;
+                let mut wins = [set.home_wins, set.away_wins];
+                wins[side] += 1;
+                let needed = set.games / 2 + 1;
+                let result =
+                    (wins[side] >= needed || found.forfeited_by.is_some()).then_some(side as i16);
                 sqlx::query!(
-                    "UPDATE tournament_sets SET result = $2, decided_by = 'match',
+                    "UPDATE tournament_sets SET result = $2,
+                            decided_by = CASE WHEN $2::smallint IS NULL THEN NULL ELSE 'match' END,
+                            state = CASE WHEN $2::smallint IS NULL THEN 'ready' ELSE state END,
                             home_wins = $3, away_wins = $4, updated_at = now()
                      WHERE tournament_set_id = $1",
                     row.tournament_set_id,
                     result,
-                    wins.map(|wins| wins[0] as i16),
-                    wins.map(|wins| wins[1] as i16),
+                    wins[0],
+                    wins[1],
                 )
                 .execute(&mut *transaction)
                 .await?;
             }
-            ("finished" | "disputed", _) => {
+            // A game without a winner (a draw) is played again.
+            ("finished", None) => {
+                sqlx::query!(
+                    "UPDATE tournament_sets SET state = 'ready', updated_at = now()
+                     WHERE tournament_set_id = $1",
+                    row.tournament_set_id,
+                )
+                .execute(&mut *transaction)
+                .await?;
+            }
+            ("disputed", _) => {
                 sqlx::query!(
                     "UPDATE tournament_sets SET state = 'disputed', updated_at = now()
                      WHERE tournament_set_id = $1",
@@ -1006,45 +1033,56 @@ mod tests {
             .unwrap()
     }
 
-    /// Both players of `set` press READY, their games meet, and both report
-    /// `winner` winning 2-0 (or as many as the set's games need).
+    /// `set` is played to its end, `winner` winning every game: one match a
+    /// game, both players pressing READY for each, their games meeting, both
+    /// reporting it.
     async fn play(pool: &PgPool, id: i64, set: &Set, winner: i64) {
         let (home, away) = (set.home.unwrap(), set.away.unwrap());
-        let made = ready(pool, id, set.id, home, true)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        assert_eq!(made.stage(), "open");
-        assert_eq!(made.rules.games, set.games);
-        assert_eq!(made.tournament_set, Some(set.id));
-        let going = ready(pool, id, set.id, away, true)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        assert_eq!((going.id, going.stage()), (made.id, "go"));
-        matches::game_ready(pool, made.id, 0, true).await.unwrap();
-        let needed = u32::from(set.games / 2 + 1);
-        for player_id in [home, away] {
-            let won = player_id == winner;
-            // The same games from both sides: the home player has Mario.
-            let seen = |mine, theirs| {
-                let mut seen = game(mine, theirs);
+        for game in 0..set.games / 2 + 1 {
+            let made = ready(pool, id, set.id, home, true)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!(made.stage(), "open");
+            assert_eq!(made.rules.games, 1);
+            assert_eq!(made.tournament_set, Some(set.id));
+            let going = ready(pool, id, set.id, away, true)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            assert_eq!((going.id, going.stage()), (made.id, "go"));
+            matches::game_ready(pool, made.id, 0, true).await.unwrap();
+            for player_id in [home, away] {
+                let won = player_id == winner;
+                // The same game from both sides: the home player has Mario.
+                let mut seen = if won { game_of(2, 1) } else { game_of(1, 2) };
                 if player_id == away {
                     std::mem::swap(&mut seen.my_captain, &mut seen.opponent_captain);
                 }
-                seen
-            };
-            let games: Vec<Game> = (0..needed)
-                .map(|_| if won { seen(2, 1) } else { seen(1, 2) })
-                .collect();
-            matches::report(pool, made.id, player_id, &games)
+                matches::report(pool, made.id, player_id, &[seen])
+                    .await
+                    .unwrap()
+                    .unwrap();
+            }
+            advance(pool).await.unwrap();
+            let now = sets(pool, id)
                 .await
                 .unwrap()
+                .into_iter()
+                .find(|s| s.id == set.id)
                 .unwrap();
+            let won = i16::from(game + 1);
+            let wins = if winner == home { (won, 0) } else { (0, won) };
+            assert_eq!((now.home_wins, now.away_wins), (Some(wins.0), Some(wins.1)));
+            let last = game + 1 == set.games / 2 + 1;
+            assert_eq!(now.state, if last { "finished" } else { "ready" });
         }
-        advance(pool).await.unwrap();
+    }
+
+    fn game_of(mine: u32, theirs: u32) -> Game {
+        game(mine, theirs)
     }
 
     #[sqlx::test]
@@ -1232,7 +1270,7 @@ mod tests {
             .unwrap();
         matches::game_ready(&pool, made.id, 0, true).await.unwrap();
         for player_id in [p[1], p[2]] {
-            matches::report(&pool, made.id, player_id, &[game(3, 0), game(3, 0)])
+            matches::report(&pool, made.id, player_id, &[game(3, 0)])
                 .await
                 .unwrap()
                 .unwrap();
@@ -1270,6 +1308,34 @@ mod tests {
             decide(&pool, id, set.id, Some(p[2])).await.unwrap(),
             Err(Refusal::State("finished".into()))
         );
+    }
+
+    #[sqlx::test]
+    async fn a_forfeit_gives_the_whole_set_up(pool: PgPool) {
+        let (id, p) = tournament(&pool, Format::Single, &["Mario", "Luigi"]).await;
+        start(&pool, id, Seeding::Joined).await.unwrap().unwrap();
+        // The final is a best of 5; Luigi leaves the first game on purpose.
+        let set = set_of(&pool, id, p[0]).await;
+        assert_eq!(set.games, 5);
+        let made = ready(&pool, id, set.id, p[0], true)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        ready(&pool, id, set.id, p[1], true).await.unwrap().unwrap();
+        matches::game_ready(&pool, made.id, 0, true).await.unwrap();
+        matches::forfeit(&pool, made.id, p[1], &[])
+            .await
+            .unwrap()
+            .unwrap();
+        advance(&pool).await.unwrap();
+        let done = sets(&pool, id).await.unwrap();
+        assert_eq!(
+            (done[0].state.as_str(), done[0].winner),
+            ("finished", Some(p[0]))
+        );
+        assert_eq!((done[0].home_wins, done[0].away_wins), (Some(1), Some(0)));
+        assert_eq!(get(&pool, id).await.unwrap().unwrap().state, "finished");
     }
 
     async fn set_of_state(pool: &PgPool, id: i64, set_id: i64) -> String {

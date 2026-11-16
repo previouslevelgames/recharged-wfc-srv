@@ -510,28 +510,6 @@ pub async fn tournament_set(
     }
 }
 
-/// The games each side won in a set with a result, home first: from the
-/// home player's report, else the away player's; the games that count.
-pub async fn wins(pool: &PgPool, found: &Match) -> Result<Option<[u32; 2]>, sqlx::Error> {
-    for (side, player_id) in [(0, found.home), (1, found.away)] {
-        let games = games(pool, found.id, player_id).await?;
-        if games.is_empty() {
-            continue;
-        }
-        let counted = games.iter().filter(|game| game.counts(&found.rules));
-        let mut wins = [0, 0];
-        for game in counted {
-            if game.my_score > game.opponent_score {
-                wins[side] += 1;
-            } else if game.my_score < game.opponent_score {
-                wins[1 - side] += 1;
-            }
-        }
-        return Ok(Some(wins));
-    }
-    Ok(None)
-}
-
 /// Sets one player reported while the other's report won't come any more:
 /// they closed Recharged, the report's last game broke off and the other's
 /// game has been quiet for [`BROKEN_OFF_GONE_SECS`], or [`ONE_REPORT_SECS`]

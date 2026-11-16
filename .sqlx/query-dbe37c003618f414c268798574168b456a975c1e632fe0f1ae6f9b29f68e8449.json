@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT t.tournament_id, t.name, s.side, s.round FROM tournament_sets s\n         JOIN tournaments t USING (tournament_id) WHERE s.tournament_set_id = $1",
+  "query": "SELECT t.tournament_id, t.name, s.side, s.round, s.games, s.home_wins, s.away_wins\n         FROM tournament_sets s\n         JOIN tournaments t USING (tournament_id) WHERE s.tournament_set_id = $1",
   "describe": {
     "columns": [
       {
@@ -46,6 +46,39 @@
             "name": "round"
           }
         }
+      },
+      {
+        "ordinal": 4,
+        "name": "games",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "games"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "home_wins",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "home_wins"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "away_wins",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "away_wins"
+          }
+        }
       }
     ],
     "parameters": {
@@ -57,8 +90,11 @@
       false,
       false,
       false,
-      false
+      false,
+      false,
+      true,
+      true
     ]
   },
-  "hash": "85b417e9049252d8afad02cb78d5ca51592df88e3de87ba156ac4c5128d6e5a2"
+  "hash": "dbe37c003618f414c268798574168b456a975c1e632fe0f1ae6f9b29f68e8449"
 }
