@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT category,\n                  count(*) AS \"players!\",\n                  count(*) FILTER (WHERE region = 1) AS \"jp!\",\n                  count(*) FILTER (WHERE region = 2) AS \"us!\",\n                  count(*) FILTER (WHERE region = 4) AS \"eu!\",\n                  count(*) FILTER (WHERE region = 8) AS \"kr!\",\n                  max(score) AS \"top_score!\",\n                  max(updated_at) AS \"last_put!\"\n           FROM scores\n           GROUP BY category\n           ORDER BY category",
+  "query": "SELECT category,\n                  count(*) AS \"players!\",\n                  count(*) FILTER (WHERE region = 1) AS \"jp!\",\n                  count(*) FILTER (WHERE region = 2) AS \"us!\",\n                  count(*) FILTER (WHERE region = 4) AS \"eu!\",\n                  count(*) FILTER (WHERE region = 8) AS \"kr!\",\n                  max(score) AS \"top_score!\",\n                  max(updated_at) AS \"last_put!\"\n           FROM scores\n           WHERE category IN (0, 1)\n           GROUP BY category\n           ORDER BY category",
   "describe": {
     "columns": [
       {
@@ -71,5 +71,5 @@
       null
     ]
   },
-  "hash": "ada0c128f75ae7e6f33e53a3d8d9082a8751a9958c19b8367b83fb8d321207bd"
+  "hash": "14c848a4a87e25c553e45f2920b929043ca5de69d8c955b3a6fc7f0ef6f46b0f"
 }

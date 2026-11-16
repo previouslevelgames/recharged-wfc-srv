@@ -106,7 +106,8 @@ pub async fn leaderboards(pool: &PgPool, gpcm: &Gpcm) -> Result<Leaderboards, sq
     })
 }
 
-/// Deletes every board's scores and every ended season's, together.
+/// Deletes every board's scores and every ended season's, together, and
+/// the puts that made them.
 pub async fn wipe_leaderboards(pool: &PgPool) -> Result<Wiped, sqlx::Error> {
     let mut tx = pool.begin().await?;
     let scores = sqlx::query!("DELETE FROM scores")
@@ -117,6 +118,10 @@ pub async fn wipe_leaderboards(pool: &PgPool) -> Result<Wiped, sqlx::Error> {
         .execute(&mut *tx)
         .await?
         .rows_affected();
+    // The puts that made them: counting the boards again starts from nothing.
+    sqlx::query!("DELETE FROM score_puts")
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok(Wiped {
         scores,

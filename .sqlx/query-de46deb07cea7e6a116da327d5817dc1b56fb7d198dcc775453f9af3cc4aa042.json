@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE scores SET score = $3, userdata = $4\n                 WHERE profile_id = $1 AND category = $2",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4",
+        "Int4",
+        "Int4",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "de46deb07cea7e6a116da327d5817dc1b56fb7d198dcc775453f9af3cc4aa042"
+}

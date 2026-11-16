@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT count(*) AS \"entries!\",\n                  count(DISTINCT profile_id) AS \"players!\",\n                  max(updated_at) AS last_put\n           FROM scores",
+  "query": "SELECT count(*) AS \"entries!\",\n                  count(DISTINCT profile_id) AS \"players!\",\n                  max(updated_at) AS last_put\n           FROM scores WHERE category IN (0, 1)",
   "describe": {
     "columns": [
       {
@@ -31,5 +31,5 @@
       null
     ]
   },
-  "hash": "8e66b1efb42e9b3f854168a4f79441d92407e70ca858575acf147308df9f5ce8"
+  "hash": "04a25fe27573538f54ea5c7425d742956370c63ee0ac47ccde9b3b821b016994"
 }

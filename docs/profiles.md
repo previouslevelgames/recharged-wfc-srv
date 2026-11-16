@@ -315,7 +315,11 @@ launcher by their Mii and friend code: the WFC profiles logged in to GPCM, as
 `{"profile_id", "mii", "mii_data", "game", "friend_code", "online", "status",
 "match", "last_online", "friend"}`. `mii` is the Mii name of the profile's last login,
 `mii_data` its own Mii (see "Miis"; `null` for a profile whose player's
-launcher never sent it, and for every Wii's; from 1.2.22),
+launcher never sent it, and for every Wii's; from 1.2.22), `player_id` the
+Recharged player whose profile it is when a launcher proved it (a Mii or
+Discord player, challenged as that player; `null` for a Wii's) and
+`player_activity` what that player's Recharged does while it is open
+(`launcher`, `game` or `match`, else `null`; both from 1.2.24),
 `game` the release (`R4QE`, `R4QP`, `R4QJ`, `R4QK`), `friend_code` the code
 the game shows for it (`0868-9934-5920`), `status` while logged in what the
 game does (`menu`, `matchmaking` or `match`, from DWC's status), `match`
