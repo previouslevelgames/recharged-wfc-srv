@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT profile_id, gsbrcd, ingamesn, last_login_at, mii_data\n         FROM profiles WHERE profile_id = ANY($1)",
+  "query": "SELECT profiles.profile_id, profiles.gsbrcd, profiles.ingamesn, profiles.last_login_at,\n                  profiles.mii_data, bound.player_id AS \"player_id?\",\n                  players.heartbeat_at > now() - make_interval(secs => $2) AS \"open?\",\n                  players.activity AS \"activity?\"\n           FROM profiles\n           LEFT JOIN player_wfc_profiles bound ON bound.profile_id = profiles.profile_id\n           LEFT JOIN players ON players.player_id = bound.player_id\n           WHERE profiles.profile_id = ANY($1)",
   "describe": {
     "columns": [
       {
@@ -57,11 +57,40 @@
             "name": "mii_data"
           }
         }
+      },
+      {
+        "ordinal": 5,
+        "name": "player_id?",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "player_wfc_profiles",
+            "name": "player_id"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "open?",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 7,
+        "name": "activity?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "activity"
+          }
+        }
       }
     ],
     "parameters": {
       "Left": [
-        "Int4Array"
+        "Int4Array",
+        "Float8"
       ]
     },
     "nullable": [
@@ -69,8 +98,11 @@
       false,
       true,
       false,
+      true,
+      true,
+      null,
       true
     ]
   },
-  "hash": "22eeb570ee1c5d8bdb5d9d7bf913d5ec698439abe2a316a04d96ecc9be0f9770"
+  "hash": "6cca178f4dde77baf10ca5e6b55d584c8e9ffce0d276bb47e86b775465de77b4"
 }

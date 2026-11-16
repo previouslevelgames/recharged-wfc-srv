@@ -9,6 +9,7 @@ use serde::Serialize;
 use sqlx::PgPool;
 
 use super::friends::MAX_FRIENDS;
+use super::players::Activity;
 use crate::gpcm::{Matchmaking, Presence};
 
 /// The game's online players shown at most.
@@ -39,6 +40,12 @@ pub struct MiiProfile {
     pub last_online: i64,
     /// The player keeps it as a friend.
     pub friend: bool,
+    /// The Recharged player whose profile it is, when a launcher proved it
+    /// (a Mii or Discord player): they are challenged as that player.
+    pub player_id: Option<i64>,
+    /// While that player has Recharged open: what it does, `launcher`, `game`
+    /// or `match` (see players.rs, `Activity`).
+    pub player_activity: Option<&'static str>,
 }
 
 fn status(presence: &Presence) -> &'static str {
@@ -66,9 +73,16 @@ async fn profiles(
     friend: bool,
 ) -> Result<Vec<MiiProfile>, sqlx::Error> {
     let rows = sqlx::query!(
-        "SELECT profile_id, gsbrcd, ingamesn, last_login_at, mii_data
-         FROM profiles WHERE profile_id = ANY($1)",
-        ids
+        r#"SELECT profiles.profile_id, profiles.gsbrcd, profiles.ingamesn, profiles.last_login_at,
+                  profiles.mii_data, bound.player_id AS "player_id?",
+                  players.heartbeat_at > now() - make_interval(secs => $2) AS "open?",
+                  players.activity AS "activity?"
+           FROM profiles
+           LEFT JOIN player_wfc_profiles bound ON bound.profile_id = profiles.profile_id
+           LEFT JOIN players ON players.player_id = bound.player_id
+           WHERE profiles.profile_id = ANY($1)"#,
+        ids,
+        f64::from(super::matches::HEARTBEAT_TIMEOUT_SECS),
     )
     .fetch_all(pool)
     .await?;
@@ -91,6 +105,9 @@ async fn profiles(
                     .map_or(row.last_login_at, |presence| presence.logged_in_at)
                     .unix_timestamp(),
                 friend,
+                player_id: row.player_id,
+                player_activity: (row.player_id.is_some() && row.open == Some(true))
+                    .then(|| Activity::from_header(row.activity.as_deref()).name()),
             }
         })
         .collect())
@@ -305,6 +322,68 @@ mod tests {
         assert!(remove(&pool, nelly, kiki).await.unwrap());
         assert!(!remove(&pool, nelly, kiki).await.unwrap());
         assert_eq!(friends(&pool, nelly, &presence).await.unwrap().len(), 1);
+    }
+
+    #[sqlx::test]
+    async fn a_mii_friend_of_a_recharged_player_is_that_player(pool: PgPool) {
+        let nelly = player(&pool, "1", "nelly").await;
+        let sam = player(&pool, "2", "sam").await;
+        let sams = profile(&pool, 2, "R4QEbbbbbbb", "Sam").await;
+        let wii = profile(&pool, 3, "R4QEccccccc", "Kiki").await;
+        players::bind_wfc(&pool, sam, sams).await.unwrap();
+        add(&pool, nelly, sams).await.unwrap();
+        add(&pool, nelly, wii).await.unwrap();
+        let presence = HashMap::new();
+        let shown = |list: &[MiiProfile]| {
+            list.iter()
+                .map(|friend| {
+                    (
+                        friend.mii.clone().unwrap(),
+                        friend.player_id,
+                        friend.player_activity,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+
+        // Sam's Recharged is open (the sign-in is a heartbeat): challenged as
+        // Sam; a Wii's profile has no player.
+        let mut seen = shown(&friends(&pool, nelly, &presence).await.unwrap());
+        seen.sort();
+        assert_eq!(
+            seen,
+            [
+                ("Kiki".to_owned(), None, None),
+                ("Sam".to_owned(), Some(sam), Some("launcher"))
+            ]
+        );
+        sqlx::query!(
+            "UPDATE players SET activity = 'match' WHERE player_id = $1",
+            sam
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let in_match = friends(&pool, nelly, &presence).await.unwrap();
+        let sam_row = in_match
+            .iter()
+            .find(|friend| friend.player_id == Some(sam))
+            .unwrap();
+        assert_eq!(sam_row.player_activity, Some("match"));
+        // Closed: still Sam, without an activity.
+        sqlx::query!(
+            "UPDATE players SET heartbeat_at = now() - interval '1 hour' WHERE player_id = $1",
+            sam
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let closed = friends(&pool, nelly, &presence).await.unwrap();
+        let sam_row = closed
+            .iter()
+            .find(|friend| friend.player_id == Some(sam))
+            .unwrap();
+        assert_eq!(sam_row.player_activity, None);
     }
 
     #[test]

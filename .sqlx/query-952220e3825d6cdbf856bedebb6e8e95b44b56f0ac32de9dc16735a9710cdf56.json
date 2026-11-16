@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE players SET activity = 'match' WHERE player_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "952220e3825d6cdbf856bedebb6e8e95b44b56f0ac32de9dc16735a9710cdf56"
+}
