@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT category, profile_id, region, score, userdata, updated_at FROM scores",
+  "query": "SELECT category, profile_id, region, score, userdata, updated_at FROM scores\n         WHERE category IN (0, 1)",
   "describe": {
     "columns": [
       {
@@ -82,5 +82,5 @@
       false
     ]
   },
-  "hash": "fd5d863f7308732196c9f931536685085afc24fc06e7a3f6dac7f3588a5b3ec1"
+  "hash": "ca75f693e5f3c6e4a0afe5effe30c8e148a9655cd680f0af4a4594b8a34e2475"
 }

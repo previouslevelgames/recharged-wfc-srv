@@ -270,6 +270,13 @@ async fn remove(
     )
     .execute(&mut *conn)
     .await?;
+    // Their puts too, or counting the boards again would bring them back.
+    sqlx::query!(
+        "DELETE FROM score_puts WHERE profile_id = ANY($1)",
+        profiles
+    )
+    .execute(&mut *conn)
+    .await?;
     // Their sides, games and timelines go with them.
     sqlx::query!(
         "DELETE FROM online_matches WHERE match_id IN

@@ -70,8 +70,25 @@ impl Submission {
 /// row (`ProcessLeaderboardResults` blanks the name, Mii and record of one
 /// whose digest fails); userdata whose digest failed already stays unsigned.
 pub fn with_record(userdata: &[u8], wins: Option<i32>, losses: Option<i32>) -> Vec<u8> {
+    rewritten(userdata, None, wins, losses)
+}
+
+/// `userdata` with its date, wins and losses replaced by those given, as
+/// [`with_record`] does. The date is replaced only where the userdata has a
+/// date already.
+pub fn rewritten(
+    userdata: &[u8],
+    date: Option<Date>,
+    wins: Option<i32>,
+    losses: Option<i32>,
+) -> Vec<u8> {
     let was_signed = signed(userdata);
+    let had_date = Submission::parse(userdata).date.is_some();
     let mut userdata = userdata.to_vec();
+    if let (Some(date), true, Some(bytes)) = (date, had_date, userdata.get_mut(0..4)) {
+        let year = u16::try_from(date.year()).unwrap_or(0).to_le_bytes();
+        bytes.copy_from_slice(&[date.day(), u8::from(date.month()), year[0], year[1]]);
+    }
     for (at, value) in [(0x04, wins), (0x08, losses)] {
         if let (Some(value), Some(bytes)) = (value, userdata.get_mut(at..at + 4)) {
             bytes.copy_from_slice(&value.clamp(0, MAX_RECORD).to_le_bytes());
@@ -148,6 +165,18 @@ mod tests {
             with_record(&[0; 8], Some(5), Some(6)),
             [0, 0, 0, 0, 5, 0, 0, 0]
         );
+    }
+
+    #[test]
+    fn a_new_date_is_signed_too() {
+        let put = game_put();
+        let day = Date::from_calendar_date(2026, Month::November, 16).unwrap();
+        let shown = rewritten(&put, Some(day), None, None);
+        assert!(signed(&shown));
+        assert_eq!(Submission::parse(&shown).date, Some(day));
+        assert_eq!(shown[0x04..DIGEST], put[0x04..DIGEST]);
+        // Userdata without a date gets none.
+        assert_eq!(rewritten(&[0xAA; 8], Some(day), None, None), [0xAA; 8]);
     }
 
     #[test]

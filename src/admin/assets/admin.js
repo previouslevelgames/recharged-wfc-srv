@@ -11,16 +11,12 @@ const LABEL = document.getElementById('server-label')?.textContent;
 // Transactions per second kept for the sparkline: 5 minutes of polls.
 const HISTORY = 60;
 // NETWORK_PERSISTENT_* (docs/gamestats2.md, "Categories").
-const CATEGORIES = [
-  'Season',
-  'Striker of the day',
-  'Friends (EU)',
-  'Alternate season (EU)',
-  'Alternate striker of the day (EU)',
-];
-// The boards that start every day; the others start a season every week
+// The two boards every game puts and reads; the EU categories count on them
+// (docs/gamestats2.md, "Categories").
+const CATEGORIES = ['Season', 'Striker of the day'];
+// The board that starts every day; the season's starts every week
 // (docs/gamestats2.md, "Seasons").
-const DAILY_BOARDS = new Set([1, 4]);
+const DAILY_BOARDS = new Set([1]);
 // DWCRnkRegion.
 const REGIONS = { 1: 'JP', 2: 'US', 4: 'EU', 8: 'KR' };
 // DWC's status in GPCM's \status\ (docs/login.md, "Mutual friends"): what
