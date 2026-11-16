@@ -111,6 +111,38 @@ impl Set {
     pub fn has(&self, player_id: i64) -> bool {
         self.home == Some(player_id) || self.away == Some(player_id)
     }
+
+    /// Who plays at home (the game's home side) in the set's next game, by
+    /// the players' seeds (`seed_of`, from 0 the best): the lower seed in the
+    /// first, then each in turn. None until both are known.
+    pub fn game_home(&self, seed_of: impl Fn(i64) -> Option<i32>) -> Option<i64> {
+        game_home(
+            (self.home?, self.away?),
+            seed_of,
+            self.home_wins.unwrap_or(0) + self.away_wins.unwrap_or(0),
+        )
+    }
+}
+
+/// Of `players` (a set's home and away places), who plays at home in the
+/// game after `played` games won: the one with the worse seed (the higher
+/// number; the away place without seeds) in the first, then each in turn.
+pub fn game_home(
+    players: (i64, i64),
+    seed_of: impl Fn(i64) -> Option<i32>,
+    played: i16,
+) -> Option<i64> {
+    let (home, away) = players;
+    let worse_is_home = match (seed_of(home), seed_of(away)) {
+        (Some(home), Some(away)) => home > away,
+        _ => false,
+    };
+    let (worse, better) = if worse_is_home {
+        (home, away)
+    } else {
+        (away, home)
+    };
+    Some(if played % 2 == 0 { worse } else { better })
 }
 
 /// How the entrants get their seeds when the tournament starts.
@@ -307,9 +339,15 @@ pub async fn sets(pool: &PgPool, id: i64) -> Result<Vec<Set>, sqlx::Error> {
 pub async fn set_context(
     pool: &PgPool,
     set_id: i64,
+    player_id: i64,
 ) -> Result<Option<serde_json::Value>, sqlx::Error> {
     let row = sqlx::query!(
-        "SELECT t.tournament_id, t.name, s.side, s.round, s.games, s.home_wins, s.away_wins
+        "SELECT t.tournament_id, t.name, s.side, s.round, s.games, s.state, s.home, s.away,
+                s.winner, s.home_wins, s.away_wins,
+                (SELECT seed FROM tournament_entrants e
+                 WHERE e.tournament_id = s.tournament_id AND e.player_id = s.home) AS home_seed,
+                (SELECT seed FROM tournament_entrants e
+                 WHERE e.tournament_id = s.tournament_id AND e.player_id = s.away) AS away_seed
          FROM tournament_sets s
          JOIN tournaments t USING (tournament_id) WHERE s.tournament_set_id = $1",
         set_id,
@@ -317,6 +355,24 @@ pub async fn set_context(
     .fetch_optional(pool)
     .await?;
     Ok(row.map(|row| {
+        let (home_wins, away_wins) = (row.home_wins.unwrap_or(0), row.away_wins.unwrap_or(0));
+        let away = row.away == Some(player_id);
+        let winner = match (row.state.as_str(), row.winner) {
+            ("finished", Some(winner)) if winner == player_id => Some("you"),
+            ("finished", Some(_)) => Some("opponent"),
+            _ => None,
+        };
+        let seeds = (row.home_seed, row.away_seed);
+        let game_home = match (row.home, row.away) {
+            (Some(home), Some(away)) => game_home(
+                (home, away),
+                |player| {
+                    if player == home { seeds.0 } else { seeds.1 }
+                },
+                home_wins + away_wins,
+            ),
+            _ => None,
+        };
         serde_json::json!({
             "id": row.tournament_id,
             "name": row.name,
@@ -324,8 +380,13 @@ pub async fn set_context(
             "side": row.side,
             "round": row.round,
             "games": row.games,
-            "home_wins": row.home_wins.unwrap_or(0),
-            "away_wins": row.away_wins.unwrap_or(0),
+            "home_wins": home_wins,
+            "away_wins": away_wins,
+            "won": if away { away_wins } else { home_wins },
+            "lost": if away { home_wins } else { away_wins },
+            "state": row.state,
+            "winner": winner,
+            "home": game_home.map(|home| if home == player_id { "you" } else { "opponent" }),
         })
     }))
 }
@@ -1336,6 +1397,69 @@ mod tests {
         );
         assert_eq!((done[0].home_wins, done[0].away_wins), (Some(1), Some(0)));
         assert_eq!(get(&pool, id).await.unwrap().unwrap().state, "finished");
+    }
+
+    #[sqlx::test]
+    async fn the_lower_seed_plays_at_home_first_then_each_in_turn(pool: PgPool) {
+        let (id, p) = tournament(&pool, Format::Single, &["Mario", "Luigi"]).await;
+        start(&pool, id, Seeding::Joined).await.unwrap().unwrap();
+        // Mario is seed 1 in the set's home place; Luigi, seed 2, plays the
+        // first game at home.
+        let set = set_of(&pool, id, p[0]).await;
+        assert_eq!((set.home, set.away), (Some(p[0]), Some(p[1])));
+        let home_of = |context: serde_json::Value| context["home"].as_str().map(str::to_owned);
+        let mario = set_context(&pool, set.id, p[0]).await.unwrap().unwrap();
+        assert_eq!(home_of(mario.clone()).as_deref(), Some("opponent"));
+        let luigi = set_context(&pool, set.id, p[1]).await.unwrap().unwrap();
+        assert_eq!(home_of(luigi).as_deref(), Some("you"));
+        assert_eq!(
+            (mario["won"].as_i64(), mario["lost"].as_i64()),
+            (Some(0), Some(0))
+        );
+        // Luigi wins the first game: Mario is at home in the second.
+        let made = ready(&pool, id, set.id, p[0], true)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        ready(&pool, id, set.id, p[1], true).await.unwrap().unwrap();
+        matches::game_ready(&pool, made.id, 0, true).await.unwrap();
+        for (player_id, seen) in [(p[0], game(1, 2)), (p[1], game(2, 1))] {
+            let mut seen = seen;
+            if player_id == p[1] {
+                std::mem::swap(&mut seen.my_captain, &mut seen.opponent_captain);
+            }
+            matches::report(&pool, made.id, player_id, &[seen])
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        advance(&pool).await.unwrap();
+        let mario = set_context(&pool, set.id, p[0]).await.unwrap().unwrap();
+        assert_eq!(home_of(mario.clone()).as_deref(), Some("you"));
+        assert_eq!(
+            (mario["won"].as_i64(), mario["lost"].as_i64()),
+            (Some(0), Some(1))
+        );
+        assert_eq!(mario["state"].as_str(), Some("ready"));
+        let luigi = set_context(&pool, set.id, p[1]).await.unwrap().unwrap();
+        assert_eq!(
+            (luigi["won"].as_i64(), luigi["lost"].as_i64()),
+            (Some(1), Some(0))
+        );
+        let page = sets(&pool, id).await.unwrap();
+        let seed_of = |player: i64| (player == p[1]).then_some(1).or(Some(0));
+        assert_eq!(page[0].game_home(seed_of), Some(p[0]));
+    }
+
+    #[test]
+    fn the_away_place_is_at_home_first_without_seeds() {
+        assert_eq!(game_home((1, 2), |_| None, 0), Some(2));
+        assert_eq!(game_home((1, 2), |_| None, 1), Some(1));
+        // Seed 0 is the best: the other starts at home, wherever they are.
+        let seeds = |player: i64| Some(if player == 1 { 3 } else { 0 });
+        assert_eq!(game_home((1, 2), seeds, 0), Some(1));
+        assert_eq!(game_home((1, 2), seeds, 3), Some(2));
     }
 
     async fn set_of_state(pool: &PgPool, id: i64, set_id: i64) -> String {

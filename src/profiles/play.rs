@@ -979,7 +979,7 @@ impl ProfilesState {
             }
         });
         let tournament = match found.tournament_set {
-            Some(set) => super::tournaments::store::set_context(&self.pool, set).await?,
+            Some(set) => super::tournaments::store::set_context(&self.pool, set, player.id).await?,
             None => None,
         };
         let side = found.side(player.id).unwrap_or(0);

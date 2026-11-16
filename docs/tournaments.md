@@ -53,7 +53,10 @@ as that player's Ready to play!; the other's READY makes it go. Its winner
 has one more game (`home_wins`, `away_wins`), and the set is theirs once
 they have more than half of its `games`; until then it is `ready` for the
 next game. A game without a winner is played again; a player who forfeits a
-game gives the whole set up. From there it is a
+game gives the whole set up. The players take the game's home side in
+turn: the lower seed (the higher number) in the first game, the other in the
+second, and so on (`game_home`; the game swaps its sides to follow it). From
+there it is a
 set like any other: the games meet in RANKED, report, may forfeit. A READY
 while either player has another match to play is refused (409), and a
 player's match still waiting for both is called off by another set of
@@ -74,14 +77,18 @@ then has a `place` (players out in the same round share one).
 | Route | |
 |---|---|
 | `GET /api/v1/tournaments` | `{"tournaments": [...]}`: open for entries or running, the newest first, then the last 10 that ended. With a session, each says whether the player `joined`. |
-| `GET /api/v1/tournaments/<id>` | `{"tournament", "entrants", "sets", "me", "poll_interval"}`: the tournament, its entrants (`player`, `seed`, `dropped`, `place`), its sets in the bracket's order (`id`, `index`, `side`, `round`, `position`, `games`, `state`, `home`, `away`, `winner`, `decided_by`, `home_wins`, `away_wins`, `match`, and `from`, where its two players come from: `{"seed": n}` (from 0; past the entrants, a bye), `{"winner": <set id>}` or `{"loser": <set id>}`; players by id), and with a session `me`: `{"player", "entrant", "eligible", "reason", "dropped", "place", "set"}`, `set` being the player's set to play now (else the next one waiting). Ask again after `poll_interval` seconds while the page is open. |
+| `GET /api/v1/tournaments/<id>` | `{"tournament", "entrants", "sets", "me", "poll_interval"}`: the tournament, its entrants (`player`, `seed`, `dropped`, `place`), its sets in the bracket's order (`id`, `index`, `side`, `round`, `position`, `games`, `state`, `home`, `away`, `winner`, `decided_by`, `home_wins`, `away_wins`, `match`, `game_home` (who plays at home in its next game while it is `ready` or `playing`), and `from`, where its two players come from: `{"seed": n}` (from 0; past the entrants, a bye), `{"winner": <set id>}` or `{"loser": <set id>}`; players by id), and with a session `me`: `{"player", "entrant", "eligible", "reason", "dropped", "place", "set"}`, `set` being the player's set to play now (else the next one waiting). Ask again after `poll_interval` seconds while the page is open. |
 | `POST /api/v1/tournaments/<id>/join` | Join one open for entries: its page as above. 409 when it is full, running or the player is in it. |
 | `DELETE /api/v1/tournaments/<id>/join` | Leave: before the start, out of it; once it runs, the player gives up (see "Sets"). |
 | `POST /api/v1/tournaments/<id>/sets/<set>/ready` | `{"ready": true}` or `false`: READY for the player's set, or taken back. `{"match": …}`, the set's match as `GET /api/v1/matches/current` shows it, or `null` for a READY taken back before there was one. 404 for a set not the player's, 409 for a set not to be played or a player with another match. |
 
 A match's view has `tournament`, `{"id", "name", "set", "side", "round",
-"games", "home_wins", "away_wins"}` for a tournament set's match (the set's
-best of and the games each won before this one), `null` otherwise.
+"games", "home_wins", "away_wins", "won", "lost", "state", "winner",
+"home"}` for a tournament set's match, `null` otherwise: the set's best of,
+the games each place has won so far, the same as the player's (`won`) and
+the opponent's (`lost`), the set's `state`, its `winner` once finished
+(`"you"` or `"opponent"`), and who plays at home in its next game (`"you"`
+or `"opponent"`).
 
 ## The admin page
 

@@ -195,7 +195,7 @@ fn sources(tournament: &Tournament, entrants: usize, sets: &[Set]) -> Vec<Value>
         .collect()
 }
 
-fn set_view(set: &Set, from: Option<&Value>) -> Value {
+fn set_view(set: &Set, from: Option<&Value>, seed_of: impl Fn(i64) -> Option<i32>) -> Value {
     json!({
         "from": from,
         "id": set.id,
@@ -212,6 +212,7 @@ fn set_view(set: &Set, from: Option<&Value>) -> Value {
         "home_wins": set.home_wins,
         "away_wins": set.away_wins,
         "match": set.match_id,
+        "game_home": matches!(set.state.as_str(), "ready" | "playing").then(|| set.game_home(seed_of)).flatten(),
     })
 }
 
@@ -277,13 +278,19 @@ async fn page(
         }
         None => Value::Null,
     };
+    let seed_of = |player: i64| {
+        entrants
+            .iter()
+            .find(|e| e.player_id == player)
+            .and_then(|e| e.seed)
+    };
     Ok(Some(json!({
         "tournament": summary(state, &tournament).await?,
         "entrants": entrant_views,
         "sets": sets
             .iter()
             .enumerate()
-            .map(|(index, set)| set_view(set, from.get(index)))
+            .map(|(index, set)| set_view(set, from.get(index), seed_of))
             .collect::<Vec<_>>(),
         "me": me,
         "poll_interval": POLL_INTERVAL,

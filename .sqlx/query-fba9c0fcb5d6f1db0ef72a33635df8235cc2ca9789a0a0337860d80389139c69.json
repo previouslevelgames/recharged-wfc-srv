@@ -1,0 +1,162 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT t.tournament_id, t.name, s.side, s.round, s.games, s.state, s.home, s.away,\n                s.winner, s.home_wins, s.away_wins,\n                (SELECT seed FROM tournament_entrants e\n                 WHERE e.tournament_id = s.tournament_id AND e.player_id = s.home) AS home_seed,\n                (SELECT seed FROM tournament_entrants e\n                 WHERE e.tournament_id = s.tournament_id AND e.player_id = s.away) AS away_seed\n         FROM tournament_sets s\n         JOIN tournaments t USING (tournament_id) WHERE s.tournament_set_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tournament_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tournaments",
+            "name": "tournament_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tournaments",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "side",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "side"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "round",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "round"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "games",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "games"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "state",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "home",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "home"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "away",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "away"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "winner",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "winner"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "home_wins",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "home_wins"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "away_wins",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "away_wins"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "home_seed",
+        "type_info": "Int4",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 12,
+        "name": "away_seed",
+        "type_info": "Int4",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      null,
+      null
+    ]
+  },
+  "hash": "fba9c0fcb5d6f1db0ef72a33635df8235cc2ca9789a0a0337860d80389139c69"
+}
