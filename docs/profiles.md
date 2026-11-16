@@ -624,8 +624,11 @@ A match as the player sees it:
  "paired": false, "reported": false, "winner": null, "games": [], "created_at": 1792771200,
  "stage": "open", "reason": null, "you_ready": true, "opponent_ready": false,
  "opponent_online": true, "go_at": null, "playing_at": null, "rematch_of": null, "random": false,
- "forfeited_by": null, "forfeited_at": null}
+ "forfeited_by": null, "forfeited_at": null, "tournament": null}
 ```
+
+`tournament` is `{"id", "name", "set", "side", "round"}` for the match of a
+tournament's set ([tournaments.md](tournaments.md)), `null` otherwise.
 
 `forfeited_by` is `you` or `opponent` for a set one of them gave up (see
 "Forfeit"), with `forfeited_at` in Unix seconds; `null` otherwise.
