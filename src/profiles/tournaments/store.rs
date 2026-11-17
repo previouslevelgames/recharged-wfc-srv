@@ -3,6 +3,8 @@
 //! by [`super::bracket`] from the results and who left; this keeps its sets'
 //! players and states up to date with it.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
@@ -388,6 +390,73 @@ pub async fn sets(pool: &PgPool, id: i64) -> Result<Vec<Set>, sqlx::Error> {
                 .and_then(|resume| serde_json::from_value(resume).ok()),
         })
         .collect())
+}
+
+/// A game a set played, as its players reported it: each team's captain
+/// and goals, home and away as the set has them.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct PlayedGame {
+    pub home_captain: String,
+    pub away_captain: String,
+    pub home_score: i32,
+    pub away_score: i32,
+    pub stadium: Option<String>,
+    /// It broke off (or was forfeited) at this score.
+    pub interrupted: bool,
+}
+
+/// The games each set of the tournament played, by set, in their order:
+/// one from each finished match of the set, as its home player reported it
+/// (else its away player).
+pub async fn played_games(
+    pool: &PgPool,
+    id: i64,
+) -> Result<HashMap<i64, Vec<PlayedGame>>, sqlx::Error> {
+    let rows = sqlx::query!(
+        r#"SELECT s.tournament_set_id, m.match_id, s.home, r.player_id, r.games
+           FROM tournament_sets s
+           JOIN matches m ON m.tournament_set_id = s.tournament_set_id AND m.state = 'finished'
+           JOIN match_reports r ON r.match_id = m.match_id
+           WHERE s.tournament_id = $1
+           ORDER BY s.tournament_set_id, m.match_id, (r.player_id = s.home) DESC"#,
+        id,
+    )
+    .fetch_all(pool)
+    .await?;
+    let mut played: HashMap<i64, Vec<PlayedGame>> = Default::default();
+    let mut last_match = None;
+    for row in rows {
+        if last_match == Some(row.match_id) {
+            continue;
+        }
+        let Ok(serde_json::Value::Array(games)) = serde_json::from_str(&row.games) else {
+            continue;
+        };
+        if games.is_empty() {
+            continue;
+        }
+        last_match = Some(row.match_id);
+        let home = row.home == Some(row.player_id);
+        let text =
+            |game: &serde_json::Value, key: &str| game[key].as_str().unwrap_or_default().to_owned();
+        let score = |game: &serde_json::Value, key: &str| game[key].as_i64().unwrap_or(0) as i32;
+        for game in &games {
+            let (mine, theirs) = (text(game, "my_captain"), text(game, "opponent_captain"));
+            let (my_score, their_score) = (score(game, "my_score"), score(game, "opponent_score"));
+            played
+                .entry(row.tournament_set_id)
+                .or_default()
+                .push(PlayedGame {
+                    home_captain: if home { mine.clone() } else { theirs.clone() },
+                    away_captain: if home { theirs } else { mine },
+                    home_score: if home { my_score } else { their_score },
+                    away_score: if home { their_score } else { my_score },
+                    stadium: game["stadium"].as_str().map(str::to_owned),
+                    interrupted: game["interrupted"].as_bool().unwrap_or(false),
+                });
+        }
+    }
+    Ok(played)
 }
 
 /// What a match's view says of the tournament set it plays
@@ -1337,6 +1406,28 @@ mod tests {
                 (p[3], Some(2))
             ]
         );
+    }
+
+    #[sqlx::test]
+    async fn a_set_lists_the_games_it_played(pool: PgPool) {
+        let (id, p) =
+            tournament(&pool, Format::Single, &["Mario", "Luigi", "Peach", "Daisy"]).await;
+        assert_eq!(start(&pool, id, Seeding::Joined).await.unwrap(), Ok(()));
+        let first = set_of(&pool, id, p[0]).await;
+        assert!(played_games(&pool, id).await.unwrap().is_empty());
+        // The away player wins both: home and away as the set has them.
+        play(&pool, id, &first, p[3]).await;
+        let lost = PlayedGame {
+            home_captain: "mario".into(),
+            away_captain: "bowser".into(),
+            home_score: 1,
+            away_score: 2,
+            stadium: Some("the_palace".into()),
+            interrupted: false,
+        };
+        let played = played_games(&pool, id).await.unwrap();
+        assert_eq!(played.len(), 1);
+        assert_eq!(played[&first.id], [lost.clone(), lost]);
     }
 
     #[sqlx::test]

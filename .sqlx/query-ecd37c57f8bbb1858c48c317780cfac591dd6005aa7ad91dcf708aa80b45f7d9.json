@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT s.tournament_set_id, m.match_id, s.home, r.player_id, r.games\n           FROM tournament_sets s\n           JOIN matches m ON m.tournament_set_id = s.tournament_set_id AND m.state = 'finished'\n           JOIN match_reports r ON r.match_id = m.match_id\n           WHERE s.tournament_id = $1\n           ORDER BY s.tournament_set_id, m.match_id, (r.player_id = s.home) DESC",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tournament_set_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "tournament_set_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "match_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "match_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "home",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "home"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "player_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "match_reports",
+            "name": "player_id"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "games",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "match_reports",
+            "name": "games"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "ecd37c57f8bbb1858c48c317780cfac591dd6005aa7ad91dcf708aa80b45f7d9"
+}

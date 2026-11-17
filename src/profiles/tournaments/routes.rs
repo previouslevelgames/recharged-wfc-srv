@@ -198,7 +198,12 @@ fn sources(tournament: &Tournament, entrants: usize, sets: &[Set]) -> Vec<Value>
         .collect()
 }
 
-fn set_view(set: &Set, from: Option<&Value>, seed_of: impl Fn(i64) -> Option<i32>) -> Value {
+fn set_view(
+    set: &Set,
+    from: Option<&Value>,
+    played: &[store::PlayedGame],
+    seed_of: impl Fn(i64) -> Option<i32>,
+) -> Value {
     json!({
         "from": from,
         "id": set.id,
@@ -216,6 +221,7 @@ fn set_view(set: &Set, from: Option<&Value>, seed_of: impl Fn(i64) -> Option<i32
         "away_wins": set.away_wins,
         "match": set.match_id,
         "game_home": matches!(set.state.as_str(), "ready" | "playing").then(|| set.game_home(seed_of)).flatten(),
+        "played": played,
     })
 }
 
@@ -229,6 +235,7 @@ async fn page(
     };
     let entrants = store::entrants(&state.pool, id).await?;
     let sets = store::sets(&state.pool, id).await?;
+    let played = store::played_games(&state.pool, id).await?;
     let mut people: HashMap<i64, Player> = HashMap::new();
     for entrant in &entrants {
         if let Some(found) = players::player(&state.pool, entrant.player_id).await? {
@@ -293,7 +300,10 @@ async fn page(
         "sets": sets
             .iter()
             .enumerate()
-            .map(|(index, set)| set_view(set, from.get(index), seed_of))
+            .map(|(index, set)| {
+                let games = played.get(&set.id).map_or(&[][..], Vec::as_slice);
+                set_view(set, from.get(index), games, seed_of)
+            })
             .collect::<Vec<_>>(),
         "me": me,
         "poll_interval": POLL_INTERVAL,
