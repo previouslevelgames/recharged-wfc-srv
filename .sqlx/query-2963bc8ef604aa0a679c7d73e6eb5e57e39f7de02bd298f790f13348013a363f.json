@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT removed_by FROM launcher_messages WHERE id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "removed_by",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "launcher_messages",
+            "name": "removed_by"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "2963bc8ef604aa0a679c7d73e6eb5e57e39f7de02bd298f790f13348013a363f"
+}

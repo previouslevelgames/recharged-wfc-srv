@@ -446,7 +446,7 @@ const SECTIONS = [
     group: 'System',
     name: 'Maintenance',
     icon: 'maintenance',
-    intro: "For owners only: switches that take effect at once, and operations on the server's data that cannot be undone, which ask twice.",
+    intro: "For owners only: the launcher's message and switches, which take effect at once, and operations on the server's data that cannot be undone, which ask twice.",
     api: 'maintenance',
     render: renderMaintenance,
     owner: true,
@@ -2945,6 +2945,7 @@ function renderMaintenance(data) {
   if (!data.content) return [unreachable(data.error)];
   const boards = data.content.leaderboards;
   const empty = boards.entries + boards.past_entries === 0;
+  launcherMessage.load(data.content.launcher_message);
   return [
     testSignInCard(data.content.test_sign_in),
     h(
@@ -3034,6 +3035,158 @@ const testSwitch = {
     poll();
   },
 };
+
+/** The message on the launcher's Play page (docs/profiles.md, "Launcher
+ * message"). The card stays out of the polled page, above it, so typing
+ * survives each refresh; each poll redraws only the message shown now. None
+ * on a server without profiles. */
+const launcherMessage = {
+  node: null,
+  current: null, // The message launchers show now, or null.
+  busy: false,
+
+  load(state) {
+    if (!state) {
+      if (this.node) this.node.remove();
+      this.node = null;
+      return;
+    }
+    if (!this.node) this.build(state.max_length);
+    this.current = state.current;
+    this.show();
+  },
+
+  build(maxLength) {
+    // The admin's own time zone, which the dashboard shows every time in.
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    this.maxLength = maxLength;
+    this.text = h('textarea', { rows: '6', maxlength: String(maxLength), required: true, 'aria-describedby': 'message-count' });
+    this.text.addEventListener('input', () => this.counted());
+    this.count = h('span', { class: 'message-count', id: 'message-count' });
+    this.tone = h('select', null, h('option', { value: 'info' }, 'Info'), h('option', { value: 'warning' }, 'Warning'));
+    this.until = h('input', { type: 'datetime-local' });
+    this.postButton = h('button', { class: 'button primary', type: 'submit' }, 'Post');
+    this.removeButton = h('button', { class: 'button danger', type: 'button', onclick: () => this.remove() }, 'Remove');
+    this.status = h('span', { class: 'editor-status', role: 'status' });
+    this.badge = h('span');
+    this.shown = h('div', { class: 'operation' });
+    const field = (label, control) => h('label', { class: 'editor-field' }, label, control);
+    this.node = h(
+      'section',
+      { class: 'card' },
+      h('header', { class: 'card-head' }, h('h2', null, 'Launcher message'), this.badge),
+      this.shown,
+      h(
+        'form',
+        { class: 'editor message-editor', onsubmit: (event) => { event.preventDefault(); this.post(); } },
+        field(h('span', { class: 'message-label' }, h('span', null, 'New message (Markdown)'), this.count), this.text),
+        h(
+          'div',
+          { class: 'editor-row' },
+          field(h('span', null, 'Tone'), this.tone),
+          field(h('span', null, `Show until (optional, your time: ${zone})`), this.until),
+        ),
+        h('div', { class: 'editor-actions' }, this.postButton, this.removeButton, this.status),
+      ),
+    );
+    document.getElementById('body').before(this.node);
+    this.counted();
+  },
+
+  /** The message shown now, and the buttons that depend on it. */
+  show() {
+    const message = this.current;
+    const tone = message && (message.tone === 'warning' ? 'Warning' : 'Info');
+    this.badge.replaceChildren(message ? badge(message.tone === 'warning' ? 'warning' : 'accent', `Showing · ${tone}`) : badge(null, 'None'));
+    const about = h(
+      'p',
+      null,
+      'Launchers show this on their Play page until it ends or is removed. A new post replaces it, and players who closed the old one see the new one. The launcher renders simple Markdown: headings, bold, italic, ',
+      h('code', null, 'code'),
+      ', links, lists and ',
+      h('code', null, '---'),
+      '.',
+    );
+    if (message) {
+      const until = message.ends_at ? `until ${dateTime.format(new Date(message.ends_at))}` : 'until removed';
+      this.shown.replaceChildren(
+        about,
+        h('pre', { class: 'message-text' }, message.markdown),
+        h('p', { class: 'message-meta' }, `${tone} · posted by ${message.posted_by}, ${dateTime.format(new Date(message.posted_at))} · shows ${until}`),
+        h('div', { class: 'editor-actions' }, h('button', { class: 'button', type: 'button', onclick: () => this.edit() }, 'Copy to the form')),
+      );
+    } else {
+      this.shown.replaceChildren(about, h('p', { class: 'message-meta' }, 'No message: launchers show none.'));
+    }
+    this.postButton.disabled = this.busy;
+    this.removeButton.disabled = this.busy || !message;
+  },
+
+  counted() {
+    this.count.textContent = `${integer.format(this.text.value.length)} / ${integer.format(this.maxLength)}`;
+  },
+
+  say(text, tone) {
+    this.status.textContent = text;
+    this.status.dataset.tone = tone || '';
+  },
+
+  /** The message shown now into the form, to post a changed one. */
+  edit() {
+    const message = this.current;
+    if (!message) return;
+    this.text.value = message.markdown;
+    this.tone.value = message.tone;
+    this.until.value = message.ends_at ? localInput(message.ends_at) : '';
+    this.counted();
+    this.text.focus();
+  },
+
+  async post() {
+    this.busy = true;
+    this.say('Posting…');
+    this.show();
+    try {
+      // The field is the admin's local time; the server takes UTC.
+      const until = this.until.value;
+      const form = { markdown: this.text.value, tone: this.tone.value, ends_at: until ? new Date(until).toISOString() : null };
+      const state = await send('POST', '/admin/api/maintenance/launcher-message', form);
+      this.current = state.current;
+      this.text.value = '';
+      this.tone.value = 'info';
+      this.until.value = '';
+      this.counted();
+      this.say('Posted: launchers show it from their next check.', 'good');
+    } catch (error) {
+      this.say(error.message, 'critical');
+    }
+    this.busy = false;
+    this.show();
+  },
+
+  async remove() {
+    if (!window.confirm('Remove the message? Launchers then show none.')) return;
+    this.busy = true;
+    this.show();
+    try {
+      const state = await send('DELETE', '/admin/api/maintenance/launcher-message');
+      this.current = state.current;
+      this.say('Removed.', 'good');
+    } catch (error) {
+      this.say(error.message, 'critical');
+    }
+    this.busy = false;
+    this.show();
+  },
+};
+
+/** An RFC 3339 time as a datetime-local field's value, in the browser's time
+ * zone: `2026-11-21T22:00`. */
+function localInput(iso) {
+  const at = new Date(iso);
+  const two = (value) => String(value).padStart(2, '0');
+  return `${at.getFullYear()}-${two(at.getMonth() + 1)}-${two(at.getDate())}T${two(at.getHours())}:${two(at.getMinutes())}`;
+}
 
 /** Wiping the leaderboards, in two asks: the button arms it on the server,
  * then the dialog sends back its token with the phrase typed out. The dialog

@@ -230,7 +230,11 @@ A game that is online keeps its totals until it logs in again and puts them
 back after its next match, so wipe when no one is online. **Test sign-in**
 switches sign-in with a name alone on or off at once
 ([profiles.md](profiles.md)); the switch stays across restarts and updates
-and wins over `PROFILES_TEST_SIGN_IN`. Without the four `/admin`
+and wins over `PROFILES_TEST_SIGN_IN`. **Launcher message** posts a short
+Markdown message, such as a restart tonight at 22:00, that launchers show on
+their Play page ([profiles.md](profiles.md#launcher-message)), until
+the time in **Show until** (in your browser's time zone) or until you remove
+it; a new post replaces it. Both need profiles. Without the four `/admin`
 variables, the server runs as before and `/admin` answers 404. With only some of
 them, the container stops at start and its log names the missing ones.
 

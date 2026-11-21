@@ -12,6 +12,7 @@ mod bans;
 mod gamestats;
 mod gpcm;
 mod html;
+mod launcher_message;
 mod master;
 mod nas;
 mod natneg;
@@ -89,7 +90,8 @@ impl App {
             ))
             .merge(reports::router(self.pool.clone(), self.gpcm.clone()))
             .merge(online::router(self.pool.clone(), self.gpcm.clone()));
-        // The Maintenance page switches test sign-in while profiles run.
+        // The Maintenance page switches test sign-in and posts the launcher's
+        // message while profiles run.
         let test_sign_in = profiles.as_ref().map(|config| config.test_sign_in);
         if let Some(config) = admin {
             router = router.merge(admin::router(

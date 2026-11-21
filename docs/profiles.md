@@ -223,6 +223,23 @@ version in the game's online matchmaking and never meets another version.
 Errors are JSON, `{"error": "<what went wrong>"}`. Every response is
 `no-store`; the pages allow no scripts and no framing.
 
+## Launcher message
+
+`GET /api/v1/message` (from 1.2.25) gives the launcher, without a session,
+the message for its Play page, such as a server restart: `{"message": null}`
+when there is none, else `{"message": {"id": 7, "markdown": "...", "tone":
+"info", "posted_at": "2026-11-21T18:00:00Z", "ends_at": null}}`. Owners post
+it on the admin dashboard's **Maintenance** page
+([install.md](install.md#admin-dashboard)): Markdown of at most 2000
+characters, stored as written (the launcher renders headings, bold, italic,
+`code`, links, lists and `---`), the `tone` `info` or `warning`, and
+`ends_at`, the time it stops showing (RFC 3339), or `null` until it is
+removed. Only the newest post shows, until its end or until an owner removes
+it; an older one never comes back. Every post has a new `id`, an edited
+message too, so a launcher that remembers the message a player closed shows
+an edited one again. `launcher_messages` keeps every post, with who posted
+and removed it; the launcher never gets those addresses.
+
 ## Players
 
 `players` has one row per player, with the name to show: the Discord display
