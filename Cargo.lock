@@ -1300,7 +1300,7 @@ dependencies = [
 
 [[package]]
 name = "recharged-wfc-srv"
-version = "1.2.24"
+version = "1.2.25"
 dependencies = [
  "axum",
  "axum-extra",
