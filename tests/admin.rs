@@ -180,6 +180,13 @@ async fn only_an_owner_wipes_the_leaderboards_and_only_when_asked_twice(pool: Pg
     let data: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(data["viewer"]["owner"], true, "{body}");
     assert_eq!(data["content"]["leaderboards"]["entries"], 2, "{body}");
+    // Without profiles, launchers get no message to post.
+    assert!(data["content"]["launcher_message"].is_null(), "{body}");
+    let message = serde_json::json!({ "markdown": "Hi", "tone": "info" });
+    let (status, _) = owner
+        .post_json("/admin/api/maintenance/launcher-message", Some(message))
+        .await;
+    assert_eq!(status, 404);
 
     // Never from another site, nor without the first ask.
     let (status, _, _) = owner
@@ -377,6 +384,101 @@ async fn only_an_owner_switches_test_sign_in_and_profiles_follow_at_once(pool: P
         .await;
     assert_eq!(status, 200, "{state}");
     assert_eq!(test_sign_in().await, false);
+}
+
+#[sqlx::test]
+async fn only_an_owner_posts_the_launcher_message_and_launchers_show_it_at_once(pool: PgPool) {
+    const MESSAGE: &str = "/admin/api/maintenance/launcher-message";
+    let (config, google) = fake_google().await;
+    let profiles = recharged_wfc_srv::profiles::Config::new(PUBLIC_URL, None, false).unwrap();
+    let app = recharged_wfc_srv::App::new(pool).router(Some(config), Some(profiles));
+    let mut launcher = Browser::new(app.clone());
+    let mut shown = async || {
+        let (status, headers, body) = launcher.get("/api/v1/message").await;
+        assert_eq!(status, 200);
+        assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+        serde_json::from_str::<serde_json::Value>(&body).unwrap()["message"].clone()
+    };
+    assert!(shown().await.is_null());
+    let restart = serde_json::json!({ "markdown": "Restart at **22:00**", "tone": "warning" });
+
+    // An admin, not an owner, can't.
+    let mut admin = Browser::new(app.clone());
+    sign_in(&mut admin, &google, "second@example.com").await;
+    assert_eq!(admin.post_json(MESSAGE, Some(restart.clone())).await.0, 403);
+    assert_eq!(admin.send_json(Request::delete(MESSAGE), None).await.0, 403);
+
+    let mut owner = Browser::new(app);
+    sign_in(&mut owner, &google, "owner@example.com").await;
+    let (_, _, body) = owner.get("/admin/api/maintenance").await;
+    let data: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let state = &data["content"]["launcher_message"];
+    assert!(state["current"].is_null(), "{body}");
+    assert_eq!(state["max_length"], 2000, "{body}");
+
+    // Never from another site.
+    let request = Request::post(MESSAGE)
+        .header(header::ORIGIN, "https://elsewhere.example")
+        .header(header::CONTENT_TYPE, "application/json");
+    let (status, _, _) = owner
+        .send_body(request, Body::from(restart.to_string()))
+        .await;
+    assert_eq!(status, 403);
+
+    let (status, state) = owner.post_json(MESSAGE, Some(restart)).await;
+    assert_eq!(status, 200, "{state}");
+    let current = &state["current"];
+    assert_eq!(current["markdown"], "Restart at **22:00**");
+    assert_eq!(current["tone"], "warning");
+    assert_eq!(current["posted_by"], "owner@example.com");
+    assert!(current["ends_at"].is_null(), "{state}");
+    let first = shown().await;
+    assert_eq!(first["id"], current["id"]);
+    assert_eq!(first["markdown"], "Restart at **22:00**");
+    assert!(first.get("posted_by").is_none(), "{first}");
+
+    // Too long, empty or ended: refused, and the message stays.
+    let ended = (time::OffsetDateTime::now_utc() - time::Duration::minutes(5))
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap();
+    for (form, problem) in [
+        (
+            serde_json::json!({ "markdown": "x".repeat(2001), "tone": "info" }),
+            "a message has at most 2000 characters",
+        ),
+        (
+            serde_json::json!({ "markdown": "  ", "tone": "info" }),
+            "write a message",
+        ),
+        (
+            serde_json::json!({ "markdown": "Soon", "tone": "info", "ends_at": ended }),
+            "\"Show until\" must be in the future",
+        ),
+    ] {
+        let (status, answer) = owner.post_json(MESSAGE, Some(form)).await;
+        assert_eq!(status, 400, "{answer}");
+        assert_eq!(answer["error"], problem);
+    }
+    assert_eq!(shown().await["id"], first["id"]);
+
+    // An edit is a new post, with a new id and an end.
+    let ends_at = "2099-01-01T21:00:00Z";
+    let edit =
+        serde_json::json!({ "markdown": "Restart at 23:00", "tone": "info", "ends_at": ends_at });
+    let (status, state) = owner.post_json(MESSAGE, Some(edit)).await;
+    assert_eq!(status, 200, "{state}");
+    let second = shown().await;
+    assert_ne!(second["id"], first["id"]);
+    assert_eq!(second["id"], state["current"]["id"]);
+    assert_eq!(second["tone"], "info");
+    assert_eq!(second["ends_at"], ends_at);
+
+    let (status, state) = owner.send_json(Request::delete(MESSAGE), None).await;
+    assert_eq!(status, 200, "{state}");
+    assert!(state["current"].is_null(), "{state}");
+    assert!(shown().await.is_null());
+    let (status, answer) = owner.send_json(Request::delete(MESSAGE), None).await;
+    assert_eq!(status, 404, "{answer}");
 }
 
 #[tokio::test]
@@ -648,6 +750,8 @@ async fn a_diagnostics_token_reads_the_pages_but_changes_nothing(pool: PgPool) {
         ("POST", "/admin/api/players/delete"),
         ("POST", "/admin/api/maintenance/wipe-leaderboards"),
         ("PUT", "/admin/api/maintenance/test-sign-in"),
+        ("POST", "/admin/api/maintenance/launcher-message"),
+        ("DELETE", "/admin/api/maintenance/launcher-message"),
         ("POST", "/admin/api/rules"),
     ] {
         let request = Request::builder()

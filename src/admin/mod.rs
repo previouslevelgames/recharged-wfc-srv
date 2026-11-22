@@ -61,6 +61,7 @@ use crate::{
     bans,
     gpcm::Gpcm,
     html::{escape, label_page},
+    launcher_message::{self, Tone},
     master::Master,
     pairing::Pairings,
     profiles::rules::{self, Rules, SaveError},
@@ -127,7 +128,7 @@ struct AdminState {
     /// The Maintenance page's operations waiting for their second ask.
     confirmations: Confirmations,
     /// `PROFILES_TEST_SIGN_IN` while profiles run, for the Maintenance
-    /// page's switch; none without profiles.
+    /// page's switch and the launcher's message; none without profiles.
     test_sign_in: Option<bool>,
     started_at: OffsetDateTime,
     /// [`LOGIN_PAGE`] and [`DASHBOARD_PAGE`] with the server's label.
@@ -209,6 +210,10 @@ pub(crate) fn router(
         .route(
             "/admin/api/maintenance/test-sign-in",
             put(switch_test_sign_in),
+        )
+        .route(
+            "/admin/api/maintenance/launcher-message",
+            post(post_launcher_message).delete(remove_launcher_message),
         )
         .route("/admin/api/wfc-profiles/{id}/player", put(link_profile))
         .route("/admin/api/players/merge", post(arm_merge_players))
@@ -1195,6 +1200,93 @@ async fn switch_test_sign_in(
     }
     match maintenance::test_sign_in(&state.pool, default).await {
         Ok(test_sign_in) => Json(test_sign_in).into_response(),
+        Err(failure) => {
+            warn!(target: "admin", error = %failure, "database error");
+            error(StatusCode::INTERNAL_SERVER_ERROR, "the database failed")
+        }
+    }
+}
+
+/// A message for the launcher's Play page, as the Maintenance page posts it.
+#[derive(Deserialize)]
+struct MessageForm {
+    markdown: String,
+    tone: Tone,
+    /// RFC 3339; none: until it is removed.
+    #[serde(default, with = "time::serde::rfc3339::option")]
+    ends_at: Option<OffsetDateTime>,
+}
+
+/// Posts the launcher's message: launchers show it from their next ask, in
+/// place of the one before.
+async fn post_launcher_message(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Json(form): Json<MessageForm>,
+) -> Response {
+    let owner = match state.owner(&jar, &headers) {
+        Ok(owner) => owner,
+        Err(status) => return status.into_response(),
+    };
+    if state.test_sign_in.is_none() {
+        return error(StatusCode::NOT_FOUND, "this server has no profiles");
+    }
+    let posted = launcher_message::post(
+        &state.pool,
+        &form.markdown,
+        form.tone,
+        form.ends_at,
+        &owner.email,
+    )
+    .await;
+    match posted {
+        Ok(Ok(posted)) => {
+            let message = &posted.message;
+            info!(target: "admin", email = %owner.email, id = message.id, tone = ?message.tone,
+                  ends_at = ?message.ends_at, characters = message.markdown.chars().count(),
+                  "launcher message posted");
+        }
+        Ok(Err(refusal)) => return error(StatusCode::BAD_REQUEST, &refusal.message()),
+        Err(failure) => {
+            warn!(target: "admin", error = %failure, "database error");
+            return error(StatusCode::INTERNAL_SERVER_ERROR, "the database failed");
+        }
+    }
+    launcher_message_now(&state.pool).await
+}
+
+/// Removes the launcher's message: launchers show none from their next ask.
+async fn remove_launcher_message(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    headers: HeaderMap,
+) -> Response {
+    let owner = match state.owner(&jar, &headers) {
+        Ok(owner) => owner,
+        Err(status) => return status.into_response(),
+    };
+    if state.test_sign_in.is_none() {
+        return error(StatusCode::NOT_FOUND, "this server has no profiles");
+    }
+    match launcher_message::remove(&state.pool, &owner.email).await {
+        Ok(Some(removed)) => {
+            info!(target: "admin", email = %owner.email, id = removed.message.id,
+                  "launcher message removed");
+        }
+        Ok(None) => return error(StatusCode::NOT_FOUND, "no message shows now"),
+        Err(failure) => {
+            warn!(target: "admin", error = %failure, "database error");
+            return error(StatusCode::INTERNAL_SERVER_ERROR, "the database failed");
+        }
+    }
+    launcher_message_now(&state.pool).await
+}
+
+/// The Maintenance page's launcher message after a change.
+async fn launcher_message_now(pool: &PgPool) -> Response {
+    match maintenance::launcher_message(pool).await {
+        Ok(message) => Json(message).into_response(),
         Err(failure) => {
             warn!(target: "admin", error = %failure, "database error");
             error(StatusCode::INTERNAL_SERVER_ERROR, "the database failed")

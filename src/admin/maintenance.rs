@@ -3,7 +3,8 @@
 //! what it would delete; only a second one runs it, from the same admin
 //! within [`CONFIRM_TTL`], with the first one's token and the operation's
 //! phrase typed out ([`Confirmations`]). For now, wiping the leaderboards.
-//! Switches that can be turned back, like test sign-in, change at once.
+//! Switches that can be turned back, like test sign-in, change at once, and
+//! so does the launcher's message.
 
 use std::{
     collections::HashMap,
@@ -18,6 +19,7 @@ use time::OffsetDateTime;
 
 use crate::{
     gpcm::Gpcm,
+    launcher_message::{self, MAX_LENGTH, Posted},
     switches::{self, Switch},
 };
 
@@ -31,6 +33,24 @@ pub struct Maintenance {
     leaderboards: Leaderboards,
     /// None on a server without profiles.
     test_sign_in: Option<TestSignIn>,
+    /// None on a server without profiles, whose launchers get no message.
+    launcher_message: Option<LauncherMessage>,
+}
+
+/// The message on the launcher's Play page.
+#[derive(Debug, Serialize)]
+pub struct LauncherMessage {
+    /// The one the launcher shows now.
+    pub current: Option<Posted>,
+    /// The longest message, in characters.
+    pub max_length: usize,
+}
+
+pub async fn launcher_message(pool: &PgPool) -> Result<LauncherMessage, sqlx::Error> {
+    Ok(LauncherMessage {
+        current: launcher_message::current(pool).await?,
+        max_length: MAX_LENGTH,
+    })
 }
 
 /// Sign-in with a name alone, without Discord (docs/profiles.md).
@@ -80,12 +100,17 @@ pub async fn read(
     gpcm: &Gpcm,
     test_sign_in: Option<bool>,
 ) -> Result<Maintenance, sqlx::Error> {
+    let (test_sign_in, launcher_message) = match test_sign_in {
+        Some(default) => (
+            Some(self::test_sign_in(pool, default).await?),
+            Some(self::launcher_message(pool).await?),
+        ),
+        None => (None, None),
+    };
     Ok(Maintenance {
         leaderboards: leaderboards(pool, gpcm).await?,
-        test_sign_in: match test_sign_in {
-            Some(default) => Some(self::test_sign_in(pool, default).await?),
-            None => None,
-        },
+        test_sign_in,
+        launcher_message,
     })
 }
 

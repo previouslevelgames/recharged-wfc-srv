@@ -2222,3 +2222,82 @@ async fn players_send_their_miis_and_are_shown_by_them(pool: PgPool) {
         .await;
     assert_eq!(current["match"]["opponent"]["mii_data"], Value::Null);
 }
+
+#[sqlx::test]
+async fn the_launcher_shows_the_newest_message_until_it_ends_or_goes(pool: PgPool) {
+    use crate::launcher_message::{self, Tone};
+
+    let world = World::new(pool);
+    let shown = async || {
+        let response = world
+            .app
+            .clone()
+            .oneshot(Request::get("/api/v1/message").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        serde_json::from_slice::<Value>(&bytes).unwrap()
+    };
+    let post = |markdown: &'static str, tone, ends_at| {
+        let pool = world.pool.clone();
+        async move {
+            launcher_message::post(&pool, markdown, tone, ends_at, "owner@example.com")
+                .await
+                .unwrap()
+                .unwrap()
+                .message
+        }
+    };
+
+    // None yet, and no session needed to ask.
+    assert_eq!(shown().await, json!({ "message": null }));
+
+    let restart = post("Server restart tonight at **22:00**", Tone::Info, None).await;
+    let answer = shown().await;
+    let message = &answer["message"];
+    assert_eq!(message["id"], restart.id);
+    assert_eq!(message["markdown"], "Server restart tonight at **22:00**");
+    assert_eq!(message["tone"], "info");
+    assert!(message["ends_at"].is_null(), "{answer}");
+    assert!(
+        time::OffsetDateTime::parse(
+            message["posted_at"].as_str().unwrap(),
+            &time::format_description::well_known::Rfc3339
+        )
+        .is_ok(),
+        "{answer}"
+    );
+    assert!(message.get("posted_by").is_none(), "no owner's address");
+
+    // An edit is a new post: a new id, which a player who closed the first
+    // one sees again.
+    let ends_at = time::OffsetDateTime::now_utc() + time::Duration::hours(2);
+    let edited = post("Server restart at **23:00**", Tone::Warning, Some(ends_at)).await;
+    assert_ne!(edited.id, restart.id);
+    let answer = shown().await;
+    assert_eq!(answer["message"]["id"], edited.id);
+    assert_eq!(answer["message"]["tone"], "warning");
+    assert!(answer["message"]["ends_at"].is_string(), "{answer}");
+
+    // Once it ends, none shows, not the older one.
+    sqlx::query!(
+        "UPDATE launcher_messages SET ends_at = now() - interval '1 second' WHERE id = $1",
+        edited.id
+    )
+    .execute(&world.pool)
+    .await
+    .unwrap();
+    assert_eq!(shown().await, json!({ "message": null }));
+
+    let back = post("We're back", Tone::Info, None).await;
+    assert_eq!(shown().await["message"]["id"], back.id);
+    launcher_message::remove(&world.pool, "owner@example.com")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(shown().await, json!({ "message": null }));
+}

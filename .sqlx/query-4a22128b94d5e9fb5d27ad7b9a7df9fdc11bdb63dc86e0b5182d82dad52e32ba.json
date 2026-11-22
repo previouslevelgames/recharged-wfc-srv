@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE launcher_messages SET ends_at = now() - interval '1 minute' WHERE id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4a22128b94d5e9fb5d27ad7b9a7df9fdc11bdb63dc86e0b5182d82dad52e32ba"
+}

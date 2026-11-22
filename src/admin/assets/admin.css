@@ -1567,7 +1567,8 @@ td.actions {
 }
 
 .editor input:not([type=checkbox]),
-.editor select {
+.editor select,
+.editor textarea {
   width: 100%;
   padding: 7px 10px;
   border: 1px solid var(--border);
@@ -1786,6 +1787,48 @@ dialog.confirm::backdrop {
   .warning-note svg {
     color: var(--warning);
   }
+}
+
+/* The launcher's message: as the owner wrote it, and the form to post one. */
+
+.message-text {
+  margin: 0;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-sunken);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.operation p.message-meta {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.message-editor {
+  padding-top: 0;
+}
+
+.message-editor textarea {
+  min-height: 120px;
+  resize: vertical;
+  font-family: var(--mono);
+  font-size: 13px;
+}
+
+.message-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.message-count {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 
 /* Monitoring */

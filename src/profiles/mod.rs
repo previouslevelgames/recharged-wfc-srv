@@ -10,7 +10,8 @@
 //! Players, their accounts and sessions are in the database ([`players`]);
 //! the launcher sends its session as a bearer token. It also sends the Miis
 //! of the player's WFC profiles, which show the player ([`mii_data`]), and
-//! reads the player's record in the online series ([`stats`]).
+//! reads the player's record in the online series ([`stats`]). Its Play page
+//! shows the message owners post ([`crate::launcher_message`]).
 //!
 //! Signed in, a player challenges another to a test match ([`matches`]) by
 //! a rule set the server's admins keep ([`rules`]). The port proves which
@@ -136,6 +137,7 @@ pub(crate) fn router(
     });
     let mut router = Router::new()
         .route("/api/v1/server", get(server))
+        .route("/api/v1/message", get(launcher_message))
         .route("/api/v1/sign-in", post(start_sign_in))
         .route("/api/v1/sign-in/test", post(api_test_sign_in))
         .route("/api/v1/sign-in/mii", post(mii_sign_in::sign_in_mii))
@@ -479,6 +481,17 @@ async fn server(State(state): State<Arc<ProfilesState>>) -> Response {
         "discord_application": state.config.discord.as_ref().map(|discord| &discord.client_id),
     }))
     .into_response()
+}
+
+/// The message for the launcher's Play page, without a session:
+/// `{"message": null}` when none shows.
+async fn launcher_message(State(state): State<Arc<ProfilesState>>) -> Response {
+    match crate::launcher_message::current(&state.pool).await {
+        Ok(posted) => {
+            Json(json!({ "message": posted.map(|posted| posted.message) })).into_response()
+        }
+        Err(error) => database_error(error),
+    }
 }
 
 /// A new sign-in: the page for the browser and the code it shows. With a
