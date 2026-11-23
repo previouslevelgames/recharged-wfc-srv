@@ -309,7 +309,10 @@ impl Watching {
                 return Some(frame(FRAME_GAME, &(game as u32).to_le_bytes()));
             }
             let live = self.streams.game(self.match_id, game)?;
+            // Subscribed before looking, so that nothing that comes in between
+            // is missed: the game's bytes, or a later game.
             let mut changed = live.changed.subscribe();
+            let mut started = self.streams.started.subscribe();
             let (data, complete) = {
                 let state = live.state.lock().unwrap();
                 (
@@ -321,15 +324,16 @@ impl Watching {
                 self.sent += data.len();
                 return Some(frame(FRAME_DATA, &data));
             }
-            if complete {
+            // Complete, or a later game began: no side sends more of this one
+            // (one that gave up its stream leaves it unfinished).
+            if complete || self.streams.game(self.match_id, game + 1).is_some() {
                 self.ended = true;
                 return Some(frame(FRAME_END, &[]));
             }
-            if tokio::time::timeout(KEEPALIVE, changed.changed())
-                .await
-                .is_err()
-            {
-                return Some(frame(FRAME_KEEPALIVE, &[]));
+            tokio::select! {
+                _ = changed.changed() => {}
+                _ = started.changed() => {}
+                () = tokio::time::sleep(KEEPALIVE) => return Some(frame(FRAME_KEEPALIVE, &[])),
             }
         }
     }

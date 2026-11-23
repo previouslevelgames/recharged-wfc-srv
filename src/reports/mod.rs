@@ -1749,6 +1749,19 @@ mod tests {
                 (streams::FRAME_DATA, game2.to_vec()),
             ]
         );
+
+        // A game whose senders gave up stays unfinished: the next one ends it
+        // for the spectator, at once.
+        streams.feed(match_id, 3, 0, b"third").unwrap();
+        let seen = frames(&mut body, 3).await;
+        assert_eq!(
+            seen,
+            [
+                (streams::FRAME_END, Vec::new()),
+                (streams::FRAME_GAME, 3u32.to_le_bytes().to_vec()),
+                (streams::FRAME_DATA, b"third".to_vec()),
+            ]
+        );
     }
 
     #[sqlx::test]
