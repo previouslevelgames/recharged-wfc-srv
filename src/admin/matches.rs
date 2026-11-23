@@ -262,13 +262,19 @@ async fn listed(
 }
 
 /// The match `match_id`, if there is one.
-pub async fn detail(pool: &PgPool, match_id: i64) -> Result<Option<Detail>, sqlx::Error> {
+/// The match `match_id`; `live` tells whether its games stream.
+pub async fn detail(
+    pool: &PgPool,
+    match_id: i64,
+    live: impl Fn(i64) -> bool,
+) -> Result<Option<Detail>, sqlx::Error> {
     reports::settle_idle(pool).await?;
     let mut tx = snapshot(pool).await?;
-    let Some(summary) = listed(&mut tx, Some(match_id), 1).await?.pop() else {
+    let Some(mut summary) = listed(&mut tx, Some(match_id), 1).await?.pop() else {
         tx.commit().await?;
         return Ok(None);
     };
+    summary.live = live(match_id);
     let reporters = reports::sides(&mut tx, &[match_id])
         .await?
         .remove(&match_id)
@@ -510,7 +516,10 @@ pub(crate) mod tests {
         games.send(&Games::game(away.clone(), 1, 1, 3)).await;
         games.send(&Games::game(home.clone(), 2, 1, 0)).await;
 
-        let detail = detail(&games.pool, match_id).await.unwrap().unwrap();
+        let detail = detail(&games.pool, match_id, |_| false)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(detail.summary.state, "in_progress");
         let statuses: Vec<_> = detail
             .games
@@ -556,7 +565,7 @@ pub(crate) mod tests {
         assert_eq!(body["game"]["number"], 2);
 
         assert!(
-            super::detail(&games.pool, match_id + 1)
+            super::detail(&games.pool, match_id + 1, |_| false)
                 .await
                 .unwrap()
                 .is_none()
@@ -576,7 +585,10 @@ pub(crate) mod tests {
         gave_up["cause"] = json!("forfeit");
         games.send(&gave_up).await;
 
-        let detail = detail(&games.pool, match_id).await.unwrap().unwrap();
+        let detail = detail(&games.pool, match_id, |_| false)
+            .await
+            .unwrap()
+            .unwrap();
         let summary = &detail.summary;
         assert_eq!(
             (
@@ -636,7 +648,10 @@ pub(crate) mod tests {
             .map(|listed| (listed.id, listed.relayed))
             .collect();
         assert_eq!(listed, [(relayed, true), (direct, false)]);
-        let detail = detail(&games.pool, relayed).await.unwrap().unwrap();
+        let detail = detail(&games.pool, relayed, |_| false)
+            .await
+            .unwrap()
+            .unwrap();
         let [relaying] = &detail.relayed[..] else {
             panic!("one: {:?}", detail.relayed);
         };
@@ -648,7 +663,7 @@ pub(crate) mod tests {
             ("00000009", Some("Sam"))
         );
         assert!(
-            super::detail(&games.pool, direct)
+            super::detail(&games.pool, direct, |_| false)
                 .await
                 .unwrap()
                 .unwrap()
@@ -680,7 +695,7 @@ pub(crate) mod tests {
             .send(&games.report(games.anosch, 3, "home", "start"))
             .await;
         assert!(
-            detail(&pool, match_id)
+            detail(&pool, match_id, |_| false)
                 .await
                 .unwrap()
                 .unwrap()
@@ -697,11 +712,16 @@ pub(crate) mod tests {
             .await
             .unwrap();
 
-        let shown = detail(&pool, match_id).await.unwrap().unwrap();
+        let shown = detail(&pool, match_id, |_| false).await.unwrap().unwrap();
         assert_eq!(shown.desyncs.len(), 1, "its own, not the other match's");
         assert_eq!(shown.dossiers_kept_days, dossiers::KEPT_DAYS);
         assert_eq!(
-            detail(&pool, other).await.unwrap().unwrap().desyncs.len(),
+            detail(&pool, other, |_| false)
+                .await
+                .unwrap()
+                .unwrap()
+                .desyncs
+                .len(),
             1
         );
     }

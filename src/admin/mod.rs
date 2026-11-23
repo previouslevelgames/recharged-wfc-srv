@@ -603,8 +603,14 @@ async fn api_match(
     headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> Response {
+    let streams = state.streams.clone();
+    let live = move |match_id| {
+        streams
+            .as_ref()
+            .is_some_and(|streams| streams.live(match_id))
+    };
     state
-        .page_data(&jar, &headers, matches::detail(&state.pool, id))
+        .page_data(&jar, &headers, matches::detail(&state.pool, id, live))
         .await
 }
 

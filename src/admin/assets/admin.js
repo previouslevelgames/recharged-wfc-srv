@@ -1528,6 +1528,7 @@ function renderMatch(data, now) {
         sides,
         'No sides.',
       ),
+      watchButton(match),
     ),
     card(
       'Connection',
