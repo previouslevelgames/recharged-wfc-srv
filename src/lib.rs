@@ -24,6 +24,7 @@ mod relay_store;
 pub mod replays;
 mod reports;
 mod serverbrowser;
+mod streams;
 mod switches;
 
 pub const REVISION: &str = env!("BUILD_REVISION");
@@ -53,6 +54,8 @@ pub struct App {
     pairings: Arc<pairing::Pairings>,
     /// Replays of ranked games with a top player, when kept.
     replays: Option<Arc<replays::Replays>>,
+    /// The games streaming as they are played, with replays.
+    streams: Option<Arc<streams::Streams>>,
 }
 
 impl App {
@@ -69,6 +72,7 @@ impl App {
             activity,
             pairings: Arc::default(),
             replays: None,
+            streams: None,
             pool,
             tickets,
         }
@@ -76,6 +80,7 @@ impl App {
 
     /// Keeps replays of ranked games with a top player, with `config`.
     pub fn with_replays(mut self, config: Option<replays::Config>) -> Self {
+        self.streams = config.as_ref().map(|_| Arc::default());
         self.replays = config.map(|config| Arc::new(replays::Replays::new(config)));
         self
     }
@@ -102,6 +107,7 @@ impl App {
                 self.pool.clone(),
                 self.gpcm.clone(),
                 self.replays.clone(),
+                self.streams.clone(),
             ))
             .merge(online::router(self.pool.clone(), self.gpcm.clone()));
         // The Maintenance page switches test sign-in and posts the launcher's
@@ -116,6 +122,7 @@ impl App {
                 self.pairings.clone(),
                 config,
                 test_sign_in,
+                self.streams.clone(),
             ));
         }
         if let Some(config) = profiles {

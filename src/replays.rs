@@ -238,6 +238,45 @@ impl Replays {
         Ok(true)
     }
 
+    /// Whether the games of the series a start report opened stream as they
+    /// are played: the same rules as their replays', at its start.
+    pub async fn streamed(
+        &self,
+        pool: &PgPool,
+        match_id: i64,
+        ranked: bool,
+    ) -> Result<bool, sqlx::Error> {
+        Ok(match self.config.games {
+            Games::All => true,
+            Games::Ranked => ranked,
+            Games::Top(_) => ranked && self.places(pool, match_id).await? != (None, None),
+        })
+    }
+
+    /// The match of `profile_id`'s `series`, when its games stream.
+    pub async fn streamed_match(
+        &self,
+        pool: &PgPool,
+        profile_id: i32,
+        series: i64,
+    ) -> Result<Option<i64>, sqlx::Error> {
+        let Some(row) = sqlx::query!(
+            "SELECT s.match_id, m.mode FROM online_match_sides s JOIN online_matches m USING (match_id)
+             WHERE s.profile_id = $1 AND s.series = $2",
+            profile_id,
+            series,
+        )
+        .fetch_optional(pool)
+        .await?
+        else {
+            return Ok(None);
+        };
+        let streamed = self
+            .streamed(pool, row.match_id, row.mode == "ranked")
+            .await?;
+        Ok(streamed.then_some(row.match_id))
+    }
+
     /// Each side's player's place among the top players, if they are one.
     async fn places(
         &self,

@@ -126,6 +126,11 @@ good. Map the path: without it the files live inside the container, and Docker
 deletes them whenever Unraid recreates it, e.g. on an update. The server's log
 says at the start where it keeps them, or why not (`Replays off: ...`).
 
+The games of those series also stream to the server as they are played: the
+dashboard's **Matches** page then has a **Watch** button, whose file a Recharged
+set to this server opens to watch the match live ([reports.md](reports.md#live-streams)).
+The streams stay in memory only.
+
 ## Connecting the game
 
 The port (Recharged's `online` branch) sends every Nintendo WFC name to one

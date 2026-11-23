@@ -9,6 +9,9 @@ publish = false
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "tracing", "query", "form"] }
 axum-extra = { version = "0.12", default-features = false, features = ["cookie"] }
 base64 = "0.23.1"
+# Live streams: a game's request body read as it comes, a spectator's answer
+# written as it goes.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 # Signs NAS login tokens.
 hmac = "0.13"
 maxminddb = "0.32"

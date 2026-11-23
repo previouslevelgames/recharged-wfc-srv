@@ -369,6 +369,59 @@ renamed once it is the kept copy, so a reader of the folder never sees half of o
 A server without replays answers 404: the game sends none for the rest of the
 run.
 
+## Live streams
+
+While a series whose replays the server keeps is played, the games also send it
+their steps as each becomes final, so admins can watch the match about half a
+second behind the players. The start report's answer says it: `{"match_id": 12,
+"stream": true}`, for a game whose reports carry `"replays": true`, when `REPLAYS`
+takes the series as it begins (`all`; a ranked series for `ranked`; a ranked one
+with a top player for `top`). It holds for every game of the series. Older games
+are never asked.
+
+Each game of the series is one request that lasts the game:
+
+`POST /api/v1/wfc/streams?profile_id=1000000000&series=1792000000&game=1&offset=0`,
+on the same port, a chunked body of the game's replay stream (the bytes of the
+replay file's stream, `src/platform/match_replay_stream.h` in Recharged) from
+byte `offset` on, as the steps become final; the body ends when the game's
+recording does. Only from the profile's login address, like replays. Both sides
+send: the two streams are the same but for one byte of the setup (which machine
+was local), so the server keeps one per game and takes each byte from whichever
+side sends it first. The game sends from a thread of its own, at the lowest
+priority, and gives up rather than let the match wait; its replay still comes
+after the game.
+
+| Status | Body | |
+|---|---|---|
+| 200 | `{"match_id": 12, "bytes": 81234}` | the game's stream is complete |
+| 400 | | the body broke off: what came stays, the game may go on from `have` |
+| 403 | `{"error": "profile not logged in from this address"}` | |
+| 409 | `{"error": "...", "have": 4096}` | `offset` is past what the server has: send from `have` |
+| 413 | `{"error": "the stream is too big"}` | over 8 MiB, or the server holds 256 MiB of streams |
+| 422 | `{"error": "the server takes no stream of this series"}` | |
+
+The server holds the streams in memory only, 30 minutes after their last byte;
+the replays it keeps are the files the games send after each game.
+
+### Watching
+
+The Matches page of `/admin` shows a **Watch** button while a match's games
+stream. It downloads `watch-match-<match>.msc`, a ticket: a replay file of
+version 2 whose header is `{"match": 12, "ticket": "...", "release": "R4QE"}`.
+Recharged opens it like a replay (open it with Recharged, or drop it on its
+launcher) and plays the match from
+
+`GET /api/v1/wfc/streams/<match>?ticket=...`
+
+of the server its `[online] server` names. The ticket is good for four hours, for
+that match, on the server that made it (its key is new at each start). The body
+is a stream of frames: a kind byte, a little-endian u32 length and that many
+bytes. `1` a game starts (its number, u32 LE) and its stream follows from its
+first byte; `2` the game's next bytes; `3` its stream is complete; `0` nothing new
+(every 5 seconds). A spectator who comes in a game gets that game from its start,
+then follows the series' games, until the match is no longer in progress.
+
 ## Trust
 
 As for gamestats2's puts ([gamestats2.md](gamestats2.md#trust)), a report

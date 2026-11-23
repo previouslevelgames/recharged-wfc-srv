@@ -1305,6 +1305,7 @@ dependencies = [
  "axum",
  "axum-extra",
  "base64 0.23.1",
+ "futures-util",
  "hmac",
  "maxminddb",
  "md-5",

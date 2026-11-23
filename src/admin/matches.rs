@@ -72,6 +72,9 @@ pub struct Listed {
     /// Whether the NAT relay carried a reporting side's game while the match
     /// ran.
     relayed: bool,
+    /// Whether its games stream as they are played (src/streams.rs): the
+    /// Watch button is offered.
+    live: bool,
 }
 
 #[derive(Serialize)]
@@ -160,15 +163,19 @@ struct Event {
     body: String,
 }
 
-pub async fn read(pool: &PgPool) -> Result<Matches, sqlx::Error> {
+/// The list; `live` tells the matches whose games stream.
+pub async fn read(pool: &PgPool, live: impl Fn(i64) -> bool) -> Result<Matches, sqlx::Error> {
     reports::settle_idle(pool).await?;
     let mut tx = snapshot(pool).await?;
-    let matches = Matches {
+    let mut matches = Matches {
         totals: totals(&mut tx).await?,
         matches: listed(&mut tx, None, SHOWN).await?,
         relay_kept_days: relay_store::KEPT_DAYS,
     };
     tx.commit().await?;
+    for listed in &mut matches.matches {
+        listed.live = live(listed.id);
+    }
     Ok(matches)
 }
 
@@ -249,6 +256,7 @@ async fn listed(
             last_report_at: row.last_report_at,
             ended_at: row.ended_at,
             relayed: row.relayed,
+            live: false,
         })
         .collect())
 }
@@ -417,7 +425,7 @@ pub(crate) mod tests {
 
         /// Sends `report` as its game does. The match it went to.
         pub async fn send(&self, report: &Value) -> i64 {
-            let app = reports::router(self.pool.clone(), self.gpcm.clone(), None).layer(
+            let app = reports::router(self.pool.clone(), self.gpcm.clone(), None, None).layer(
                 MockConnectInfo(std::net::SocketAddr::from(([10, 0, 0, 1], 5000))),
             );
             let request = Request::post("/api/v1/wfc/reports")
@@ -460,7 +468,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
 
-        let page = read(&games.pool).await.unwrap();
+        let page = read(&games.pool, |_| false).await.unwrap();
         let listed: Vec<_> = page
             .matches
             .iter()
@@ -621,7 +629,7 @@ pub(crate) mod tests {
         let start = OffsetDateTime::now_utc() - time::Duration::minutes(5);
         write(&games.pool, vec![opened(9, [None, Some(games.sam)], start)]).await;
 
-        let page = read(&games.pool).await.unwrap();
+        let page = read(&games.pool, |_| false).await.unwrap();
         let listed: Vec<_> = page
             .matches
             .iter()
@@ -712,7 +720,7 @@ pub(crate) mod tests {
         .execute(&games.pool)
         .await
         .unwrap();
-        let page = read(&games.pool).await.unwrap();
+        let page = read(&games.pool, |_| false).await.unwrap();
         assert_eq!(page.matches[0].state, "abandoned");
         assert!(page.matches[0].ended_at.is_some());
     }

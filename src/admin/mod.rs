@@ -65,6 +65,7 @@ use crate::{
     master::Master,
     pairing::Pairings,
     profiles::rules::{self, Rules, SaveError},
+    streams::Streams,
 };
 pub use config::{Config, GoogleEndpoints, VARIABLES};
 use google::{Account, Login, SignInError};
@@ -135,8 +136,13 @@ struct AdminState {
     /// [`LOGIN_PAGE`] and [`DASHBOARD_PAGE`] with the server's label.
     login_page: String,
     dashboard_page: String,
+    /// The games streaming as they are played, for the Watch button; none
+    /// when the server keeps no replays.
+    streams: Option<Arc<Streams>>,
 }
 
+// The server's services, each its own argument as lib.rs hands them out.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn router(
     pool: PgPool,
     gpcm: Arc<Gpcm>,
@@ -145,6 +151,7 @@ pub(crate) fn router(
     pairings: Arc<Pairings>,
     config: Config,
     test_sign_in: Option<bool>,
+    streams: Option<Arc<Streams>>,
 ) -> Router {
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
@@ -167,6 +174,7 @@ pub(crate) fn router(
         started_at: OffsetDateTime::now_utc(),
         login_page,
         dashboard_page,
+        streams,
     });
     let mut router = Router::new();
     for path in PAGES {
@@ -187,6 +195,7 @@ pub(crate) fn router(
         .route("/admin/api/matchmaking/profiles/{id}", get(api_matchup))
         .route("/admin/api/matches", get(api_matches))
         .route("/admin/api/matches/{id}", get(api_match))
+        .route("/admin/api/matches/{id}/watch", get(watch_ticket))
         .route("/admin/api/monitoring", get(api_monitoring))
         .route("/admin/api/database", get(api_database))
         .route("/admin/api/leaderboards", get(api_leaderboards))
@@ -534,9 +543,56 @@ async fn api_matches(
     jar: CookieJar,
     headers: HeaderMap,
 ) -> Response {
+    let streams = state.streams.clone();
+    let live = move |match_id| {
+        streams
+            .as_ref()
+            .is_some_and(|streams| streams.live(match_id))
+    };
     state
-        .page_data(&jar, &headers, matches::read(&state.pool))
+        .page_data(&jar, &headers, matches::read(&state.pool, live))
         .await
+}
+
+/// A ticket to watch a match as it is played, as a file Recharged opens like
+/// a replay (src/streams.rs): only for a signed-in admin, while the match's
+/// games stream.
+async fn watch_ticket(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    Path(id): Path<i64>,
+) -> Response {
+    let Some(viewer) = state.signed_in(&jar) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let Some(streams) = state.streams.as_ref().filter(|streams| streams.live(id)) else {
+        return (StatusCode::NOT_FOUND, "No game of this match streams.").into_response();
+    };
+    let release =
+        match sqlx::query_scalar!("SELECT release FROM online_matches WHERE match_id = $1", id)
+            .fetch_optional(&state.pool)
+            .await
+        {
+            Ok(Some(release)) => release,
+            Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+            Err(error) => {
+                warn!(target: "admin", %error, "database error");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        };
+    info!(target: "admin", admin = %viewer.email, match_id = id, "watch ticket");
+    let ticket = streams.ticket(id, crate::streams::now());
+    (
+        [
+            (header::CONTENT_TYPE, "application/octet-stream".to_owned()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!(r#"attachment; filename="watch-match-{id}.msc""#),
+            ),
+        ],
+        crate::streams::ticket_file(id, &ticket, &release),
+    )
+        .into_response()
 }
 
 /// A match's detail; `null` for none.

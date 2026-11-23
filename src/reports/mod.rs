@@ -20,9 +20,9 @@ use std::{
 
 use axum::{
     Json, Router,
-    body::Bytes,
+    body::{Body, Bytes},
     extract::{
-        ConnectInfo, DefaultBodyLimit, Query, Request, State,
+        ConnectInfo, DefaultBodyLimit, Path, Query, Request, State,
         rejection::{BytesRejection, QueryRejection},
     },
     http::StatusCode,
@@ -39,6 +39,7 @@ use tracing::{debug, info, trace, warn};
 use crate::{
     gpcm::Gpcm,
     replays::{self, Header, KeepError, Kept, Replays},
+    streams::{self, Refused, Streams},
 };
 use report::{Event, Report};
 pub(crate) use store::{left, settle_idle, sides};
@@ -55,6 +56,8 @@ struct ReportsState {
     limits: Arc<errors::Limits>,
     /// Replays of ranked games with a top player, when kept.
     replays: Option<Arc<Replays>>,
+    /// The games streaming as they are played, with replays.
+    streams: Option<Arc<Streams>>,
 }
 
 /// `POST /api/v1/wfc/reports`, `POST /api/v1/wfc/errors`,
@@ -62,12 +65,18 @@ struct ReportsState {
 /// `replays`, `POST /api/v1/wfc/replays`, for any host name: the game sends
 /// them to its server's address. They need the caller's address: serve them with
 /// `into_make_service_with_connect_info::<SocketAddr>()`.
-pub fn router(pool: PgPool, gpcm: Arc<Gpcm>, replays: Option<Arc<Replays>>) -> Router {
+pub fn router(
+    pool: PgPool,
+    gpcm: Arc<Gpcm>,
+    replays: Option<Arc<Replays>>,
+    streams: Option<Arc<Streams>>,
+) -> Router {
     let state = ReportsState {
         pool,
         gpcm,
         limits: Arc::default(),
         replays,
+        streams,
     };
     // A dossier is bigger than a report: its body is read only from where
     // some profile is logged in.
@@ -89,6 +98,17 @@ pub fn router(pool: PgPool, gpcm: Arc<Gpcm>, replays: Option<Arc<Replays>>) -> R
                 .layer(DefaultBodyLimit::max(replays::MAX_BYTES))
                 .route_layer(middleware::from_fn_with_state(state.clone(), from_a_login)),
         );
+    }
+    if state.streams.is_some() {
+        // A game's stream is read as it comes (streams::MAX_GAME_BYTES at
+        // most); a spectator needs a ticket, not a login.
+        router = router
+            .merge(
+                Router::new()
+                    .route("/api/v1/wfc/streams", post(receive_stream))
+                    .route_layer(middleware::from_fn_with_state(state.clone(), from_a_login)),
+            )
+            .route("/api/v1/wfc/streams/{match_id}", get(watch_stream));
     }
     router.with_state(state)
 }
@@ -170,6 +190,9 @@ async fn receive(
             let mut answer = json!({ "match_id": match_id });
             if state.replay_wanted(&report, match_id).await {
                 answer["replay"] = json!(true);
+            }
+            if state.stream_wanted(&report, match_id).await {
+                answer["stream"] = json!(true);
             }
             Json(answer).into_response()
         }
@@ -374,6 +397,137 @@ async fn receive_replay(
     }
 }
 
+/// Which game a stream is of, and where its bytes start.
+#[derive(Deserialize)]
+struct StreamQuery {
+    profile_id: i32,
+    series: i64,
+    game: i32,
+    #[serde(default)]
+    offset: u64,
+}
+
+/// A game's live stream (docs/reports.md, "Live streams"): the bytes of its
+/// replay stream as the game's steps become final, in one request that lasts
+/// the game, its body ending when the game's recording does. A request that
+/// starts past what the server has is answered 409 with the bytes it has.
+async fn receive_stream(
+    State(state): State<ReportsState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    query: Result<Query<StreamQuery>, QueryRejection>,
+    body: Body,
+) -> Response {
+    let Ok(Query(StreamQuery {
+        profile_id,
+        series,
+        game,
+        offset,
+    })) = query
+    else {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "profile_id, series and game: the stream's game",
+        );
+    };
+    let (Some(replays), Some(streams)) = (&state.replays, &state.streams) else {
+        return json_error(StatusCode::NOT_FOUND, "no streams here");
+    };
+    if !(1..=9).contains(&game) {
+        return json_error(StatusCode::BAD_REQUEST, "game: 1 to 9");
+    }
+    if !logged_in_at(&state.gpcm, profile_id, peer.ip()) {
+        warn!(target: "streams", profile_id, %peer, "stream from elsewhere");
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "profile not logged in from this address",
+        );
+    }
+    let match_id = match replays
+        .streamed_match(&state.pool, profile_id, series)
+        .await
+    {
+        Ok(Some(match_id)) => match_id,
+        Ok(None) => {
+            debug!(target: "streams", profile_id, series, "stream of no streamed series");
+            return json_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "the server takes no stream of this series",
+            );
+        }
+        Err(error) => {
+            warn!(target: "streams", %error, "database error");
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "the server's database failed",
+            );
+        }
+    };
+    debug!(target: "streams", match_id, game, profile_id, offset, "stream begins");
+    let mut at = offset as usize;
+    let mut chunks = body.into_data_stream();
+    while let Some(chunk) = futures_util::StreamExt::next(&mut chunks).await {
+        let Ok(chunk) = chunk else {
+            // The game left without ending its stream: what came stays.
+            debug!(target: "streams", match_id, game, profile_id, bytes = at, "stream broke off");
+            return StatusCode::BAD_REQUEST.into_response();
+        };
+        match streams.feed(match_id, game, at, &chunk) {
+            Ok(()) => at += chunk.len(),
+            Err(Refused::Gap(have)) => {
+                return (
+                    StatusCode::CONFLICT,
+                    Json(json!({ "error": "the stream starts past what the server has", "have": have })),
+                )
+                    .into_response();
+            }
+            Err(Refused::TooBig) => {
+                warn!(target: "streams", match_id, game, profile_id, "stream too big");
+                return json_error(StatusCode::PAYLOAD_TOO_LARGE, "the stream is too big");
+            }
+        }
+    }
+    streams.end(match_id, game);
+    info!(target: "streams", match_id, game, profile_id, bytes = at, "stream complete");
+    Json(json!({ "match_id": match_id, "bytes": at })).into_response()
+}
+
+/// Who watches a match: the ticket the Matches page of `/admin` handed out.
+#[derive(Deserialize)]
+struct WatchQuery {
+    ticket: String,
+}
+
+/// A match as it is played, for a spectator (docs/reports.md, "Live
+/// streams"): frames of its games' streams, one game after another.
+async fn watch_stream(
+    State(state): State<ReportsState>,
+    Path(match_id): Path<i64>,
+    query: Result<Query<WatchQuery>, QueryRejection>,
+) -> Response {
+    let Some(streams) = &state.streams else {
+        return json_error(StatusCode::NOT_FOUND, "no streams here");
+    };
+    let Ok(Query(WatchQuery { ticket })) = query else {
+        return json_error(StatusCode::BAD_REQUEST, "ticket: from the Matches page");
+    };
+    if !streams.ticket_valid(&ticket, match_id, streams::now()) {
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "the ticket does not let you watch this match",
+        );
+    }
+    info!(target: "streams", match_id, "spectator joins");
+    let frames = streams.clone().watch(match_id, state.pool.clone());
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "application/octet-stream"),
+            (axum::http::header::CACHE_CONTROL, "no-store"),
+        ],
+        Body::from_stream(frames),
+    )
+        .into_response()
+}
+
 #[derive(Deserialize)]
 struct ForfeitQuery {
     profile_id: i32,
@@ -445,6 +599,29 @@ impl ReportsState {
         }
     }
 
+    /// Whether the series a start report opens streams its games as they are
+    /// played: only from a game that can, while replays are kept
+    /// ([`Replays::streamed`]). A database error streams none.
+    async fn stream_wanted(&self, report: &Report, match_id: i64) -> bool {
+        let (Some(replays), Some(_), Event::Start) = (&self.replays, &self.streams, &report.event)
+        else {
+            return false;
+        };
+        if !report.replays {
+            return false;
+        }
+        match replays
+            .streamed(&self.pool, match_id, report.mode == "ranked")
+            .await
+        {
+            Ok(streamed) => streamed,
+            Err(error) => {
+                warn!(target: "streams", %error, "database error");
+                false
+            }
+        }
+    }
+
     /// Keeps a refusal for the Monitoring page; the log has it anyway.
     async fn count_refusal(&self, profile_id: i32, kind: &str, problem: &str, peer: SocketAddr) {
         let address = peer.ip().to_string();
@@ -504,6 +681,7 @@ mod tests {
         pool: PgPool,
         gpcm: Arc<Gpcm>,
         replays: Option<Arc<Replays>>,
+        streams: Option<Arc<Streams>>,
     }
 
     impl Server {
@@ -513,6 +691,7 @@ mod tests {
                 pool,
                 gpcm: Arc::new(gpcm),
                 replays: None,
+                streams: None,
             }
         }
 
@@ -540,8 +719,13 @@ mod tests {
             address: [u8; 4],
             body: impl Into<Body>,
         ) -> (StatusCode, Value) {
-            let app = router(self.pool.clone(), self.gpcm.clone(), self.replays.clone())
-                .layer(MockConnectInfo(SocketAddr::from((address, 51000))));
+            let app = router(
+                self.pool.clone(),
+                self.gpcm.clone(),
+                self.replays.clone(),
+                self.streams.clone(),
+            )
+            .layer(MockConnectInfo(SocketAddr::from((address, 51000))));
             let request = Request::post(path)
                 .header(header::HOST, "2.31.48.136")
                 .header(header::CONTENT_TYPE, "application/json")
@@ -561,8 +745,13 @@ mod tests {
 
         /// GETs `path` from `address`, as the game asks.
         async fn get(&self, path: &str, address: [u8; 4]) -> (StatusCode, Value) {
-            let app = router(self.pool.clone(), self.gpcm.clone(), self.replays.clone())
-                .layer(MockConnectInfo(SocketAddr::from((address, 51000))));
+            let app = router(
+                self.pool.clone(),
+                self.gpcm.clone(),
+                self.replays.clone(),
+                self.streams.clone(),
+            )
+            .layer(MockConnectInfo(SocketAddr::from((address, 51000))));
             let request = Request::get(path)
                 .header(header::HOST, "2.31.48.136")
                 .body(Body::empty())
@@ -581,6 +770,7 @@ mod tests {
                 games,
                 dir: dir.to_owned(),
             })));
+            self.streams = Some(Arc::default());
             self
         }
 
@@ -596,6 +786,40 @@ mod tests {
             let path =
                 format!("/api/v1/wfc/replays?profile_id={profile_id}&series={series}&game={game}");
             self.post_to(&path, address, replay).await
+        }
+
+        /// Sends `bytes` as `profile_id`'s stream of `game` of `series` from
+        /// `offset` on, ending it.
+        async fn stream(
+            &self,
+            address: [u8; 4],
+            profile_id: i32,
+            series: i64,
+            game: i32,
+            offset: usize,
+            bytes: &[u8],
+        ) -> (StatusCode, Value) {
+            let path = format!(
+                "/api/v1/wfc/streams?profile_id={profile_id}&series={series}&game={game}&offset={offset}"
+            );
+            self.post_to(&path, address, bytes.to_vec()).await
+        }
+
+        /// A spectator's stream of `match_id` with `ticket`: the status, and
+        /// the body to read frames from.
+        async fn watch(&self, match_id: i64, ticket: &str) -> (StatusCode, Body) {
+            let app = router(
+                self.pool.clone(),
+                self.gpcm.clone(),
+                self.replays.clone(),
+                self.streams.clone(),
+            )
+            .layer(MockConnectInfo(SocketAddr::from(([192, 0, 2, 1], 51000))));
+            let request = Request::get(format!("/api/v1/wfc/streams/{match_id}?ticket={ticket}"))
+                .body(Body::empty())
+                .unwrap();
+            let response = app.oneshot(request).await.unwrap();
+            (response.status(), response.into_body())
         }
 
         /// The latest forfeit against `profile_id`, as its game asks.
@@ -1429,6 +1653,169 @@ mod tests {
         assert_eq!(rows, [3]);
     }
 
+    /// The frames a spectator reads next, until `kinds` of them came, each as
+    /// its kind and payload; keepalives are skipped.
+    async fn frames(body: &mut Body, mut wanted: usize) -> Vec<(u8, Vec<u8>)> {
+        let mut read = Vec::new();
+        let mut frames = Vec::new();
+        let mut chunks = std::mem::take(body).into_data_stream();
+        while wanted > 0 {
+            let chunk = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                futures_util::StreamExt::next(&mut chunks),
+            )
+            .await
+            .expect("a frame in time")
+            .expect("the stream goes on")
+            .unwrap();
+            read.extend_from_slice(&chunk);
+            while read.len() >= 5 {
+                let size = u32::from_le_bytes(read[1..5].try_into().unwrap()) as usize;
+                if read.len() < 5 + size {
+                    break;
+                }
+                let frame: Vec<u8> = read.drain(..5 + size).collect();
+                if frame[0] != streams::FRAME_KEEPALIVE {
+                    frames.push((frame[0], frame[5..].to_vec()));
+                    wanted -= 1;
+                }
+            }
+        }
+        *body = Body::from_stream(chunks);
+        frames
+    }
+
+    #[sqlx::test]
+    async fn both_games_stream_a_series_and_a_spectator_follows_it(pool: PgPool) {
+        let folder = Folder::new("replays");
+        let server = Server::new(pool.clone()).with_replays(Games::All, &folder.0);
+        let anosch = server.log_in(1, "Anosch", ANOSCH_HOME).await;
+        let sam = server.log_in(2, "Sam", SAM_HOME).await;
+
+        // A game that cannot stream is not asked to; one that can is.
+        let mut home = start();
+        home["profile_id"] = json!(anosch);
+        let answer = server.report(ANOSCH_HOME, &home).await.1;
+        assert_eq!(answer.get("stream"), None);
+        let match_id = answer["match_id"].as_i64().unwrap();
+        home["replays"] = json!(true);
+        let mut away = as_sam(sam);
+        away["replays"] = json!(true);
+        let answer = server.report(SAM_HOME, &away).await.1;
+        assert_eq!(answer["match_id"], json!(match_id));
+        assert_eq!(answer["stream"], json!(true));
+
+        // Both sides send game 1, each from where it is; the server keeps one
+        // copy.
+        let game1: Vec<u8> = (0..200u8).collect();
+        let streams = server.streams.clone().unwrap();
+        streams.feed(match_id, 1, 0, &game1[..50]).unwrap();
+        let (status, answer) = server
+            .stream(SAM_HOME, sam, 1_792_000_002, 1, 120, &game1[120..])
+            .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(answer["have"], json!(50));
+        assert_eq!(
+            server
+                .stream(SAM_HOME, sam, 1_792_000_002, 1, 30, &game1[30..150])
+                .await
+                .0,
+            StatusCode::OK
+        );
+
+        // A spectator comes in game 1: all of it so far.
+        let ticket = streams.ticket(match_id, streams::now());
+        let (status, mut body) = server.watch(match_id, &ticket).await;
+        assert_eq!(status, StatusCode::OK);
+        let seen = frames(&mut body, 2).await;
+        assert_eq!(seen[0], (streams::FRAME_GAME, 1u32.to_le_bytes().to_vec()));
+        assert_eq!(seen[1], (streams::FRAME_DATA, game1[..150].to_vec()));
+
+        // The rest as it comes, then the next game from its start.
+        let (status, answer) = server
+            .stream(ANOSCH_HOME, anosch, 1_792_000_000, 1, 0, &game1)
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(answer["bytes"], json!(200));
+        let game2 = [7u8; 40];
+        streams.feed(match_id, 2, 0, &game2).unwrap();
+        let seen = frames(&mut body, 4).await;
+        assert_eq!(
+            seen,
+            [
+                (streams::FRAME_DATA, game1[150..].to_vec()),
+                (streams::FRAME_END, Vec::new()),
+                (streams::FRAME_GAME, 2u32.to_le_bytes().to_vec()),
+                (streams::FRAME_DATA, game2.to_vec()),
+            ]
+        );
+    }
+
+    #[sqlx::test]
+    async fn streams_take_only_logged_in_games_of_streamed_series_and_spectators_with_a_ticket(
+        pool: PgPool,
+    ) {
+        let folder = Folder::new("replays");
+        let server = Server::new(pool.clone()).with_replays(Games::Ranked, &folder.0);
+        let anosch = server.log_in(1, "Anosch", ANOSCH_HOME).await;
+        let mut friends = start();
+        friends["profile_id"] = json!(anosch);
+        friends["mode"] = json!("friends");
+        friends["replays"] = json!(true);
+        let answer = server.report(ANOSCH_HOME, &friends).await.1;
+        assert_eq!(answer.get("stream"), None);
+        let match_id = answer["match_id"].as_i64().unwrap();
+
+        // A friends' series streams nothing with `ranked`.
+        assert_eq!(
+            server
+                .stream(ANOSCH_HOME, anosch, 1_792_000_000, 1, 0, b"abc")
+                .await
+                .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        // Not from elsewhere, nor a game 0.
+        assert_eq!(
+            server
+                .stream(SAM_HOME, anosch, 1_792_000_000, 1, 0, b"abc")
+                .await
+                .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            server
+                .stream(ANOSCH_HOME, anosch, 1_792_000_000, 0, 0, b"abc")
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+
+        // A spectator needs the match's ticket of this server.
+        let streams = server.streams.clone().unwrap();
+        let other = streams.ticket(match_id + 1, streams::now());
+        assert_eq!(
+            server.watch(match_id, &other).await.0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(server.watch(match_id, "00").await.0, StatusCode::FORBIDDEN);
+        let foreign = Streams::default().ticket(match_id, streams::now());
+        assert_eq!(
+            server.watch(match_id, &foreign).await.0,
+            StatusCode::FORBIDDEN
+        );
+
+        // A server without replays streams nothing.
+        let app = router(pool.clone(), server.gpcm.clone(), None, None)
+            .layer(MockConnectInfo(SocketAddr::from((ANOSCH_HOME, 51000))));
+        let request = Request::post(format!(
+            "/api/v1/wfc/streams?profile_id={anosch}&series=1792000000&game=1"
+        ))
+        .body(Body::from("abc"))
+        .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
     #[sqlx::test]
     async fn a_server_without_replays_asks_for_none_and_takes_none(pool: PgPool) {
         let server = Server::new(pool.clone());
@@ -1443,7 +1830,7 @@ mod tests {
             .1;
         assert_eq!(answer.get("replay"), None);
 
-        let app = router(pool.clone(), server.gpcm.clone(), None)
+        let app = router(pool.clone(), server.gpcm.clone(), None, None)
             .layer(MockConnectInfo(SocketAddr::from((ANOSCH_HOME, 51000))));
         let request = Request::post(format!(
             "/api/v1/wfc/replays?profile_id={anosch}&series=1792000000&game=1"
