@@ -1007,3 +1007,605 @@ impl Client {
         reply
     }
 }
+
+/// How replays weigh on a relayed match (docs/reports.md, "Replays"): its
+/// packets go back and forth through the relay at 60 a second, first alone,
+/// then while games report their games and send their replays, 10 a second
+/// and then as fast as 8 games at once can, far above the real rate (about a
+/// hundred a day). The server runs on a runtime of its own, as in its
+/// container; the games that send replays on another, the match on a third.
+/// Prints each phase's round trips and the replays' times. Makes a database
+/// of its own next to DATABASE_URL's and drops it after:
+/// `cargo test --release --test login -- --ignored --nocapture replays`.
+#[test]
+#[ignore = "a load check that takes a minute"]
+fn replays_add_no_lag_to_a_relayed_match() {
+    lag::run();
+}
+
+mod lag {
+    use std::{
+        collections::HashMap,
+        net::SocketAddr,
+        str::FromStr,
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+        },
+        time::{Duration, Instant},
+    };
+
+    use recharged_wfc_srv::{
+        App,
+        relay::{self, Mode},
+        replays,
+    };
+    use sqlx::{
+        Connection, Executor, PgConnection,
+        postgres::{PgConnectOptions, PgPoolOptions},
+    };
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::{TcpListener, TcpStream, UdpSocket},
+        runtime::Runtime,
+    };
+
+    use super::{Player, Server};
+
+    #[derive(Clone, Copy)]
+    enum Load {
+        None,
+        /// Replays a second.
+        Rate(u32),
+        /// Games sending one after another.
+        Games(usize),
+    }
+
+    const PHASES: [(&str, u64, Load); 4] = [
+        ("alone", 20, Load::None),
+        ("10 replays a second", 20, Load::Rate(10)),
+        ("8 games at once, as fast as they can", 20, Load::Games(8)),
+        ("alone again", 10, Load::None),
+    ];
+    /// A replay's size: a 3-minute game of two players with Wii Remotes.
+    const REPLAY_BYTES: usize = 90 * 1024;
+
+    fn runtime(threads: Option<usize>) -> Runtime {
+        let mut builder = tokio::runtime::Builder::new_multi_thread();
+        if let Some(threads) = threads {
+            builder.worker_threads(threads);
+        }
+        builder.enable_all().build().unwrap()
+    }
+
+    pub fn run() {
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL");
+        let options = PgConnectOptions::from_str(&url).unwrap();
+        let database = format!("replays_lag_{}", std::process::id());
+        let dir = std::env::temp_dir().join(&database);
+
+        let server = runtime(None);
+        let games = runtime(Some(2));
+        let pinger = runtime(Some(1));
+
+        let pool = server.block_on(async {
+            let mut admin = PgConnection::connect_with(&options).await.unwrap();
+            admin
+                .execute(sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+                    "CREATE DATABASE {database}"
+                ))))
+                .await
+                .unwrap();
+            let pool = PgPoolOptions::new()
+                .max_connections(5)
+                .connect_with(options.clone().database(&database))
+                .await
+                .unwrap();
+            sqlx::migrate!().run(&pool).await.unwrap();
+            pool
+        });
+
+        // The server, as main.rs starts it, with replays and the relay.
+        let app = App::new(pool.clone()).with_replays(Some(replays::Config {
+            games: replays::Games::Top(10),
+            dir: dir.clone(),
+        }));
+        let (http, gpcm, natneg) = server.block_on(async {
+            let http = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let gpcm = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let natneg = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let addresses = (
+                http.local_addr().unwrap(),
+                gpcm.local_addr().unwrap(),
+                natneg.local_addr().unwrap(),
+            );
+            let relay = relay::Config {
+                mode: Mode::Always,
+                address: "127.0.0.1".into(),
+                max: 4,
+                port: addresses.2.port(),
+            };
+            let router = app.router(None, None);
+            tokio::spawn(async move {
+                axum::serve(
+                    http,
+                    router.into_make_service_with_connect_info::<SocketAddr>(),
+                )
+                .await
+            });
+            let gpcm_app = app.clone();
+            tokio::spawn(async move { gpcm_app.serve_gpcm(gpcm).await });
+            let natneg_app = app.clone();
+            tokio::spawn(async move { natneg_app.serve_natneg(natneg, Some(relay)).await });
+            addresses
+        });
+
+        // A top player, logged in from here as a game is.
+        let (player, profile_id) = games.block_on(async {
+            let server = Server {
+                http,
+                gpcm,
+                http_from: None,
+            };
+            let player = Player::log_in(&server, 7).await;
+            let profile_id: i32 = player.profile_id.parse().unwrap();
+            let today = time::OffsetDateTime::now_utc().date();
+            let mut userdata = vec![0; 128];
+            userdata[0] = today.day();
+            userdata[1] = u8::from(today.month());
+            userdata[2..4].copy_from_slice(&(today.year() as u16).to_le_bytes());
+            userdata[4..8].copy_from_slice(&1i32.to_le_bytes());
+            sqlx::query(
+                "INSERT INTO scores (profile_id, category, region, score, userdata)
+                 VALUES ($1, 0, 2, 100, $2)",
+            )
+            .bind(profile_id)
+            .bind(userdata)
+            .execute(&pool)
+            .await
+            .unwrap();
+            (player, profile_id)
+        });
+        let finder = app.clone();
+        server.spawn(async move { finder.find_replay_players().await });
+        let series = Arc::new(AtomicUsize::new(0));
+        games.block_on(async {
+            // The first look at the board runs at once; wait for it.
+            for _ in 0..100 {
+                if one_game(http, profile_id, &series, None).await.is_ok() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            panic!("the server never asked for a replay");
+        });
+
+        let phase = Arc::new(AtomicUsize::new(0));
+        let done = Arc::new(AtomicBool::new(false));
+        let samples: Arc<Mutex<Vec<(usize, f64)>>> = Arc::default();
+        let status: Arc<Mutex<Vec<(usize, f64)>>> = Arc::default();
+        let games_done: Arc<Mutex<Vec<(usize, f64, f64)>>> = Arc::default();
+        let failures = Arc::new(AtomicUsize::new(0));
+
+        pinger.spawn(relayed_match(
+            natneg,
+            phase.clone(),
+            done.clone(),
+            samples.clone(),
+        ));
+        pinger.spawn(status_checks(
+            http,
+            phase.clone(),
+            done.clone(),
+            status.clone(),
+        ));
+        let replay = Arc::new(replay_file(REPLAY_BYTES));
+        // Lets the match settle before the first phase counts.
+        std::thread::sleep(Duration::from_secs(2));
+        for (index, (name, seconds, load)) in PHASES.iter().enumerate() {
+            phase.store(index, Ordering::SeqCst);
+            eprintln!("phase {index}: {name}, {seconds} s");
+            let until = Instant::now() + Duration::from_secs(*seconds);
+            let senders: Vec<_> = match *load {
+                Load::None => Vec::new(),
+                Load::Rate(rate) => {
+                    let (series, replay, games_done, failures) = (
+                        series.clone(),
+                        replay.clone(),
+                        games_done.clone(),
+                        failures.clone(),
+                    );
+                    vec![games.spawn(async move {
+                        let mut tick = tokio::time::interval(Duration::from_secs(1) / rate);
+                        while Instant::now() < until {
+                            tick.tick().await;
+                            let (series, replay, games_done, failures) = (
+                                series.clone(),
+                                replay.clone(),
+                                games_done.clone(),
+                                failures.clone(),
+                            );
+                            tokio::spawn(async move {
+                                match one_game(http, profile_id, &series, Some(&replay)).await {
+                                    Ok((report, upload)) => {
+                                        games_done.lock().unwrap().push((index, report, upload))
+                                    }
+                                    Err(_) => {
+                                        failures.fetch_add(1, Ordering::Relaxed);
+                                    }
+                                }
+                            });
+                        }
+                    })]
+                }
+                Load::Games(count) => (0..count)
+                    .map(|_| {
+                        let (series, replay, games_done, failures) = (
+                            series.clone(),
+                            replay.clone(),
+                            games_done.clone(),
+                            failures.clone(),
+                        );
+                        games.spawn(async move {
+                            while Instant::now() < until {
+                                match one_game(http, profile_id, &series, Some(&replay)).await {
+                                    Ok((report, upload)) => {
+                                        games_done.lock().unwrap().push((index, report, upload))
+                                    }
+                                    Err(_) => {
+                                        failures.fetch_add(1, Ordering::Relaxed);
+                                    }
+                                }
+                            }
+                        })
+                    })
+                    .collect(),
+            };
+            std::thread::sleep(until.saturating_duration_since(Instant::now()));
+            for sender in senders {
+                games.block_on(sender).unwrap();
+            }
+        }
+        done.store(true, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(500));
+        drop(player);
+
+        // What each phase saw.
+        let samples = samples.lock().unwrap().clone();
+        let status = status.lock().unwrap().clone();
+        let games_done = games_done.lock().unwrap().clone();
+        eprintln!("\nrelayed match, round trip through the relay at 60 packets a second (ms):");
+        for (index, (name, _, _)) in PHASES.iter().enumerate() {
+            let phase: Vec<f64> = samples
+                .iter()
+                .filter(|(at, _)| *at == index)
+                .map(|(_, rtt)| *rtt)
+                .collect();
+            eprintln!("  {name:<38} {}", summary(phase));
+        }
+        eprintln!("\nGET /status from the match's machine (ms):");
+        for (index, (name, _, _)) in PHASES.iter().enumerate() {
+            let phase: Vec<f64> = status
+                .iter()
+                .filter(|(at, _)| *at == index)
+                .map(|(_, ms)| *ms)
+                .collect();
+            eprintln!("  {name:<38} {}", summary(phase));
+        }
+        eprintln!("\nreplays sent: game report answered, then the replay kept (ms):");
+        for (index, (name, seconds, load)) in PHASES.iter().enumerate() {
+            if matches!(load, Load::None) {
+                continue;
+            }
+            let phase: Vec<&(usize, f64, f64)> = games_done
+                .iter()
+                .filter(|(at, _, _)| *at == index)
+                .collect();
+            eprintln!(
+                "  {name}: {} replays ({:.1} a second)",
+                phase.len(),
+                phase.len() as f64 / *seconds as f64
+            );
+            eprintln!(
+                "    report {}",
+                summary(phase.iter().map(|(_, report, _)| *report).collect())
+            );
+            eprintln!(
+                "    upload {}",
+                summary(phase.iter().map(|(_, _, upload)| *upload).collect())
+            );
+        }
+        let (files, bytes) = files_in(&dir);
+        let failed = failures.load(Ordering::Relaxed);
+        eprintln!(
+            "\nfailed games: {failed}; files kept: {files}, {:.1} MB",
+            bytes as f64 / 1e6
+        );
+
+        drop(pinger);
+        drop(games);
+        server.block_on(async {
+            pool.close().await;
+            let mut admin = PgConnection::connect_with(&options).await.unwrap();
+            admin
+                .execute(sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+                    "DROP DATABASE {database} WITH (FORCE)"
+                ))))
+                .await
+                .unwrap();
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(failed, 0);
+        // Every replay sent was kept (the first game, which waited for the
+        // server to ask, sent none).
+        assert_eq!(files, games_done.len());
+    }
+
+    /// Count, median, 90th, 99th, 99.9th percentile and the largest.
+    fn summary(mut values: Vec<f64>) -> String {
+        if values.is_empty() {
+            return "none".into();
+        }
+        values.sort_by(f64::total_cmp);
+        let at = |share: f64| values[((values.len() - 1) as f64 * share).round() as usize];
+        format!(
+            "n {:5}  median {:6.3}  p90 {:6.3}  p99 {:6.3}  p99.9 {:6.3}  max {:7.3}",
+            values.len(),
+            at(0.5),
+            at(0.9),
+            at(0.99),
+            at(0.999),
+            values[values.len() - 1]
+        )
+    }
+
+    fn files_in(dir: &std::path::Path) -> (usize, u64) {
+        let mut found = (0, 0);
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return found;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let (files, bytes) = files_in(&path);
+                found.0 += files;
+                found.1 += bytes;
+            } else if path.extension().is_some_and(|ext| ext == "msc") {
+                found.0 += 1;
+                found.1 += entry.metadata().unwrap().len();
+            }
+        }
+        found
+    }
+
+    /// A replay file of `size` bytes in all, its stream bytes made up.
+    fn replay_file(size: usize) -> Vec<u8> {
+        let build = b"1.2.0 (lagtest)";
+        let mut header = vec![build.len() as u8];
+        header.extend_from_slice(build);
+        header.extend_from_slice(b"R4QE01");
+        header.push(1);
+        header.extend_from_slice(&1_795_000_000i64.to_le_bytes());
+        let packed = size - 12 - (1 + build.len() + 6 + 1 + 8 + 4 + 4 + 15);
+        header.extend_from_slice(&(packed as u32 * 4).to_le_bytes());
+        header.extend_from_slice(&(packed as u32).to_le_bytes());
+        header.extend_from_slice(&9000u32.to_le_bytes());
+        header.extend_from_slice(&[1, 0, 2, 0, 16, 0, 3, 0, 1, 0, 0]);
+        let mut file = b"MSCRPLY\x1a".to_vec();
+        file.extend_from_slice(&1u16.to_le_bytes());
+        file.extend_from_slice(&(header.len() as u16).to_le_bytes());
+        file.extend_from_slice(&header);
+        let mut state = 0x2545_f491_u32;
+        file.extend((0..packed).map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state as u8
+        }));
+        assert_eq!(file.len(), size);
+        file
+    }
+
+    /// One game of a series of its own: its start, its end with the
+    /// server's answer, and, given `replay`, the replay sent. The times of the
+    /// game's report and of the replay, in ms.
+    async fn one_game(
+        http: SocketAddr,
+        profile_id: i32,
+        series: &AtomicUsize,
+        replay: Option<&[u8]>,
+    ) -> Result<(f64, f64), String> {
+        let series = 1_800_000_000 + series.fetch_add(1, Ordering::Relaxed) as i64;
+        let report = |event: &str| {
+            let game = (event == "game").then(|| {
+                serde_json::json!({
+                    "number": 1, "score": {"home": 2, "away": 1},
+                    "captains": {"home": "mario", "away": "bowser"},
+                    "stadium": "unknown", "ending": "normal", "seconds": 180,
+                })
+            });
+            serde_json::json!({
+                "profile_id": profile_id, "release": "R4QE", "event": event, "series": series,
+                "mode": "ranked", "best_of": 3, "side": "home", "mii": "Mario",
+                "opponent_mii": "Luigi", "captains": {"home": "mario", "away": "bowser"},
+                "sidekicks": {"home": [], "away": []}, "game": game, "reason": null,
+                "replays": true,
+            })
+            .to_string()
+        };
+        let (status, body) = post(http, "/api/v1/wfc/reports", report("start").as_bytes()).await?;
+        if status != 200 {
+            return Err(format!("start: {status} {body}"));
+        }
+        let asked = Instant::now();
+        let (status, body) = post(http, "/api/v1/wfc/reports", report("game").as_bytes()).await?;
+        let report_ms = asked.elapsed().as_secs_f64() * 1e3;
+        if status != 200 || !body.contains(r#""replay":true"#) {
+            return Err(format!("game: {status} {body}"));
+        }
+        let Some(replay) = replay else {
+            return Ok((report_ms, 0.0));
+        };
+        let sent = Instant::now();
+        let path = format!("/api/v1/wfc/replays?profile_id={profile_id}&series={series}&game=1");
+        let (status, body) = post(http, &path, replay).await?;
+        if status != 200 {
+            return Err(format!("replay: {status} {body}"));
+        }
+        Ok((report_ms, sent.elapsed().as_secs_f64() * 1e3))
+    }
+
+    async fn post(http: SocketAddr, path: &str, body: &[u8]) -> Result<(u16, String), String> {
+        let mut stream = TcpStream::connect(http).await.map_err(|e| e.to_string())?;
+        let head = format!(
+            "POST {path} HTTP/1.1\r\nHost: 2.31.48.136\r\nContent-Length: {}\r\n\
+             Content-Type: application/octet-stream\r\nConnection: close\r\n\r\n",
+            body.len()
+        );
+        stream
+            .write_all(head.as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
+        stream.write_all(body).await.map_err(|e| e.to_string())?;
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .await
+            .map_err(|e| e.to_string())?;
+        let (head, body) = response.split_once("\r\n\r\n").ok_or("no head")?;
+        let status = head
+            .split(' ')
+            .nth(1)
+            .and_then(|status| status.parse().ok())
+            .ok_or("no status")?;
+        Ok((status, body.to_owned()))
+    }
+
+    /// `GET /status` every 50 ms, timed, by phase.
+    async fn status_checks(
+        http: SocketAddr,
+        phase: Arc<AtomicUsize>,
+        done: Arc<AtomicBool>,
+        times: Arc<Mutex<Vec<(usize, f64)>>>,
+    ) {
+        let mut tick = tokio::time::interval(Duration::from_millis(50));
+        while !done.load(Ordering::SeqCst) {
+            tick.tick().await;
+            let at = phase.load(Ordering::SeqCst);
+            let started = Instant::now();
+            let mut stream = TcpStream::connect(http).await.unwrap();
+            stream
+                .write_all(
+                    b"GET /status HTTP/1.1\r\nHost: 2.31.48.136\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            let mut response = Vec::new();
+            stream.read_to_end(&mut response).await.unwrap();
+            times
+                .lock()
+                .unwrap()
+                .push((at, started.elapsed().as_secs_f64() * 1e3));
+        }
+    }
+
+    /// Two games the relay carries (as the relay test sets them up), the
+    /// first sending a 200-byte match packet 60 times a second, the second
+    /// sending each back: each round trip, by the phase it was sent in.
+    async fn relayed_match(
+        natneg: SocketAddr,
+        phase: Arc<AtomicUsize>,
+        done: Arc<AtomicBool>,
+        samples: Arc<Mutex<Vec<(usize, f64)>>>,
+    ) {
+        let packet = |kind: u8, body: &[u8]| {
+            let mut packet = b"\xFD\xFC\x1E\x66\x6A\xB2\x03".to_vec();
+            packet.push(kind);
+            packet.extend_from_slice(&0x1A61_0001u32.to_be_bytes());
+            packet.extend_from_slice(body);
+            packet
+        };
+        async fn recv(socket: &UdpSocket) -> Vec<u8> {
+            let mut packet = [0; 2048];
+            let (len, _) =
+                tokio::time::timeout(Duration::from_secs(5), socket.recv_from(&mut packet))
+                    .await
+                    .expect("a packet")
+                    .unwrap();
+            packet[..len].to_vec()
+        }
+        let mut games = Vec::new();
+        for index in 0..2u8 {
+            let game = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            let negotiate = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+            for port_type in 0..4u8 {
+                let socket = if port_type == 0 { &game } else { &negotiate };
+                let init = packet(0, &[port_type, index, 1, 127, 0, 0, 1, 0, 0, b'm', 0]);
+                socket.send_to(&init, natneg).await.unwrap();
+            }
+            games.push((game, negotiate));
+        }
+        for (index, (game, negotiate)) in games.iter().enumerate() {
+            assert_eq!(recv(game).await[7], 1);
+            while recv(negotiate).await[7] != 5 {}
+            negotiate
+                .send_to(&packet(6, &[0, index as u8]), natneg)
+                .await
+                .unwrap();
+        }
+        let mut games = games.into_iter().map(|(game, _)| Arc::new(game));
+        let (first, second) = (games.next().unwrap(), games.next().unwrap());
+
+        // The second game sends every packet back.
+        let echo = second.clone();
+        let echo_done = done.clone();
+        tokio::spawn(async move {
+            let mut packet = [0; 2048];
+            while !echo_done.load(Ordering::SeqCst) {
+                if let Ok(Ok((len, _))) =
+                    tokio::time::timeout(Duration::from_millis(200), echo.recv_from(&mut packet))
+                        .await
+                {
+                    echo.send_to(&packet[..len], natneg).await.unwrap();
+                }
+            }
+        });
+        let sent: Arc<Mutex<HashMap<u32, (Instant, usize)>>> = Arc::default();
+        let receiver = first.clone();
+        let (receiver_sent, receiver_done) = (sent.clone(), done.clone());
+        tokio::spawn(async move {
+            let mut packet = [0; 2048];
+            while !receiver_done.load(Ordering::SeqCst) {
+                if let Ok(Ok((len, _))) = tokio::time::timeout(
+                    Duration::from_millis(200),
+                    receiver.recv_from(&mut packet),
+                )
+                .await
+                    && len >= 6
+                {
+                    let sequence = u32::from_le_bytes(packet[2..6].try_into().unwrap());
+                    if let Some((at, phase)) = receiver_sent.lock().unwrap().remove(&sequence) {
+                        samples
+                            .lock()
+                            .unwrap()
+                            .push((phase, at.elapsed().as_secs_f64() * 1e3));
+                    }
+                }
+            }
+        });
+        let mut tick = tokio::time::interval(Duration::from_secs(1) / 60);
+        let mut match_packet = vec![0x5A; 200];
+        match_packet[..2].copy_from_slice(b"\xFE\xFE");
+        for sequence in 0u32.. {
+            if done.load(Ordering::SeqCst) {
+                break;
+            }
+            tick.tick().await;
+            match_packet[2..6].copy_from_slice(&sequence.to_le_bytes());
+            sent.lock()
+                .unwrap()
+                .insert(sequence, (Instant::now(), phase.load(Ordering::SeqCst)));
+            first.send_to(&match_packet, natneg).await.unwrap();
+        }
+    }
+}
