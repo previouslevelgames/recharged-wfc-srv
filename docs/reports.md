@@ -413,7 +413,7 @@ version 2 whose header is `{"match": 12, "ticket": "...", "release": "R4QE"}`.
 Recharged opens it like a replay (open it with Recharged, or drop it on its
 launcher) and plays the match from
 
-`GET /api/v1/wfc/streams/<match>?ticket=...`
+`GET /api/v1/wfc/streams/<match>` with `Authorization: Bearer <ticket>`
 
 of the server its `[online] server` names. The ticket is good for four hours, for
 that match, on the server that made it (its key is new at each start). The body

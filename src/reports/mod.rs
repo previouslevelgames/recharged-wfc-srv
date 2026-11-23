@@ -491,26 +491,26 @@ async fn receive_stream(
     Json(json!({ "match_id": match_id, "bytes": at })).into_response()
 }
 
-/// Who watches a match: the ticket the Matches page of `/admin` handed out.
-#[derive(Deserialize)]
-struct WatchQuery {
-    ticket: String,
-}
-
 /// A match as it is played, for a spectator (docs/reports.md, "Live
-/// streams"): frames of its games' streams, one game after another.
+/// streams"): frames of its games' streams, one game after another. The
+/// ticket the Matches page of `/admin` handed out comes as `Authorization:
+/// Bearer`, out of the request logs.
 async fn watch_stream(
     State(state): State<ReportsState>,
     Path(match_id): Path<i64>,
-    query: Result<Query<WatchQuery>, QueryRejection>,
+    headers: axum::http::HeaderMap,
 ) -> Response {
     let Some(streams) = &state.streams else {
         return json_error(StatusCode::NOT_FOUND, "no streams here");
     };
-    let Ok(Query(WatchQuery { ticket })) = query else {
-        return json_error(StatusCode::BAD_REQUEST, "ticket: from the Matches page");
+    let Some(ticket) = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+    else {
+        return json_error(StatusCode::UNAUTHORIZED, "a ticket from the Matches page");
     };
-    if !streams.ticket_valid(&ticket, match_id, streams::now()) {
+    if !streams.ticket_valid(ticket.trim(), match_id, streams::now()) {
         return json_error(
             StatusCode::FORBIDDEN,
             "the ticket does not let you watch this match",
@@ -815,7 +815,8 @@ mod tests {
                 self.streams.clone(),
             )
             .layer(MockConnectInfo(SocketAddr::from(([192, 0, 2, 1], 51000))));
-            let request = Request::get(format!("/api/v1/wfc/streams/{match_id}?ticket={ticket}"))
+            let request = Request::get(format!("/api/v1/wfc/streams/{match_id}"))
+                .header(header::AUTHORIZATION, format!("Bearer {ticket}"))
                 .body(Body::empty())
                 .unwrap();
             let response = app.oneshot(request).await.unwrap();
