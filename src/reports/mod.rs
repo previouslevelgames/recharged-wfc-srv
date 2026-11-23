@@ -36,8 +36,11 @@ use sqlx::PgPool;
 use time::format_description::well_known::Rfc3339;
 use tracing::{debug, info, trace, warn};
 
-use crate::gpcm::Gpcm;
-use report::Report;
+use crate::{
+    gpcm::Gpcm,
+    replays::{self, Header, KeepError, Kept, Replays},
+};
+use report::{Event, Report};
 pub(crate) use store::{left, settle_idle, sides};
 
 /// A report is a few hundred bytes.
@@ -50,17 +53,21 @@ struct ReportsState {
     gpcm: Arc<Gpcm>,
     /// The errors each address sent lately.
     limits: Arc<errors::Limits>,
+    /// Replays of ranked games with a top player, when kept.
+    replays: Option<Arc<Replays>>,
 }
 
 /// `POST /api/v1/wfc/reports`, `POST /api/v1/wfc/errors`,
-/// `POST /api/v1/wfc/desyncs` and `GET /api/v1/wfc/forfeit`, for any host
-/// name: the game sends them to its server's address. They need the caller's address: serve them with
+/// `POST /api/v1/wfc/desyncs`, `GET /api/v1/wfc/forfeit` and, with
+/// `replays`, `POST /api/v1/wfc/replays`, for any host name: the game sends
+/// them to its server's address. They need the caller's address: serve them with
 /// `into_make_service_with_connect_info::<SocketAddr>()`.
-pub fn router(pool: PgPool, gpcm: Arc<Gpcm>) -> Router {
+pub fn router(pool: PgPool, gpcm: Arc<Gpcm>, replays: Option<Arc<Replays>>) -> Router {
     let state = ReportsState {
         pool,
         gpcm,
         limits: Arc::default(),
+        replays,
     };
     // A dossier is bigger than a report: its body is read only from where
     // some profile is logged in.
@@ -68,13 +75,22 @@ pub fn router(pool: PgPool, gpcm: Arc<Gpcm>) -> Router {
         .route("/api/v1/wfc/desyncs", post(receive_dossier))
         .layer(DefaultBodyLimit::max(dossiers::MAX_BYTES))
         .route_layer(middleware::from_fn_with_state(state.clone(), from_a_login));
-    Router::new()
+    let mut router = Router::new()
         .route("/api/v1/wfc/reports", post(receive))
         .route("/api/v1/wfc/errors", post(receive_error))
         .route("/api/v1/wfc/forfeit", get(forfeit))
         .layer(DefaultBodyLimit::max(MAX_BODY))
-        .merge(desyncs)
-        .with_state(state)
+        .merge(desyncs);
+    // Without replays the path is unknown: 404 tells the game not to send any.
+    if state.replays.is_some() {
+        router = router.merge(
+            Router::new()
+                .route("/api/v1/wfc/replays", post(receive_replay))
+                .layer(DefaultBodyLimit::max(replays::MAX_BYTES))
+                .route_layer(middleware::from_fn_with_state(state.clone(), from_a_login)),
+        );
+    }
+    router.with_state(state)
 }
 
 /// Before a dossier's body is read: a request from no login's address is
@@ -87,7 +103,7 @@ async fn from_a_login(
     next: Next,
 ) -> Response {
     if !state.gpcm.any_http_login_at(peer.ip()) {
-        warn!(target: "reports", %peer, "dossier from no login");
+        warn!(target: "reports", %peer, path = request.uri().path(), "upload from no login");
         return json_error(
             StatusCode::FORBIDDEN,
             "profile not logged in from this address",
@@ -151,7 +167,11 @@ async fn receive(
             } else {
                 info!(target: "reports", match_id, profile_id = report.profile_id, series = report.series, side, event, game, state = recorded.state, "report stored");
             }
-            Json(json!({ "match_id": match_id })).into_response()
+            let mut answer = json!({ "match_id": match_id });
+            if state.replay_wanted(&report, match_id).await {
+                answer["replay"] = json!(true);
+            }
+            Json(answer).into_response()
         }
         Err(error) => {
             warn!(target: "reports", %error, "database error");
@@ -270,6 +290,90 @@ async fn receive_dossier(
     }
 }
 
+/// Which replay a game sends: the profile's series and its game.
+#[derive(Deserialize)]
+struct ReplayQuery {
+    profile_id: i32,
+    series: i64,
+    game: i32,
+}
+
+/// A game's replay (docs/reports.md, "Replays"), sent after the server asked
+/// for it in its answer to the game's report. The game deletes it on 200,
+/// 400, 413 and 422, and sends it again on 403 and 5xx: never 404, which
+/// tells it the server takes none.
+async fn receive_replay(
+    State(state): State<ReportsState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    query: Result<Query<ReplayQuery>, QueryRejection>,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    let Ok(Query(ReplayQuery {
+        profile_id,
+        series,
+        game,
+    })) = query
+    else {
+        warn!(target: "replays", %peer, "replay without its game");
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "profile_id, series and game: the replay's game",
+        );
+    };
+    let body = match body {
+        Ok(body) => body,
+        // 413 for one too big: the game gives it up.
+        Err(rejection) => {
+            warn!(target: "replays", %peer, profile_id, problem = rejection.body_text(), "replay refused");
+            return json_error(rejection.status(), &rejection.body_text());
+        }
+    };
+    let Some(replays) = state.replays.as_ref() else {
+        return json_error(StatusCode::NOT_FOUND, "no replays here");
+    };
+    if !logged_in_at(&state.gpcm, profile_id, peer.ip()) {
+        warn!(target: "replays", profile_id, %peer, "replay from elsewhere");
+        return json_error(
+            StatusCode::FORBIDDEN,
+            "profile not logged in from this address",
+        );
+    }
+    let header = match Header::parse(&body) {
+        Ok(header) => header,
+        Err(problem) => {
+            warn!(target: "replays", %peer, profile_id, series, game, problem, "replay refused");
+            return json_error(StatusCode::BAD_REQUEST, problem);
+        }
+    };
+    match replays
+        .keep(&state.pool, profile_id, series, game, &header, body)
+        .await
+    {
+        Ok(Kept::First { match_id, .. } | Kept::Before { match_id }) => {
+            Json(json!({ "match_id": match_id })).into_response()
+        }
+        Ok(Kept::NoSeries) => {
+            debug!(target: "replays", profile_id, series, "replay of no series");
+            json_error(StatusCode::UNPROCESSABLE_ENTITY, "no such series")
+        }
+        Ok(Kept::NotAsked { match_id }) => {
+            debug!(target: "replays", match_id, profile_id, game, "replay not asked for");
+            json_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "the server did not ask for this game's replay",
+            )
+        }
+        Err(failure) => {
+            warn!(target: "replays", profile_id, series, game, error = %failure, "replay not kept");
+            let message = match failure {
+                KeepError::Database(_) => "the server's database failed",
+                KeepError::Io(_) => "the server could not write the replay",
+            };
+            json_error(StatusCode::INTERNAL_SERVER_ERROR, message)
+        }
+    }
+}
+
 #[derive(Deserialize)]
 struct ForfeitQuery {
     profile_id: i32,
@@ -317,6 +421,30 @@ async fn forfeit(
 }
 
 impl ReportsState {
+    /// Whether the server asks for the replay of the game `report` tells of
+    /// (in `match_id`): only of a game that can send one, while replays are
+    /// kept ([`Replays::wanted`]). A database error asks for none.
+    async fn replay_wanted(&self, report: &Report, match_id: i64) -> bool {
+        let (Some(replays), Event::Game(game)) = (&self.replays, &report.event) else {
+            return false;
+        };
+        if !report.replays {
+            return false;
+        }
+        let ranked = report.mode == "ranked";
+        let normally = game.ending == "normal";
+        match replays
+            .wanted(&self.pool, match_id, game.number, ranked, normally)
+            .await
+        {
+            Ok(wanted) => wanted,
+            Err(error) => {
+                warn!(target: "replays", %error, "database error");
+                false
+            }
+        }
+    }
+
     /// Keeps a refusal for the Monitoring page; the log has it anyway.
     async fn count_refusal(&self, profile_id: i32, kind: &str, problem: &str, peer: SocketAddr) {
         let address = peer.ip().to_string();
@@ -349,7 +477,7 @@ fn json_error(status: StatusCode, message: &str) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use std::net::IpAddr;
+    use std::{net::IpAddr, path::Path};
 
     use axum::{
         body::Body,
@@ -362,6 +490,7 @@ mod tests {
     use super::*;
     use crate::{
         accounts,
+        replays::Games,
         reports::{
             dossiers::tests::{dossier, machine_input, step},
             report::{Side, tests::start},
@@ -374,6 +503,7 @@ mod tests {
     struct Server {
         pool: PgPool,
         gpcm: Arc<Gpcm>,
+        replays: Option<Arc<Replays>>,
     }
 
     impl Server {
@@ -382,6 +512,7 @@ mod tests {
             Self {
                 pool,
                 gpcm: Arc::new(gpcm),
+                replays: None,
             }
         }
 
@@ -409,7 +540,7 @@ mod tests {
             address: [u8; 4],
             body: impl Into<Body>,
         ) -> (StatusCode, Value) {
-            let app = router(self.pool.clone(), self.gpcm.clone())
+            let app = router(self.pool.clone(), self.gpcm.clone(), self.replays.clone())
                 .layer(MockConnectInfo(SocketAddr::from((address, 51000))));
             let request = Request::post(path)
                 .header(header::HOST, "2.31.48.136")
@@ -430,7 +561,7 @@ mod tests {
 
         /// GETs `path` from `address`, as the game asks.
         async fn get(&self, path: &str, address: [u8; 4]) -> (StatusCode, Value) {
-            let app = router(self.pool.clone(), self.gpcm.clone())
+            let app = router(self.pool.clone(), self.gpcm.clone(), self.replays.clone())
                 .layer(MockConnectInfo(SocketAddr::from((address, 51000))));
             let request = Request::get(path)
                 .header(header::HOST, "2.31.48.136")
@@ -442,6 +573,29 @@ mod tests {
                 .await
                 .unwrap();
             (status, serde_json::from_slice(&bytes).unwrap())
+        }
+
+        /// Keeps the replays of `games` in a folder of its own.
+        fn with_replays(mut self, games: replays::Games, dir: &Path) -> Self {
+            self.replays = Some(Arc::new(Replays::new(replays::Config {
+                games,
+                dir: dir.to_owned(),
+            })));
+            self
+        }
+
+        /// Sends `replay` as `profile_id`'s replay of `game` of `series`.
+        async fn replay(
+            &self,
+            address: [u8; 4],
+            profile_id: i32,
+            series: i64,
+            game: i32,
+            replay: Vec<u8>,
+        ) -> (StatusCode, Value) {
+            let path =
+                format!("/api/v1/wfc/replays?profile_id={profile_id}&series={series}&game={game}");
+            self.post_to(&path, address, replay).await
         }
 
         /// The latest forfeit against `profile_id`, as its game asks.
@@ -1029,5 +1183,350 @@ mod tests {
             .post_to("/api/v1/wfc/desyncs", ANOSCH_HOME, home.encode())
             .await;
         assert_eq!(status, StatusCode::OK);
+    }
+
+    /// A folder of its own under the system's temporary one, gone when
+    /// dropped.
+    struct Folder(std::path::PathBuf);
+
+    impl Folder {
+        fn new(name: &str) -> Self {
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!("{name}-{}-{unique}", std::process::id()));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+
+        /// The files under it, as paths relative to it.
+        fn files(&self) -> Vec<String> {
+            fn walk(root: &Path, dir: &Path, found: &mut Vec<String>) {
+                for entry in std::fs::read_dir(dir).unwrap() {
+                    let path = entry.unwrap().path();
+                    if path.is_dir() {
+                        walk(root, &path, found);
+                    } else {
+                        found.push(path.strip_prefix(root).unwrap().display().to_string());
+                    }
+                }
+            }
+            let mut found = Vec::new();
+            walk(&self.0, &self.0, &mut found);
+            found.sort();
+            found
+        }
+    }
+
+    impl Drop for Folder {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Puts `profile_id` on the season's board today with `score` and a won
+    /// game.
+    async fn on_the_board(pool: &PgPool, profile_id: i32, score: i32) {
+        let today = time::OffsetDateTime::now_utc().date();
+        let mut userdata = vec![0; 128];
+        userdata[0] = today.day();
+        userdata[1] = u8::from(today.month());
+        userdata[2..4].copy_from_slice(&(today.year() as u16).to_le_bytes());
+        userdata[4..8].copy_from_slice(&1i32.to_le_bytes());
+        sqlx::query!(
+            "INSERT INTO scores (profile_id, category, region, score, userdata)
+             VALUES ($1, 0, 2, $2, $3)",
+            profile_id,
+            score,
+            &userdata,
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[sqlx::test]
+    async fn a_ranked_game_of_a_top_player_keeps_its_first_replay(pool: PgPool) {
+        let folder = Folder::new("replays");
+        let server = Server::new(pool.clone()).with_replays(Games::Top(10), &folder.0);
+        let anosch = server.log_in(1, "Anosch", ANOSCH_HOME).await;
+        let sam = server.log_in(2, "Sam", SAM_HOME).await;
+        on_the_board(&pool, sam, 120).await;
+        server
+            .replays
+            .as_ref()
+            .unwrap()
+            .refresh(&pool)
+            .await
+            .unwrap();
+
+        let mut home = start();
+        home["profile_id"] = json!(anosch);
+        home["replays"] = json!(true);
+        let mut away = as_sam(sam);
+        away["replays"] = json!(true);
+        for (address, body) in [(ANOSCH_HOME, &home), (SAM_HOME, &away)] {
+            assert_eq!(server.report(address, body).await.0, StatusCode::OK);
+        }
+        // Both sides are asked: either may send it first.
+        let (status, answer) = server
+            .report(ANOSCH_HOME, &game(home.clone(), 1, 2, 1))
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        let match_id = answer["match_id"].as_i64().unwrap();
+        assert_eq!(answer, json!({ "match_id": match_id, "replay": true }));
+        let answer = server
+            .report(SAM_HOME, &game(away.clone(), 1, 2, 1))
+            .await
+            .1;
+        assert_eq!(answer, json!({ "match_id": match_id, "replay": true }));
+
+        // Only from the profile's own login, only a replay, only one asked for.
+        let file = crate::replays::tests::replay("1.2.0 (abc1234)", 9150, &[7; 300]);
+        let series = home["series"].as_i64().unwrap();
+        for (address, game, body, status) in [
+            (SAM_HOME, 1, file.clone(), StatusCode::FORBIDDEN),
+            (ANOSCH_HOME, 1, b"RCDS".to_vec(), StatusCode::BAD_REQUEST),
+            (
+                ANOSCH_HOME,
+                2,
+                file.clone(),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+        ] {
+            assert_eq!(
+                server.replay(address, anosch, series, game, body).await.0,
+                status
+            );
+        }
+        assert_eq!(
+            server
+                .replay(ANOSCH_HOME, anosch, series + 1, 1, file.clone())
+                .await,
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                json!({ "error": "no such series" })
+            )
+        );
+        assert!(folder.files().is_empty());
+
+        assert_eq!(
+            server
+                .replay(ANOSCH_HOME, anosch, series, 1, file.clone())
+                .await,
+            (StatusCode::OK, json!({ "match_id": match_id }))
+        );
+        let now = time::OffsetDateTime::now_utc();
+        let kept = format!(
+            "{:04}/{:02}/{match_id}-1.msc",
+            now.year(),
+            u8::from(now.month())
+        );
+        assert_eq!(folder.files(), std::slice::from_ref(&kept));
+        assert_eq!(std::fs::read(folder.0.join(&kept)).unwrap(), file);
+
+        // Once a copy came, a report asks for none; the other side's copy is
+        // only counted, and the same copy sent again changes nothing.
+        let answer = server
+            .report(SAM_HOME, &game(away.clone(), 1, 2, 1))
+            .await
+            .1;
+        assert_eq!(answer, json!({ "match_id": match_id }));
+        let other = crate::replays::tests::replay("1.2.0 (def5678)", 9150, &[9; 200]);
+        assert_eq!(
+            server.replay(SAM_HOME, sam, 1_792_000_002, 1, other).await,
+            (StatusCode::OK, json!({ "match_id": match_id }))
+        );
+        assert_eq!(
+            server
+                .replay(ANOSCH_HOME, anosch, series, 1, file.clone())
+                .await,
+            (StatusCode::OK, json!({ "match_id": match_id }))
+        );
+        assert_eq!(folder.files(), std::slice::from_ref(&kept));
+        assert_eq!(std::fs::read(folder.0.join(&kept)).unwrap(), file);
+
+        let row = sqlx::query!(
+            "SELECT home_place, away_place, side, file, bytes, steps, both_sides, sha256
+             FROM replays WHERE match_id = $1 AND game = 1",
+            match_id
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            (
+                row.home_place,
+                row.away_place,
+                row.side.as_deref(),
+                row.file.as_deref(),
+                row.bytes,
+                row.steps,
+                row.both_sides,
+            ),
+            (
+                None,
+                Some(1),
+                Some("home"),
+                Some(kept.as_str()),
+                Some(file.len() as i32),
+                Some(9150),
+                true,
+            )
+        );
+        use sha2::Digest;
+        assert_eq!(row.sha256.unwrap(), sha2::Sha256::digest(&file).to_vec());
+    }
+
+    #[sqlx::test]
+    async fn only_ranked_games_of_top_players_that_ended_normally_are_asked_for(pool: PgPool) {
+        let folder = Folder::new("replays");
+        let server = Server::new(pool.clone()).with_replays(Games::Top(10), &folder.0);
+        let anosch = server.log_in(1, "Anosch", ANOSCH_HOME).await;
+        let sam = server.log_in(2, "Sam", SAM_HOME).await;
+        let replays = server.replays.as_ref().unwrap();
+        replays.refresh(&pool).await.unwrap();
+
+        // No one on the board yet.
+        let mut home = start();
+        home["profile_id"] = json!(anosch);
+        home["replays"] = json!(true);
+        assert_eq!(server.report(ANOSCH_HOME, &home).await.0, StatusCode::OK);
+        let answer = server
+            .report(ANOSCH_HOME, &game(home.clone(), 1, 1, 0))
+            .await
+            .1;
+        assert_eq!(answer.get("replay"), None);
+
+        // Anosch leads, but the game broke off; and a friends' series.
+        on_the_board(&pool, anosch, 50).await;
+        replays.refresh(&pool).await.unwrap();
+        let mut broken = game(home.clone(), 2, 1, 1);
+        broken["game"]["ending"] = json!("disconnect");
+        let answer = server.report(ANOSCH_HOME, &broken).await.1;
+        assert_eq!(answer.get("replay"), None);
+        let mut friends = as_sam(sam);
+        friends["replays"] = json!(true);
+        friends["mode"] = json!("friends");
+        friends["opponent_mii"] = json!("Anosch");
+        assert_eq!(server.report(SAM_HOME, &friends).await.0, StatusCode::OK);
+        on_the_board(&pool, sam, 40).await;
+        replays.refresh(&pool).await.unwrap();
+        let answer = server.report(SAM_HOME, &game(friends, 1, 0, 2)).await.1;
+        assert_eq!(answer.get("replay"), None);
+
+        // The ranked game that ended normally is.
+        let answer = server
+            .report(ANOSCH_HOME, &game(home.clone(), 3, 2, 1))
+            .await
+            .1;
+        assert_eq!(answer["replay"], json!(true));
+        let rows = sqlx::query_scalar!("SELECT game FROM replays ORDER BY game")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(rows, [3]);
+    }
+
+    #[sqlx::test]
+    async fn a_server_without_replays_asks_for_none_and_takes_none(pool: PgPool) {
+        let server = Server::new(pool.clone());
+        let anosch = server.log_in(1, "Anosch", ANOSCH_HOME).await;
+        on_the_board(&pool, anosch, 50).await;
+        let mut home = start();
+        home["profile_id"] = json!(anosch);
+        assert_eq!(server.report(ANOSCH_HOME, &home).await.0, StatusCode::OK);
+        let answer = server
+            .report(ANOSCH_HOME, &game(home.clone(), 1, 1, 0))
+            .await
+            .1;
+        assert_eq!(answer.get("replay"), None);
+
+        let app = router(pool.clone(), server.gpcm.clone(), None)
+            .layer(MockConnectInfo(SocketAddr::from((ANOSCH_HOME, 51000))));
+        let request = Request::post(format!(
+            "/api/v1/wfc/replays?profile_id={anosch}&series=1792000000&game=1"
+        ))
+        .body(Body::from(crate::replays::tests::replay(
+            "1.2.0", 100, &[1; 10],
+        )))
+        .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[sqlx::test]
+    async fn a_game_that_cannot_send_a_replay_is_never_asked(pool: PgPool) {
+        let folder = Folder::new("replays");
+        let server = Server::new(pool.clone()).with_replays(Games::All, &folder.0);
+        let anosch = server.log_in(1, "Anosch", ANOSCH_HOME).await;
+        let mut home = start();
+        home["profile_id"] = json!(anosch);
+        assert_eq!(server.report(ANOSCH_HOME, &home).await.0, StatusCode::OK);
+        // A 1.1 game says nothing; a value that is not true counts as nothing.
+        let answer = server
+            .report(ANOSCH_HOME, &game(home.clone(), 1, 1, 0))
+            .await
+            .1;
+        assert_eq!(answer.get("replay"), None);
+        home["replays"] = json!("yes");
+        let answer = server
+            .report(ANOSCH_HOME, &game(home.clone(), 2, 1, 1))
+            .await
+            .1;
+        assert_eq!(answer.get("replay"), None);
+        let rows = sqlx::query_scalar!(r#"SELECT count(*) AS "count!" FROM replays"#)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(rows, 0);
+    }
+
+    #[sqlx::test]
+    async fn all_takes_every_game_and_ranked_every_ranked_one(pool: PgPool) {
+        // With `all`, a friends' game that broke off too.
+        let folder = Folder::new("replays");
+        let server = Server::new(pool.clone()).with_replays(Games::All, &folder.0);
+        let anosch = server.log_in(1, "Anosch", ANOSCH_HOME).await;
+        let mut friends = start();
+        friends["profile_id"] = json!(anosch);
+        friends["mode"] = json!("friends");
+        friends["replays"] = json!(true);
+        assert_eq!(server.report(ANOSCH_HOME, &friends).await.0, StatusCode::OK);
+        let mut broken = game(friends.clone(), 1, 0, 0);
+        broken["game"]["ending"] = json!("desync");
+        let answer = server.report(ANOSCH_HOME, &broken).await.1;
+        assert_eq!(answer["replay"], json!(true));
+
+        // With `ranked`, the ranked games that ended normally, whoever plays.
+        let server = Server {
+            gpcm: server.gpcm.clone(),
+            ..Server::new(pool.clone()).with_replays(Games::Ranked, &folder.0)
+        };
+        let answer = server
+            .report(ANOSCH_HOME, &game(friends.clone(), 2, 1, 0))
+            .await
+            .1;
+        assert_eq!(answer.get("replay"), None);
+        let mut ranked = friends.clone();
+        ranked["mode"] = json!("ranked");
+        ranked["series"] = json!(1_792_000_100);
+        assert_eq!(server.report(ANOSCH_HOME, &ranked).await.0, StatusCode::OK);
+        let mut lost = game(ranked.clone(), 1, 0, 0);
+        lost["game"]["ending"] = json!("disconnect");
+        let answer = server.report(ANOSCH_HOME, &lost).await.1;
+        assert_eq!(answer.get("replay"), None);
+        let answer = server.report(ANOSCH_HOME, &game(ranked, 2, 1, 0)).await.1;
+        assert_eq!(answer["replay"], json!(true));
+        let rows = sqlx::query!("SELECT game, home_place, away_place FROM replays ORDER BY game")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        let rows: Vec<_> = rows
+            .iter()
+            .map(|row| (row.game, row.home_place, row.away_place))
+            .collect();
+        assert_eq!(rows, [(1, None, None), (2, None, None)]);
     }
 }

@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE replays\n             SET side = $3, file = $4, bytes = $5, sha256 = $6, steps = $7, received_at = now()\n             WHERE match_id = $1 AND game = $2 AND file IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int4",
+        "Text",
+        "Text",
+        "Int4",
+        "Bytea",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4184d7b1251611a1566d56da3d7d950e84c769154fc7dc0927ac7fa9804028a2"
+}

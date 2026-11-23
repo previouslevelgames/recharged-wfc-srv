@@ -1,0 +1,112 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT home_place, away_place, side, file, bytes, steps, both_sides, sha256\n             FROM replays WHERE match_id = $1 AND game = 1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "home_place",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "replays",
+            "name": "home_place"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "away_place",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "replays",
+            "name": "away_place"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "side",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "replays",
+            "name": "side"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "file",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "replays",
+            "name": "file"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "bytes",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "replays",
+            "name": "bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "steps",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "replays",
+            "name": "steps"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "both_sides",
+        "type_info": "Bool",
+        "origin": {
+          "Table": {
+            "table": "replays",
+            "name": "both_sides"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "sha256",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "replays",
+            "name": "sha256"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "08ef081139dabb64c0827903ba5d8294a56d70c601164562211c85825a35ac7e"
+}

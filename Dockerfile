@@ -43,7 +43,8 @@ ENV PORT=8080 \
     POSTGRES_DB=recharged_wfc \
     POSTGRES_USER=recharged_wfc \
     POSTGRES_INITDB_ARGS="--auth-host=scram-sha-256" \
-    LOG_DIR=/var/log/recharged-wfc-srv
+    LOG_DIR=/var/log/recharged-wfc-srv \
+    REPLAY_DIR=/var/lib/recharged-wfc-srv/replays
 # PostgreSQL's base image provides PGDATA and the /var/lib/postgresql volume,
 # for the bundled database. With POSTGRES_HOST set, the container uses the
 # database there instead and runs only the server (docker/entrypoint.sh).

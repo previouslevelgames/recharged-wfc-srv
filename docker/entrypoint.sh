@@ -15,6 +15,14 @@ prepare_log_dir() {
     fi
 }
 
+# Likewise the replays, when the server keeps them.
+prepare_replay_dir() {
+    if [[ -n "${REPLAYS:-}" && "${REPLAYS,,}" != off && -n "${REPLAY_DIR:-}" ]]; then
+        mkdir -p "$REPLAY_DIR"
+        chown 10001:10001 "$REPLAY_DIR"
+    fi
+}
+
 # With POSTGRES_HOST, the database runs in a container of its own, which
 # several servers can share, and this container runs only the server.
 if [[ -n "${POSTGRES_HOST:-}" ]]; then
@@ -34,6 +42,7 @@ if [[ -n "${POSTGRES_HOST:-}" ]]; then
     # Check the supplied credentials against the database before serving.
     psql -X --no-password -v ON_ERROR_STOP=1 -c 'SELECT 1' >/dev/null
     prepare_log_dir
+    prepare_replay_dir
     exec gosu 10001:10001 /usr/local/bin/recharged-wfc-srv
 fi
 
@@ -81,6 +90,7 @@ done
 psql -X --no-password -v ON_ERROR_STOP=1 -c 'SELECT 1' >/dev/null
 
 prepare_log_dir
+prepare_replay_dir
 
 gosu 10001:10001 /usr/local/bin/recharged-wfc-srv &
 server_pid=$!

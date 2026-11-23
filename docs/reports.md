@@ -50,6 +50,7 @@ the public address of its login ([Trust](#trust)).
 | `game` | for `event: "game"` only, below; `null` or left out otherwise |
 | `reason` | for `event: "end"` only: `decided` (a side won the series) or `abandoned` (it stopped before: a disconnect, or a return to the menus); `null` or left out otherwise |
 | `build`, `os`, `cause` | optional, see [Diagnostics](#diagnostics) |
+| `replays` | optional: `true` when the game sends a game's replay when asked (Recharged 1.2), see [Replays](#replays). Left out or anything else: it sends none, and is never asked |
 
 A game:
 
@@ -72,7 +73,7 @@ The answers:
 
 | Status | Body | |
 |---|---|---|
-| 200 | `{"match_id": 12}` | stored, or the same report came before |
+| 200 | `{"match_id": 12}` | stored, or the same report came before; with `"replay": true` the server wants the game's replay ([Replays](#replays)) |
 | 400 | `{"error": "mode: one of ranked, friends"}` | not JSON, or a field missing or out of range; at most 16 KiB |
 | 403 | `{"error": "profile not logged in from this address"}` | see [Trust](#trust) |
 | 500 | `{"error": "the server's database failed"}` | |
@@ -321,6 +322,53 @@ side's module of its build:
 A server from before answers 404: the game keeps its dossiers and sends none
 for the rest of the run.
 
+## Replays
+
+The server can keep the replays of online games, as `REPLAYS` chooses
+([install.md](install.md#replays)): `all` of them, ranked or with friends,
+however they ended (for tests); every `ranked` game that ended `normal`; or, with
+`top`, only the ranked games that ended `normal` with a top player: a player of
+either side in the first `REPLAY_TOP` places (10 by default) of the season's
+board, this season or the last one that ended (as on the board: a Recharged
+player's WFC profiles count as one, and equal scores share a place).
+
+Only a game that says it can send one is asked: its reports carry `"replays":
+true` (Recharged 1.2). Older games are never asked, and their answers are the
+same as before.
+
+It asks for a game's replay in its answer to a side's `game` report: `{"match_id":
+12, "replay": true}`, until one copy came. The first side's report decides; the
+other side's, or the same report sent again, gets the same answer. With `top`, the
+top players are worked out once a minute, so a player who just reached the top may
+wait a minute.
+
+The game then sends the replay file as it keeps it in its `replays` folder (a
+`.msc` file, `src/platform/match_replay_file.h` in Recharged), after the game and
+never during a match:
+
+`POST /api/v1/wfc/replays?profile_id=1000000000&series=1792000000&game=1`, on
+the same port, the body the file (`Content-Type: application/octet-stream`),
+1 MiB at most. The server reads only its header (the build, the game ID and the
+steps), and only from an address some profile is logged in from (as dossiers);
+it counts only from the profile's own login ([Trust](#trust)).
+
+The first copy of a game is kept in `REPLAY_DIR` as `<year>/<month>/<match>-<game>.msc`
+(UTC), forever, with a row in `replays`; the other side's copy is only counted.
+A file is written whole under a hidden name (`.<match>-<game>-<side>.part`) and
+renamed once it is the kept copy, so a reader of the folder never sees half of one.
+
+| Status | Body | |
+|---|---|---|
+| 200 | `{"match_id": 12}` | kept, or a copy came before: the game deletes its own |
+| 400 | `{"error": "replay cut short"}` | not a replay, or its sizes do not add up: the game deletes it |
+| 403 | `{"error": "profile not logged in from this address"}` | the game sends it again later |
+| 413 | `{"error": "..."}` | too big: the game deletes it |
+| 422 | `{"error": "the server did not ask for this game's replay"}` | or `no such series`: the game deletes it |
+| 500 | `{"error": "the server could not write the replay"}` | the game sends it again later |
+
+A server without replays answers 404: the game sends none for the rest of the
+run.
+
 ## Trust
 
 As for gamestats2's puts ([gamestats2.md](gamestats2.md#trust)), a report
@@ -394,6 +442,7 @@ does not count. Endings and lengths are each side's own.
 | `client_errors` | the error codes the games showed, 30 days |
 | `desync_dossiers` | the games' desync dossiers, 14 days |
 | `desync_divergences` | where a game's two dossiers first differ |
+| `replays` | the games whose replay the server asked for: the sides' places, and the copy kept, its file, size, SHA-256 and steps |
 
 These matches are not the profiles' test matches ([profiles.md](profiles.md#matches)),
 which two players who signed in from the launcher arrange and report

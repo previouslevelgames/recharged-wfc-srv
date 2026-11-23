@@ -155,6 +155,9 @@ pub struct Report {
     pub cause: Option<&'static str>,
     /// An end whose `cause` is [`FORFEIT`]: its player gave the match up.
     pub forfeit: bool,
+    /// The game sends a game's replay when the server asks for it (from
+    /// Recharged 1.2); older games say nothing and are never asked.
+    pub replays: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -248,6 +251,8 @@ struct RawReport {
     os: Option<Value>,
     #[serde(default)]
     cause: Option<Value>,
+    #[serde(default)]
+    replays: Option<Value>,
 }
 
 #[derive(Default, Deserialize)]
@@ -338,6 +343,7 @@ impl RawReport {
             event,
             build: self.build.as_ref().and_then(printable),
             os: self.os.as_ref().and_then(printable),
+            replays: self.replays.as_ref().and_then(Value::as_bool) == Some(true),
         })
     }
 }

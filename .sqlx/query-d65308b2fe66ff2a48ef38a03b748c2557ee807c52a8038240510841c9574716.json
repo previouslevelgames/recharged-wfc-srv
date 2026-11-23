@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT file IS NOT NULL AS \"kept!\" FROM replays WHERE match_id = $1 AND game = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "kept!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int4"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "d65308b2fe66ff2a48ef38a03b748c2557ee807c52a8038240510841c9574716"
+}

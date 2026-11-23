@@ -381,12 +381,40 @@ fn ranked(
     (top, count, found)
 }
 
-/// Each category's latest season (or day) before `today` that has scores:
-/// the rows `past_scores` kept, and those of the players who have not played
-/// since, which are still in `scores`; rows without a game count no one.
-/// `today` is the UTC date, the EU clock: US games start a season 8 hours
-/// later, JP games 9 hours earlier.
+/// Each category's latest season (or day) before `today` that has scores.
 async fn past(conn: &mut PgConnection, today: Date) -> Result<Vec<Past>, sqlx::Error> {
+    let (last, rows) = past_rows(&mut *conn, today).await?;
+    let owners = Owners::read(conn, &rows).await?;
+    let mut boards: BTreeMap<i32, Vec<Row>> = BTreeMap::new();
+    for row in rows {
+        boards.entry(row.category).or_default().push(row);
+    }
+    Ok(boards
+        .into_iter()
+        .map(|(category, rows)| {
+            // As `top` and the game rank: equal scores share a rank.
+            let (top, players) = leaders(category, rows, &owners);
+            let first_day = last[&category];
+            Past {
+                category,
+                first_day: first_day.to_string(),
+                last_day: season::last_day(category, first_day).to_string(),
+                players,
+                top,
+            }
+        })
+        .collect())
+}
+
+/// The first day of each category's latest season (or day) before `today`
+/// that has scores, and its rows: those `past_scores` kept, and those of the
+/// players who have not played since, which are still in `scores`; rows
+/// without a game count no one. `today` is the UTC date, the EU clock: US
+/// games start a season 8 hours later, JP games 9 hours earlier.
+async fn past_rows(
+    conn: &mut PgConnection,
+    today: Date,
+) -> Result<(BTreeMap<i32, Date>, Vec<Row>), sqlx::Error> {
     let ended = |category, first_day| first_day < season::first_day(category, today);
     let unreplaced: Vec<(Date, Row)> = sqlx::query_as!(
         Row,
@@ -444,26 +472,68 @@ async fn past(conn: &mut PgConnection, today: Date) -> Result<Vec<Past>, sqlx::E
         .filter(|row| players::played(row.score, &row.userdata))
         .chain(unreplaced)
         .collect();
-    let owners = Owners::read(conn, &rows).await?;
-    let mut boards: BTreeMap<i32, Vec<Row>> = BTreeMap::new();
-    for row in rows {
-        boards.entry(row.category).or_default().push(row);
-    }
-    Ok(boards
+    Ok((last, rows))
+}
+
+/// The WFC profiles of the players in the first `places` places of the
+/// season's board ([`SEASON`]) on `today`, this season or the last one that
+/// ended, with the better place each had: the top players whose ranked games
+/// the server keeps as replays (`crate::replays`). A player is all the
+/// profiles a launcher proved for them, also those without a row on these
+/// boards. Equal scores share a place, as on the board: a tie can make more
+/// players.
+pub(crate) async fn season_leaders(
+    conn: &mut PgConnection,
+    today: Date,
+    places: i64,
+) -> Result<HashMap<i32, i64>, sqlx::Error> {
+    let this_season: Vec<Row> = current(&mut *conn, today)
+        .await?
         .into_iter()
-        .map(|(category, rows)| {
-            // As `top` and the game rank: equal scores share a rank.
-            let (top, players) = leaders(category, rows, &owners);
-            let first_day = last[&category];
-            Past {
-                category,
-                first_day: first_day.to_string(),
-                last_day: season::last_day(category, first_day).to_string(),
-                players,
-                top,
+        .filter(|row| row.category == SEASON)
+        .collect();
+    let (_, last_season) = past_rows(&mut *conn, today).await?;
+    let last_season: Vec<Row> = last_season
+        .into_iter()
+        .filter(|row| row.category == SEASON)
+        .collect();
+    let mut leaders: HashMap<i32, i64> = HashMap::new();
+    let mut players: HashMap<i64, i64> = HashMap::new();
+    for rows in [this_season, last_season] {
+        let owners = Owners::read(&mut *conn, &rows).await?;
+        let (_, _, found) = ranked(SEASON, rows, &owners, 0, |entry| entry.rank <= places);
+        for entry in found {
+            for profile_id in entry.profile_ids {
+                better(&mut leaders, profile_id, entry.rank);
+                if let Some(&player) = owners.players.get(&profile_id) {
+                    better(&mut players, player, entry.rank);
+                }
             }
-        })
-        .collect())
+        }
+    }
+    let ids: Vec<i64> = players.keys().copied().collect();
+    let profiles = sqlx::query!(
+        "SELECT profile_id, player_id FROM player_wfc_profiles WHERE player_id = ANY($1)",
+        &ids
+    )
+    .fetch_all(&mut *conn)
+    .await?;
+    for profile in profiles {
+        better(
+            &mut leaders,
+            profile.profile_id,
+            players[&profile.player_id],
+        );
+    }
+    Ok(leaders)
+}
+
+/// Keeps the better (lower) of `place` and the one `key` has.
+fn better<K: Eq + std::hash::Hash>(places: &mut HashMap<K, i64>, key: K, place: i64) {
+    places
+        .entry(key)
+        .and_modify(|kept| *kept = (*kept).min(place))
+        .or_insert(place);
 }
 
 #[cfg(test)]
@@ -780,5 +850,66 @@ mod tests {
                 (1, "2026-10-22", "2026-10-22", 1, vec![(1, "Luigi", 4)]),
             ]
         );
+    }
+
+    #[sqlx::test]
+    async fn season_leaders_are_the_first_places_this_season_and_the_last(pool: PgPool) {
+        // Birnen leads this season with two profiles, one without a row;
+        // Raulaso and Kiki tie in second place; Daisy is fourth. Luigi led
+        // the last season, Mario was second; the day's board counts for none.
+        let [europe, us] = one_player(&pool, 42, "Birnen").await;
+        for (pid, category, score, day, name) in [
+            (europe, 0, 300, 22, "Birnen"),
+            (7, 0, 200, 23, "Raulaso"),
+            (8, 0, 200, 23, "Kiki"),
+            (9, 0, 100, 23, "Daisy"),
+            (10, 1, 900, 23, "Toad"),
+            (2, 0, 40, 20, "Mario"),
+        ] {
+            let mut userdata = dated(day, name);
+            userdata[0x04..0x08].copy_from_slice(&1i32.to_le_bytes());
+            sqlx::query!(
+                "INSERT INTO scores (profile_id, category, region, score, userdata)
+                 VALUES ($1, $2, 4, $3, $4)",
+                pid,
+                category,
+                score,
+                &userdata,
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        let mut luigi = dated(18, "Luigi");
+        luigi[0x04..0x08].copy_from_slice(&3i32.to_le_bytes());
+        sqlx::query!(
+            "INSERT INTO past_scores
+                 (profile_id, category, first_day, region, score, userdata, updated_at)
+             VALUES (3, 0, $1, 2, 90, $2, now())",
+            Date::from_calendar_date(2026, time::Month::October, 15).unwrap(),
+            &luigi,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let mut conn = pool.acquire().await.unwrap();
+        let mut two = vec![(2, 2), (3, 1), (7, 2), (8, 2), (europe, 1), (us, 1)];
+        two.sort_unstable();
+        assert_eq!(sorted_leaders(&mut conn, 2).await, two);
+        let mut one = vec![(3, 1), (europe, 1), (us, 1)];
+        one.sort_unstable();
+        assert_eq!(sorted_leaders(&mut conn, 1).await, one);
+    }
+
+    /// [`season_leaders`] on [`today`], by profile.
+    async fn sorted_leaders(conn: &mut PgConnection, places: i64) -> Vec<(i32, i64)> {
+        let mut leaders: Vec<(i32, i64)> = season_leaders(conn, today(), places)
+            .await
+            .unwrap()
+            .into_iter()
+            .collect();
+        leaders.sort_unstable();
+        leaders
     }
 }

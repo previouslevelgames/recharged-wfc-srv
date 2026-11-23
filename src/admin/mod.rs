@@ -68,6 +68,7 @@ use crate::{
 };
 pub use config::{Config, GoogleEndpoints, VARIABLES};
 use google::{Account, Login, SignInError};
+pub(crate) use leaderboards::season_leaders;
 use maintenance::{Confirmations, Operation, Refusal};
 use page::PageData;
 use session::{SESSION_TTL, Sessions};

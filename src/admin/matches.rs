@@ -417,9 +417,9 @@ pub(crate) mod tests {
 
         /// Sends `report` as its game does. The match it went to.
         pub async fn send(&self, report: &Value) -> i64 {
-            let app = reports::router(self.pool.clone(), self.gpcm.clone()).layer(MockConnectInfo(
-                std::net::SocketAddr::from(([10, 0, 0, 1], 5000)),
-            ));
+            let app = reports::router(self.pool.clone(), self.gpcm.clone(), None).layer(
+                MockConnectInfo(std::net::SocketAddr::from(([10, 0, 0, 1], 5000))),
+            );
             let request = Request::post("/api/v1/wfc/reports")
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(report.to_string()))
