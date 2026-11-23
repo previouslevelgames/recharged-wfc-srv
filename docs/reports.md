@@ -407,7 +407,8 @@ the replays it keeps are the files the games send after each game.
 ### Watching
 
 The Matches page of `/admin` shows a **Watch** button while a match's games
-stream. It downloads `watch-match-<match>.msc`, a ticket: a replay file of
+stream. It downloads `watch-match-<match>.msc` (`GET /admin/api/matches/<match>/watch`,
+signed in or with the diagnostics token), a ticket: a replay file of
 version 2 whose header is `{"match": 12, "ticket": "...", "release": "R4QE"}`.
 Recharged opens it like a replay (open it with Recharged, or drop it on its
 launcher) and plays the match from

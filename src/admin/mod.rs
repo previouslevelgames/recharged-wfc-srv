@@ -555,14 +555,15 @@ async fn api_matches(
 }
 
 /// A ticket to watch a match as it is played, as a file Recharged opens like
-/// a replay (src/streams.rs): only for a signed-in admin, while the match's
-/// games stream.
+/// a replay (src/streams.rs): for an admin or the diagnostics token, while
+/// the match's games stream.
 async fn watch_ticket(
     State(state): State<Arc<AdminState>>,
     jar: CookieJar,
+    headers: HeaderMap,
     Path(id): Path<i64>,
 ) -> Response {
-    let Some(viewer) = state.signed_in(&jar) else {
+    let Some(viewer) = state.reader(&jar, &headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
     let Some(streams) = state.streams.as_ref().filter(|streams| streams.live(id)) else {
