@@ -166,10 +166,11 @@ impl Streams {
 
     fn game_or_start(&self, match_id: i64, game: i32) -> Arc<LiveGame> {
         let mut games = self.games.lock().unwrap();
-        self.forget_stale(&mut games);
         if let Some(live) = games.get(&(match_id, game)) {
             return live.clone();
         }
+        // Only as a game starts: the games' bytes come many times a second.
+        self.forget_stale(&mut games);
         let live = Arc::new(LiveGame {
             state: Mutex::new(GameState {
                 bytes: Vec::new(),
