@@ -1,7 +1,7 @@
 # Tournaments
 
-The server runs tournaments: a bracket of single or double elimination whose
-sets are the server's own matches ([profiles.md](profiles.md), "Matches").
+The server runs tournaments: a bracket of single or double elimination (or
+single with an ash bracket) whose sets are the server's own matches ([profiles.md](profiles.md), "Matches").
 Players join and play them from the game (its trophy room); admins make,
 start and decide them on `/admin/tournaments`. The code is in
 `src/profiles/tournaments/`: `bracket.rs` (the bracket, without the
@@ -21,10 +21,10 @@ READY, and the tournament's page says `"eligible": false, "reason":
 
 | Field | |
 |---|---|
-| `format` | `single` or `double` elimination |
+| `format` | `single` or `double` elimination, or `single_ash`: single elimination with an ash bracket |
 | `state` | `registration` (open for entries), `running`, `finished` or `cancelled` |
 | `rule_set`, `rules` | The rules its matches are played by, copied from a rule set when it was made |
-| `best_of`, `finals_best_of` | Games of a set, and of a final: in single elimination the last round; in double the winners' final, the losers' final, the grand final and its reset |
+| `best_of`, `finals_best_of` | Games of a set, and of a final: in single elimination the last round (and the ash bracket's); in double the winners' final, the losers' final, the grand final and its reset |
 | `max_entrants` | The most who can join (2 to 256), or `null` |
 
 When it starts, the entrants get their seeds (in the order they joined, at
@@ -34,6 +34,17 @@ against 5, …). In double elimination the losers of each winners' round drop
 into the losers' bracket crossed, so two players don't meet again soon; the
 grand final's reset is played only when the player from the losers' bracket
 wins the grand final.
+
+With an ash bracket (`single_ash`), the losers of the first round play a
+single elimination of their own, its sets on the side `ash` (with 16
+entrants, 8 players from the quarterfinals). Only the sets of the first
+round that are played count: a bye is no loss, so with 12 entrants the ash
+bracket has 4 players, with 10 it is one final, and with fewer than 2 such
+sets there is none. It is seeded by the seed expected to lose each of those
+sets (the worse one), byes to the best, and a set of it is ready as soon as
+the two sets its players come from are decided, alongside the main bracket.
+It gives no places: an entrant's `place` is the one of the main bracket, and
+the tournament ends when both are over.
 
 ## Sets
 
