@@ -3198,6 +3198,14 @@ const tournamentForm = {
     const select = (id, values, selected) =>
       h('select', { id }, values.map(([value, text]) => h('option', { value, selected: String(value) === String(selected) }, text)));
     const bestOf = series.map((games) => [games, `Best of ${games}`]);
+    // A tournament's sets play their own best of, whatever the rule set says.
+    const note = h('p', { class: 'editor-note' });
+    const noteRules = () => {
+      const chosen = ruleSets.find((set) => String(set.id) === document.getElementById('tournament-rules').value);
+      note.textContent = chosen
+        ? `Sets and finals override the rule set's best of ${chosen.rules.games}.`
+        : "Sets and finals override the rule set's best of.";
+    };
     const body = h(
       'form',
       { class: 'editor', onsubmit: (event) => { event.preventDefault(); this.save(); } },
@@ -3215,6 +3223,7 @@ const tournamentForm = {
         field('Finals', select('tournament-finals', bestOf, 5)),
         field('Most entrants', h('input', { id: 'tournament-max', type: 'number', min: '2', max: '256', placeholder: 'no limit' })),
       ),
+      note,
       h(
         'div',
         { class: 'editor-actions' },
@@ -3229,6 +3238,8 @@ const tournamentForm = {
       body,
     );
     document.getElementById('body').before(this.node);
+    document.getElementById('tournament-rules').addEventListener('change', noteRules);
+    noteRules();
   },
 
   async save() {
