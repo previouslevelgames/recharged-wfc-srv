@@ -107,6 +107,20 @@ pub struct Detail {
     desyncs: Vec<super::monitoring::Desync>,
     /// The days the server keeps them.
     dossiers_kept_days: i32,
+    /// The games whose replay the server keeps, the first first.
+    replays: Vec<KeptReplay>,
+}
+
+/// A game whose replay the server keeps: the side that sent it, its size and
+/// steps, and when it came.
+#[derive(Serialize)]
+struct KeptReplay {
+    game: i32,
+    side: String,
+    bytes: i32,
+    steps: i32,
+    #[serde(with = "time::serde::rfc3339")]
+    received_at: OffsetDateTime,
 }
 
 #[derive(Serialize)]
@@ -300,6 +314,16 @@ pub async fn detail(
     )
     .await?;
     let desyncs = super::monitoring::desyncs(&mut tx, Some(match_id)).await?;
+    let replays = sqlx::query_as!(
+        KeptReplay,
+        r#"SELECT game, side AS "side!", bytes AS "bytes!", steps AS "steps!",
+                  received_at AS "received_at!"
+           FROM replays WHERE match_id = $1 AND file IS NOT NULL
+           ORDER BY game"#,
+        match_id,
+    )
+    .fetch_all(&mut *tx)
+    .await?;
     tx.commit().await?;
 
     let empty = Default::default();
@@ -346,6 +370,7 @@ pub async fn detail(
         relay_kept_days: relay_store::KEPT_DAYS,
         desyncs,
         dossiers_kept_days: reports::dossiers::KEPT_DAYS,
+        replays,
     }))
 }
 
@@ -563,6 +588,32 @@ pub(crate) mod tests {
         );
         let body: Value = serde_json::from_str(&detail.events[4].body).unwrap();
         assert_eq!(body["game"]["number"], 2);
+
+        // The games whose replay the server keeps: not one only asked for.
+        assert!(detail.replays.is_empty());
+        sqlx::query(
+            "INSERT INTO replays (match_id, game, side, file, bytes, steps, received_at)
+             VALUES ($1, 1, 'away', '2026/11/x-1.msc', 300, 9150, now())",
+        )
+        .bind(match_id)
+        .execute(&games.pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO replays (match_id, game) VALUES ($1, 2)")
+            .bind(match_id)
+            .execute(&games.pool)
+            .await
+            .unwrap();
+        let detail = super::detail(&games.pool, match_id, |_| false)
+            .await
+            .unwrap()
+            .unwrap();
+        let kept: Vec<_> = detail
+            .replays
+            .iter()
+            .map(|kept| (kept.game, kept.side.as_str(), kept.bytes, kept.steps))
+            .collect();
+        assert_eq!(kept, [(1, "away", 300, 9150)]);
 
         assert!(
             super::detail(&games.pool, match_id + 1, |_| false)

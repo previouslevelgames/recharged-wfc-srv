@@ -65,6 +65,7 @@ use crate::{
     master::Master,
     pairing::Pairings,
     profiles::rules::{self, Rules, SaveError},
+    replays::Replays,
     streams::Streams,
 };
 pub use config::{Config, GoogleEndpoints, VARIABLES};
@@ -136,9 +137,11 @@ struct AdminState {
     /// [`LOGIN_PAGE`] and [`DASHBOARD_PAGE`] with the server's label.
     login_page: String,
     dashboard_page: String,
-    /// The games streaming as they are played, for the Watch button; none
-    /// when the server keeps no replays.
+    /// The games streaming as they are played, for the Watch button, and
+    /// the replays the server keeps, for the Replay and Download buttons;
+    /// none when the server keeps no replays.
     streams: Option<Arc<Streams>>,
+    replays: Option<Arc<Replays>>,
 }
 
 // The server's services, each its own argument as lib.rs hands them out.
@@ -152,6 +155,7 @@ pub(crate) fn router(
     config: Config,
     test_sign_in: Option<bool>,
     streams: Option<Arc<Streams>>,
+    replays: Option<Arc<Replays>>,
 ) -> Router {
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
@@ -175,6 +179,7 @@ pub(crate) fn router(
         login_page,
         dashboard_page,
         streams,
+        replays,
     });
     let mut router = Router::new();
     for path in PAGES {
@@ -196,6 +201,7 @@ pub(crate) fn router(
         .route("/admin/api/matches", get(api_matches))
         .route("/admin/api/matches/{id}", get(api_match))
         .route("/admin/api/matches/{id}/watch", get(watch_ticket))
+        .route("/admin/api/matches/{id}/replays/{game}", get(replay_file))
         .route("/admin/api/monitoring", get(api_monitoring))
         .route("/admin/api/database", get(api_database))
         .route("/admin/api/leaderboards", get(api_leaderboards))
@@ -555,11 +561,14 @@ async fn api_matches(
 }
 
 /// How the Watch button wants its ticket: as a file (the default) or as a
-/// `recharged://` link that opens Recharged at once (`?as=link`).
+/// `recharged://` link that opens Recharged at once (`?as=link`); with
+/// `game`, for the kept replay of that game (the Replay button), then the
+/// match's later kept games.
 #[derive(Deserialize)]
 struct WatchAs {
     #[serde(rename = "as")]
     format: Option<String>,
+    game: Option<i32>,
 }
 
 /// A ticket to watch a match as it is played, as a file Recharged opens like
@@ -570,14 +579,41 @@ async fn watch_ticket(
     jar: CookieJar,
     headers: HeaderMap,
     Path(id): Path<i64>,
-    Query(WatchAs { format }): Query<WatchAs>,
+    Query(WatchAs { format, game }): Query<WatchAs>,
 ) -> Response {
     let Some(viewer) = state.reader(&jar, &headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
-    let Some(streams) = state.streams.as_ref().filter(|streams| streams.live(id)) else {
-        return (StatusCode::NOT_FOUND, "No game of this match streams.").into_response();
+    let Some(streams) = &state.streams else {
+        return (StatusCode::NOT_FOUND, "The server keeps no replays.").into_response();
     };
+    match game {
+        None if !streams.live(id) => {
+            return (StatusCode::NOT_FOUND, "No game of this match streams.").into_response();
+        }
+        Some(game) => match sqlx::query_scalar!(
+            "SELECT 1 FROM replays WHERE match_id = $1 AND game = $2 AND file IS NOT NULL",
+            id,
+            game,
+        )
+        .fetch_optional(&state.pool)
+        .await
+        {
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                return (
+                    StatusCode::NOT_FOUND,
+                    "The server keeps no replay of this game.",
+                )
+                    .into_response();
+            }
+            Err(error) => {
+                warn!(target: "admin", %error, "database error");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        },
+        None => {}
+    }
     let release =
         match sqlx::query_scalar!("SELECT release FROM online_matches WHERE match_id = $1", id)
             .fetch_optional(&state.pool)
@@ -590,25 +626,77 @@ async fn watch_ticket(
                 return StatusCode::INTERNAL_SERVER_ERROR.into_response();
             }
         };
-    info!(target: "admin", admin = %viewer.email, match_id = id, "watch ticket");
+    info!(target: "admin", admin = %viewer.email, match_id = id, game, "watch ticket");
     let ticket = streams.ticket(id, crate::streams::now());
     if format.as_deref() == Some("link") {
-        return Json(serde_json::json!({
-            "url": crate::streams::watch_link(id, &ticket, &release),
-        }))
-        .into_response();
+        let url = match game {
+            Some(game) => crate::streams::replay_link(id, game, &ticket, &release),
+            None => crate::streams::watch_link(id, &ticket, &release),
+        };
+        return Json(serde_json::json!({ "url": url })).into_response();
     }
+    let (name, file) = match game {
+        Some(game) => (
+            format!("watch-match-{id}-game-{game}.msc"),
+            crate::streams::replay_ticket_file(id, game, &ticket, &release),
+        ),
+        None => (
+            format!("watch-match-{id}.msc"),
+            crate::streams::ticket_file(id, &ticket, &release),
+        ),
+    };
     (
         [
             (header::CONTENT_TYPE, "application/octet-stream".to_owned()),
             (
                 header::CONTENT_DISPOSITION,
-                format!(r#"attachment; filename="watch-match-{id}.msc""#),
+                format!(r#"attachment; filename="{name}""#),
             ),
         ],
-        crate::streams::ticket_file(id, &ticket, &release),
+        file,
     )
         .into_response()
+}
+
+/// The kept replay of a game of a match as the game sent it (the Download
+/// button): a replay file to open with Recharged 1.2 or drop on its launcher.
+async fn replay_file(
+    State(state): State<Arc<AdminState>>,
+    jar: CookieJar,
+    headers: HeaderMap,
+    Path((id, game)): Path<(i64, i32)>,
+) -> Response {
+    let Some(viewer) = state.reader(&jar, &headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let Some(replays) = &state.replays else {
+        return (StatusCode::NOT_FOUND, "The server keeps no replays.").into_response();
+    };
+    match replays.kept(&state.pool, id, game).await {
+        Ok(Some(kept)) => {
+            info!(target: "admin", admin = %viewer.email, match_id = id, game, "replay downloaded");
+            (
+                [
+                    (header::CONTENT_TYPE, "application/octet-stream".to_owned()),
+                    (
+                        header::CONTENT_DISPOSITION,
+                        format!(r#"attachment; filename="match-{id}-game-{game}.msc""#),
+                    ),
+                ],
+                kept.bytes,
+            )
+                .into_response()
+        }
+        Ok(None) => (
+            StatusCode::NOT_FOUND,
+            "The server keeps no replay of this game.",
+        )
+            .into_response(),
+        Err(error) => {
+            warn!(target: "admin", ?error, match_id = id, game, "replay unreadable");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
 }
 
 /// A match's detail; `null` for none.

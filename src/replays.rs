@@ -303,6 +303,40 @@ impl Replays {
         Ok((place(Side::Home), place(Side::Away)))
     }
 
+    /// The kept replay of game `game` of match `match_id`, and the match's
+    /// next game whose replay the server keeps; none when it keeps none of
+    /// this game.
+    pub async fn kept(
+        &self,
+        pool: &PgPool,
+        match_id: i64,
+        game: i32,
+    ) -> Result<Option<KeptFile>, KeepError> {
+        let Some(file) = sqlx::query_scalar!(
+            r#"SELECT file AS "file!" FROM replays
+               WHERE match_id = $1 AND game = $2 AND file IS NOT NULL"#,
+            match_id,
+            game,
+        )
+        .fetch_optional(pool)
+        .await?
+        else {
+            return Ok(None);
+        };
+        let next = sqlx::query_scalar!(
+            "SELECT min(game) FROM replays WHERE match_id = $1 AND game > $2 AND file IS NOT NULL",
+            match_id,
+            game,
+        )
+        .fetch_one(pool)
+        .await?;
+        let path = self.config.dir.join(file);
+        let bytes = tokio::task::spawn_blocking(move || std::fs::read(path))
+            .await
+            .map_err(|error| KeepError::Io(io::Error::other(error)))??;
+        Ok(Some(KeptFile { bytes, next }))
+    }
+
     /// Keeps `body`, the replay of `game` of `profile_id`'s `series`, if the
     /// server asked for it and no copy came before. The file is written whole
     /// under a hidden name first; the first side to claim the row renames it
@@ -428,6 +462,14 @@ impl Replays {
         debug!(target: "replays", match_id, game, side, "replay came before");
         Ok(())
     }
+}
+
+/// A kept replay as [`Replays::kept`] reads it.
+pub(crate) struct KeptFile {
+    /// The file as the game sent it.
+    pub bytes: Vec<u8>,
+    /// The match's next game whose replay the server keeps.
+    pub next: Option<i32>,
 }
 
 /// Why a replay could not be kept: the server's own trouble, which the game

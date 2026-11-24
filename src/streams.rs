@@ -422,8 +422,19 @@ fn unhex(text: &str) -> Option<Vec<u8>> {
 /// `src/platform/match_replay_file.h`): a replay file of version 2, whose
 /// header says what to watch instead of holding a match.
 pub fn ticket_file(match_id: i64, ticket: &str, release: &str) -> Vec<u8> {
-    let header =
-        serde_json::json!({ "match": match_id, "ticket": ticket, "release": release }).to_string();
+    ticket_with(serde_json::json!({ "match": match_id, "ticket": ticket, "release": release }))
+}
+
+/// A ticket to watch the kept replay of game `game` of a match, then the
+/// match's later kept games: the same file, its header naming the game.
+pub fn replay_ticket_file(match_id: i64, game: i32, ticket: &str, release: &str) -> Vec<u8> {
+    ticket_with(serde_json::json!({
+        "match": match_id, "game": game, "ticket": ticket, "release": release,
+    }))
+}
+
+fn ticket_with(header: serde_json::Value) -> Vec<u8> {
+    let header = header.to_string();
     let mut file = b"MSCRPLY\x1a".to_vec();
     file.extend_from_slice(&2u16.to_le_bytes());
     file.extend_from_slice(&(header.len() as u16).to_le_bytes());
@@ -435,6 +446,11 @@ pub fn ticket_file(match_id: i64, ticket: &str, release: &str) -> Vec<u8> {
 /// which Recharged registers itself for (opening it starts the watching).
 pub fn watch_link(match_id: i64, ticket: &str, release: &str) -> String {
     format!("recharged://watch/{match_id}?ticket={ticket}&release={release}")
+}
+
+/// The replay ticket as a link: `recharged://replay/<match>?game=2&ticket=...&release=R4QE`.
+pub fn replay_link(match_id: i64, game: i32, ticket: &str, release: &str) -> String {
+    format!("recharged://replay/{match_id}?game={game}&ticket={ticket}&release={release}")
 }
 
 /// The Unix time now, for tickets.

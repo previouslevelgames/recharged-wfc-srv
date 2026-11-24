@@ -123,6 +123,7 @@ impl App {
                 config,
                 test_sign_in,
                 self.streams.clone(),
+                self.replays.clone(),
             ));
         }
         if let Some(config) = profiles {

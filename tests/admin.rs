@@ -765,6 +765,122 @@ async fn a_diagnostics_token_reads_the_pages_but_changes_nothing(pool: PgPool) {
     }
 }
 
+#[sqlx::test]
+async fn a_kept_replay_is_listed_downloaded_and_watched_from_its_match(pool: PgPool) {
+    const TOKEN: &str = "diagnostics-0123456789abcdefghijklmnop";
+    let (mut config, _google) = fake_google().await;
+    config.diagnostics_token = Some(TOKEN.into());
+    let match_id: i64 = sqlx::query_scalar(
+        "INSERT INTO online_matches (release, mode, best_of, home_mii, away_mii, home_captain, away_captain)
+         VALUES ('R4QP', 'ranked', 3, 'Anosch', 'Sam', 'mario', 'bowser') RETURNING match_id",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let dir = std::env::temp_dir().join(format!(
+        "wfc-admin-replays-{}-{match_id}",
+        std::process::id()
+    ));
+    let file = format!("2026/11/{match_id}-2.msc");
+    std::fs::create_dir_all(dir.join("2026/11")).unwrap();
+    let replay = b"MSCRPLY\x1a\x01\x00the game's replay".to_vec();
+    std::fs::write(dir.join(&file), &replay).unwrap();
+    sqlx::query(
+        "INSERT INTO replays (match_id, game, side, file, bytes, steps, received_at)
+         VALUES ($1, 2, 'away', $2, $3, 9150, now())",
+    )
+    .bind(match_id)
+    .bind(&file)
+    .bind(replay.len() as i32)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let replays = recharged_wfc_srv::replays::Config {
+        games: recharged_wfc_srv::replays::Games::All,
+        dir: dir.clone(),
+    };
+    let mut browser = Browser::new(
+        recharged_wfc_srv::App::new(pool.clone())
+            .with_replays(Some(replays))
+            .router(Some(config), None),
+    );
+    let bearer =
+        |uri: &str| Request::get(uri).header(header::AUTHORIZATION, format!("Bearer {TOKEN}"));
+
+    // The match lists the game; its file comes as it was sent.
+    let (status, _, body) = browser
+        .send(bearer(&format!("/admin/api/matches/{match_id}")))
+        .await;
+    assert_eq!(status, 200);
+    let data: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(data["content"]["replays"][0]["game"], 2, "{body}");
+    assert_eq!(data["content"]["replays"][0]["steps"], 9150, "{body}");
+    let (status, headers, body) = browser
+        .send(bearer(&format!("/admin/api/matches/{match_id}/replays/2")))
+        .await;
+    assert_eq!(status, 200);
+    assert_eq!(body.as_bytes(), replay.as_slice());
+    assert!(
+        headers[header::CONTENT_DISPOSITION]
+            .to_str()
+            .unwrap()
+            .contains(&format!("match-{match_id}-game-2.msc"))
+    );
+    for uri in [
+        format!("/admin/api/matches/{match_id}/replays/1"),
+        format!("/admin/api/matches/{match_id}/watch?as=link&game=1"),
+    ] {
+        assert_eq!(browser.send(bearer(&uri)).await.0, 404, "{uri}");
+    }
+    assert_eq!(
+        browser
+            .get(&format!("/admin/api/matches/{match_id}/replays/2"))
+            .await
+            .0,
+        401
+    );
+
+    // Replay: a link that names the game, or the same ticket as a file.
+    let (status, _, body) = browser
+        .send(bearer(&format!(
+            "/admin/api/matches/{match_id}/watch?as=link&game=2"
+        )))
+        .await;
+    assert_eq!(status, 200);
+    let link: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let url = link["url"].as_str().unwrap();
+    assert!(
+        url.starts_with(&format!("recharged://replay/{match_id}?game=2&ticket="))
+            && url.ends_with("&release=R4QP"),
+        "{url}"
+    );
+    let (status, _, body) = browser
+        .send(bearer(&format!(
+            "/admin/api/matches/{match_id}/watch?game=2"
+        )))
+        .await;
+    assert_eq!(status, 200);
+    let size = usize::from(u16::from_le_bytes([
+        body.as_bytes()[10],
+        body.as_bytes()[11],
+    ]));
+    let header: serde_json::Value =
+        serde_json::from_slice(&body.as_bytes()[12..12 + size]).unwrap();
+    assert_eq!(
+        (header["match"].as_i64(), header["game"].as_i64()),
+        (Some(match_id), Some(2))
+    );
+    // A finished match without a game given streams nothing.
+    assert_eq!(
+        browser
+            .send(bearer(&format!("/admin/api/matches/{match_id}/watch")))
+            .await
+            .0,
+        404
+    );
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
 #[tokio::test]
 async fn admin_is_not_served_without_its_configuration() {
     let mut browser = Browser::new(recharged_wfc_srv::App::new(lazy_pool()).router(None, None));

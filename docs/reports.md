@@ -439,6 +439,22 @@ LE), which the spectator skips too, as far into the part; `0` nothing new
 (every 5 seconds). A spectator who comes in a game gets that game from its start,
 then follows the series' games, until the match is no longer in progress.
 
+A game whose replay the server keeps can be watched after the match too. The
+match's page lists those games (`replays` in `GET /admin/api/matches/<match>`:
+each game, the side that sent it, its size, steps and when it came) with two
+buttons. **Download** gives the file as the game sent it
+(`GET /admin/api/matches/<match>/replays/<game>`), a replay to open with
+Recharged 1.2 or drop on its launcher. **Replay** opens
+`recharged://replay/<match>?game=2&ticket=...&release=R4QE`
+(`GET /admin/api/matches/<match>/watch?as=link&game=2`; without `as=link`, the
+same ticket as a file, its header naming the game too). Recharged then fetches
+the file from
+
+`GET /api/v1/wfc/replays/<match>/<game>` with `Authorization: Bearer <ticket>`
+
+and plays it, then the match's later kept games: `X-Next-Game` names the next
+one. `404` for a game whose replay the server does not keep.
+
 ## Trust
 
 As for gamestats2's puts ([gamestats2.md](gamestats2.md#trust)), a report
