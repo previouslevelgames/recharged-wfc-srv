@@ -1409,6 +1409,49 @@ mod tests {
     }
 
     #[sqlx::test]
+    async fn an_ash_bracket_is_played_by_the_first_rounds_losers(pool: PgPool) {
+        let (id, p) = tournament(
+            &pool,
+            Format::SingleAsh,
+            &["Mario", "Luigi", "Peach", "Daisy"],
+        )
+        .await;
+        assert_eq!(start(&pool, id, Seeding::Joined).await.unwrap(), Ok(()));
+        assert_eq!(sets(&pool, id).await.unwrap().len(), 4);
+        let first = set_of(&pool, id, p[0]).await;
+        play(&pool, id, &first, p[0]).await;
+        // The first loser waits in the ash bracket for the other.
+        let ash = |sets: Vec<Set>| sets.into_iter().find(|set| set.side == "ash").unwrap();
+        let waiting = ash(sets(&pool, id).await.unwrap());
+        assert_eq!(waiting.state, "pending");
+        assert_eq!(waiting.away, Some(p[3]));
+        let second = set_of(&pool, id, p[1]).await;
+        play(&pool, id, &second, p[1]).await;
+        // Seeded by the seed expected to lose: 3 before 4. It is a final.
+        let ash_final = set_of(&pool, id, p[3]).await;
+        assert_eq!(ash_final.side, "ash");
+        assert_eq!(
+            (ash_final.home, ash_final.away, ash_final.games),
+            (Some(p[2]), Some(p[3]), 5)
+        );
+        // The final and the ash final go on side by side; the tournament
+        // ends with both.
+        let final_set = set_of(&pool, id, p[0]).await;
+        play(&pool, id, &final_set, p[0]).await;
+        assert_eq!(get(&pool, id).await.unwrap().unwrap().state, "running");
+        play(&pool, id, &ash_final, p[3]).await;
+        assert_eq!(get(&pool, id).await.unwrap().unwrap().state, "finished");
+        // The places are the main bracket's.
+        let places: Vec<Option<i32>> = entrants(&pool, id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|entrant| entrant.place)
+            .collect();
+        assert_eq!(places, [Some(1), Some(2), Some(3), Some(3)]);
+    }
+
+    #[sqlx::test]
     async fn a_set_lists_the_games_it_played(pool: PgPool) {
         let (id, p) =
             tournament(&pool, Format::Single, &["Mario", "Luigi", "Peach", "Daisy"]).await;
