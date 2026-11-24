@@ -387,6 +387,12 @@ pub fn ticket_file(match_id: i64, ticket: &str, release: &str) -> Vec<u8> {
     file
 }
 
+/// The same ticket as a link: `recharged://watch/<match>?ticket=...&release=R4QE`,
+/// which Recharged registers itself for (opening it starts the watching).
+pub fn watch_link(match_id: i64, ticket: &str, release: &str) -> String {
+    format!("recharged://watch/{match_id}?ticket={ticket}&release={release}")
+}
+
 /// The Unix time now, for tickets.
 pub fn now() -> i64 {
     OffsetDateTime::now_utc().unix_timestamp()
@@ -428,6 +434,14 @@ mod tests {
             Err(Refused::TooBig)
         );
         assert!(streams.live(1) && !streams.live(2));
+    }
+
+    #[test]
+    fn a_watch_link_names_the_match_its_ticket_and_release() {
+        assert_eq!(
+            watch_link(7, "00ff", "R4QE"),
+            "recharged://watch/7?ticket=00ff&release=R4QE"
+        );
     }
 
     #[test]

@@ -554,14 +554,23 @@ async fn api_matches(
         .await
 }
 
+/// How the Watch button wants its ticket: as a file (the default) or as a
+/// `recharged://` link that opens Recharged at once (`?as=link`).
+#[derive(Deserialize)]
+struct WatchAs {
+    #[serde(rename = "as")]
+    format: Option<String>,
+}
+
 /// A ticket to watch a match as it is played, as a file Recharged opens like
-/// a replay (src/streams.rs): for an admin or the diagnostics token, while
-/// the match's games stream.
+/// a replay, or as a link Recharged registers itself for (src/streams.rs):
+/// for an admin or the diagnostics token, while the match's games stream.
 async fn watch_ticket(
     State(state): State<Arc<AdminState>>,
     jar: CookieJar,
     headers: HeaderMap,
     Path(id): Path<i64>,
+    Query(WatchAs { format }): Query<WatchAs>,
 ) -> Response {
     let Some(viewer) = state.reader(&jar, &headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
@@ -583,6 +592,12 @@ async fn watch_ticket(
         };
     info!(target: "admin", admin = %viewer.email, match_id = id, "watch ticket");
     let ticket = streams.ticket(id, crate::streams::now());
+    if format.as_deref() == Some("link") {
+        return Json(serde_json::json!({
+            "url": crate::streams::watch_link(id, &ticket, &release),
+        }))
+        .into_response();
+    }
     (
         [
             (header::CONTENT_TYPE, "application/octet-stream".to_owned()),
