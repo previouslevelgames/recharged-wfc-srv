@@ -1305,20 +1305,47 @@ function matchPath(match) {
   return `/admin/matches/${match.id}`;
 }
 
-/** While a match's games stream (REPLAYS on the server), a ticket to watch it
- * in Recharged: open the file with Recharged, or drop it on its launcher. */
+/** While a match's games stream (REPLAYS on the server), Watch opens it in
+ * Recharged (a recharged:// link, which Recharged 1.2 registers itself for);
+ * Ticket downloads the same ticket as a file, to open with Recharged or drop on
+ * its launcher. A ticket lasts four hours. */
 function watchButton(match) {
   if (!match.live) return null;
-  return h(
-    'a',
-    {
-      class: 'button',
-      href: `/admin/api/matches/${match.id}/watch`,
-      download: '',
-      title: 'Watch the match in Recharged, half a second behind the players: open the downloaded file with Recharged, or drop it on its launcher. The ticket lasts four hours.',
-    },
-    'Watch',
-  );
+  const watch = async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      const response = await fetch(`/admin/api/matches/${match.id}/watch?as=link`, { credentials: 'same-origin' });
+      if (!response.ok) throw new Error(response.status === 404 ? 'the match no longer streams' : `HTTP ${response.status}`);
+      window.location.href = (await response.json()).url;
+    } catch (error) {
+      button.title = `No ticket: ${error.message}`;
+    } finally {
+      button.disabled = false;
+    }
+  };
+  return [
+    h(
+      'button',
+      {
+        class: 'button',
+        type: 'button',
+        onclick: watch,
+        title: 'Watch the match in Recharged 1.2, half a second behind the players. Without Recharged 1.2 started once on this computer, take the ticket file.',
+      },
+      'Watch',
+    ),
+    h(
+      'a',
+      {
+        class: 'button',
+        href: `/admin/api/matches/${match.id}/watch`,
+        download: '',
+        title: 'The ticket as a file: open it with Recharged, or drop it on its launcher. It lasts four hours.',
+      },
+      'Ticket',
+    ),
+  ];
 }
 
 /** A game the NAT relay carried: its Mii (to its profile) and address. */

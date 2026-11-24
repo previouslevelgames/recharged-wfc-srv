@@ -53,6 +53,12 @@ pub const FRAME_GAME: u8 = 1;
 pub const FRAME_DATA: u8 = 2;
 /// The game's stream is complete.
 pub const FRAME_END: u8 = 3;
+/// A side skipped a part of a cutscene of the game: the part's number in the
+/// game (u16 LE, the presentation's bypass number) and when, in hundredths of a
+/// second after the part began (u16 LE). A spectator skips it too.
+pub const FRAME_SKIP: u8 = 4;
+/// The parts a game keeps skips of, at most.
+pub const MAX_SKIPS: usize = 512;
 
 /// The live games and the key of the watch tickets.
 pub(crate) struct Streams {
@@ -73,6 +79,9 @@ struct GameState {
     bytes: Vec<u8>,
     complete: bool,
     touched: Instant,
+    /// The parts of cutscenes skipped, in the order the sides said so: each
+    /// part once (its number, when).
+    skips: Vec<(u16, u16)>,
 }
 
 /// Why bytes a game sent were not taken.
@@ -140,6 +149,25 @@ impl Streams {
         live.changed.send_modify(|count| *count += 1);
     }
 
+    /// A side skipped part `section` of a cutscene of game `game`, `after`
+    /// hundredths of a second into it: whether the server did not know it
+    /// yet. Only for a game that streams; the first word on a part stays.
+    pub fn skip(&self, match_id: i64, game: i32, section: u16, after: u16) -> bool {
+        let Some(live) = self.game(match_id, game) else {
+            return false;
+        };
+        let mut state = live.state.lock().unwrap();
+        if state.skips.len() >= MAX_SKIPS || state.skips.iter().any(|&(known, _)| known == section)
+        {
+            return false;
+        }
+        state.skips.push((section, after));
+        state.touched = Instant::now();
+        drop(state);
+        live.changed.send_modify(|count| *count += 1);
+        true
+    }
+
     /// Whether a game of `match_id` streams now or did lately.
     pub fn live(&self, match_id: i64) -> bool {
         self.games
@@ -176,6 +204,7 @@ impl Streams {
                 bytes: Vec::new(),
                 complete: false,
                 touched: Instant::now(),
+                skips: Vec::new(),
             }),
             changed: watch::Sender::new(0),
         });
@@ -244,6 +273,7 @@ impl Streams {
             match_id,
             game: None,
             sent: 0,
+            skips_sent: 0,
             ended: false,
             last_check: Instant::now(),
         };
@@ -262,8 +292,9 @@ struct Watching {
     match_id: i64,
     /// The game followed; none before the first.
     game: Option<i32>,
-    /// Its bytes sent so far.
+    /// Its bytes sent so far, and its skips.
     sent: usize,
+    skips_sent: usize,
     /// Its end sent: the next game is awaited.
     ended: bool,
     last_check: Instant,
@@ -306,6 +337,7 @@ impl Watching {
             if self.game != Some(game) {
                 self.game = Some(game);
                 self.sent = 0;
+                self.skips_sent = 0;
                 self.ended = false;
                 return Some(frame(FRAME_GAME, &(game as u32).to_le_bytes()));
             }
@@ -314,13 +346,25 @@ impl Watching {
             // is missed: the game's bytes, or a later game.
             let mut changed = live.changed.subscribe();
             let mut started = self.streams.started.subscribe();
-            let (data, complete) = {
+            let (skip, data, complete) = {
                 let state = live.state.lock().unwrap();
-                (
-                    state.bytes.get(self.sent..).unwrap_or_default().to_vec(),
-                    state.complete,
-                )
+                match state.skips.get(self.skips_sent) {
+                    // A skip first: the spectator may be in that cutscene now.
+                    Some(&skip) => (Some(skip), Vec::new(), false),
+                    None => (
+                        None,
+                        state.bytes.get(self.sent..).unwrap_or_default().to_vec(),
+                        state.complete,
+                    ),
+                }
             };
+            if let Some((section, after)) = skip {
+                self.skips_sent += 1;
+                let mut payload = [0; 4];
+                payload[..2].copy_from_slice(&section.to_le_bytes());
+                payload[2..].copy_from_slice(&after.to_le_bytes());
+                return Some(frame(FRAME_SKIP, &payload));
+            }
             if !data.is_empty() {
                 self.sent += data.len();
                 return Some(frame(FRAME_DATA, &data));
@@ -387,6 +431,12 @@ pub fn ticket_file(match_id: i64, ticket: &str, release: &str) -> Vec<u8> {
     file
 }
 
+/// The same ticket as a link: `recharged://watch/<match>?ticket=...&release=R4QE`,
+/// which Recharged registers itself for (opening it starts the watching).
+pub fn watch_link(match_id: i64, ticket: &str, release: &str) -> String {
+    format!("recharged://watch/{match_id}?ticket={ticket}&release={release}")
+}
+
 /// The Unix time now, for tickets.
 pub fn now() -> i64 {
     OffsetDateTime::now_utc().unix_timestamp()
@@ -428,6 +478,45 @@ mod tests {
             Err(Refused::TooBig)
         );
         assert!(streams.live(1) && !streams.live(2));
+    }
+
+    #[test]
+    fn a_game_keeps_each_skipped_part_once() {
+        let streams = Streams::default();
+        // Only a game that streams.
+        assert!(!streams.skip(1, 1, 3, 150));
+        streams.feed(1, 1, 0, b"abcd").unwrap();
+        assert!(streams.skip(1, 1, 3, 150));
+        assert!(!streams.skip(1, 1, 3, 90));
+        assert!(streams.skip(1, 1, 4, 0));
+        let skips = |streams: &Streams| {
+            streams
+                .game(1, 1)
+                .unwrap()
+                .state
+                .lock()
+                .unwrap()
+                .skips
+                .clone()
+        };
+        assert_eq!(skips(&streams), [(3, 150), (4, 0)]);
+        for section in 5..MAX_SKIPS as u16 + 10 {
+            streams.skip(1, 1, section, 0);
+        }
+        assert_eq!(skips(&streams).len(), MAX_SKIPS);
+        // Its bytes are not touched.
+        assert_eq!(
+            streams.game(1, 1).unwrap().state.lock().unwrap().bytes,
+            b"abcd"
+        );
+    }
+
+    #[test]
+    fn a_watch_link_names_the_match_its_ticket_and_release() {
+        assert_eq!(
+            watch_link(7, "00ff", "R4QE"),
+            "recharged://watch/7?ticket=00ff&release=R4QE"
+        );
     }
 
     #[test]

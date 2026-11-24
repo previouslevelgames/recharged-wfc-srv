@@ -106,6 +106,7 @@ pub fn router(
             .merge(
                 Router::new()
                     .route("/api/v1/wfc/streams", post(receive_stream))
+                    .route("/api/v1/wfc/streams/skips", post(receive_skip))
                     .route_layer(middleware::from_fn_with_state(state.clone(), from_a_login)),
             )
             .route("/api/v1/wfc/streams/{match_id}", get(watch_stream));
@@ -429,38 +430,12 @@ async fn receive_stream(
             "profile_id, series and game: the stream's game",
         );
     };
-    let (Some(replays), Some(streams)) = (&state.replays, &state.streams) else {
+    let Some(streams) = &state.streams else {
         return json_error(StatusCode::NOT_FOUND, "no streams here");
     };
-    if !(1..=9).contains(&game) {
-        return json_error(StatusCode::BAD_REQUEST, "game: 1 to 9");
-    }
-    if !logged_in_at(&state.gpcm, profile_id, peer.ip()) {
-        warn!(target: "streams", profile_id, %peer, "stream from elsewhere");
-        return json_error(
-            StatusCode::FORBIDDEN,
-            "profile not logged in from this address",
-        );
-    }
-    let match_id = match replays
-        .streamed_match(&state.pool, profile_id, series)
-        .await
-    {
-        Ok(Some(match_id)) => match_id,
-        Ok(None) => {
-            debug!(target: "streams", profile_id, series, "stream of no streamed series");
-            return json_error(
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "the server takes no stream of this series",
-            );
-        }
-        Err(error) => {
-            warn!(target: "streams", %error, "database error");
-            return json_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "the server's database failed",
-            );
-        }
+    let match_id = match streamed_game(&state, peer, profile_id, series, game).await {
+        Ok(match_id) => match_id,
+        Err(refused) => return refused,
     };
     debug!(target: "streams", match_id, game, profile_id, offset, "stream begins");
     let mut at = offset as usize;
@@ -489,6 +464,95 @@ async fn receive_stream(
     streams.end(match_id, game);
     info!(target: "streams", match_id, game, profile_id, bytes = at, "stream complete");
     Json(json!({ "match_id": match_id, "bytes": at })).into_response()
+}
+
+/// The match of a game a side streams, from what it says (`profile_id`,
+/// `series`, `game`) and where it says it from: the checks of a stream and of
+/// its skips. Otherwise the answer that refuses it.
+async fn streamed_game(
+    state: &ReportsState,
+    peer: SocketAddr,
+    profile_id: i32,
+    series: i64,
+    game: i32,
+) -> Result<i64, Response> {
+    let Some(replays) = &state.replays else {
+        return Err(json_error(StatusCode::NOT_FOUND, "no streams here"));
+    };
+    if !(1..=9).contains(&game) {
+        return Err(json_error(StatusCode::BAD_REQUEST, "game: 1 to 9"));
+    }
+    if !logged_in_at(&state.gpcm, profile_id, peer.ip()) {
+        warn!(target: "streams", profile_id, %peer, "stream from elsewhere");
+        return Err(json_error(
+            StatusCode::FORBIDDEN,
+            "profile not logged in from this address",
+        ));
+    }
+    match replays
+        .streamed_match(&state.pool, profile_id, series)
+        .await
+    {
+        Ok(Some(match_id)) => Ok(match_id),
+        Ok(None) => {
+            debug!(target: "streams", profile_id, series, "stream of no streamed series");
+            Err(json_error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "the server takes no stream of this series",
+            ))
+        }
+        Err(error) => {
+            warn!(target: "streams", %error, "database error");
+            Err(json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "the server's database failed",
+            ))
+        }
+    }
+}
+
+/// A part of a cutscene a side skipped in a game it streams, and when.
+#[derive(Deserialize)]
+struct SkipQuery {
+    profile_id: i32,
+    series: i64,
+    game: i32,
+    section: u16,
+    #[serde(default)]
+    after: u16,
+}
+
+/// A side skipped a part of a cutscene of a game it streams (docs/reports.md,
+/// "Live streams"): the game's spectators skip it too. Each part counts once.
+async fn receive_skip(
+    State(state): State<ReportsState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    query: Result<Query<SkipQuery>, QueryRejection>,
+) -> Response {
+    let Ok(Query(SkipQuery {
+        profile_id,
+        series,
+        game,
+        section,
+        after,
+    })) = query
+    else {
+        return json_error(
+            StatusCode::BAD_REQUEST,
+            "profile_id, series, game and section: the part skipped",
+        );
+    };
+    let Some(streams) = &state.streams else {
+        return json_error(StatusCode::NOT_FOUND, "no streams here");
+    };
+    let match_id = match streamed_game(&state, peer, profile_id, series, game).await {
+        Ok(match_id) => match_id,
+        Err(refused) => return refused,
+    };
+    if streams.skip(match_id, game, section, after) {
+        debug!(target: "streams", match_id, game, profile_id, section, after, "cutscene part skipped");
+    }
+    StatusCode::NO_CONTENT.into_response()
 }
 
 /// A match as it is played, for a spectator (docs/reports.md, "Live
@@ -736,7 +800,13 @@ mod tests {
             let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
                 .await
                 .unwrap();
-            (status, serde_json::from_slice(&bytes).unwrap())
+            // No body (204): null.
+            let value = if bytes.is_empty() {
+                Value::Null
+            } else {
+                serde_json::from_slice(&bytes).unwrap()
+            };
+            (status, value)
         }
 
         async fn report(&self, address: [u8; 4], body: &Value) -> (StatusCode, Value) {
@@ -803,6 +873,23 @@ mod tests {
                 "/api/v1/wfc/streams?profile_id={profile_id}&series={series}&game={game}&offset={offset}"
             );
             self.post_to(&path, address, bytes.to_vec()).await
+        }
+
+        /// `profile_id` skipped part `section` of a cutscene of `game` of
+        /// `series`, `after` hundredths of a second into it.
+        async fn skip(
+            &self,
+            address: [u8; 4],
+            profile_id: i32,
+            series: i64,
+            game: i32,
+            section: u16,
+            after: u16,
+        ) -> StatusCode {
+            let path = format!(
+                "/api/v1/wfc/streams/skips?profile_id={profile_id}&series={series}&game={game}&section={section}&after={after}"
+            );
+            self.post_to(&path, address, Vec::new()).await.0
         }
 
         /// A spectator's stream of `match_id` with `ticket`: the status, and
@@ -1731,6 +1818,32 @@ mod tests {
         let seen = frames(&mut body, 2).await;
         assert_eq!(seen[0], (streams::FRAME_GAME, 1u32.to_le_bytes().to_vec()));
         assert_eq!(seen[1], (streams::FRAME_DATA, game1[..150].to_vec()));
+
+        // A side skips part 3 of a cutscene 1.5 s into it: the spectator hears
+        // it at once, once, whoever else says it later.
+        assert_eq!(
+            server.skip(SAM_HOME, sam, 1_792_000_002, 1, 3, 150).await,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            server
+                .skip(ANOSCH_HOME, anosch, 1_792_000_000, 1, 3, 170)
+                .await,
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            server.skip(SAM_HOME, anosch, 1_792_000_000, 1, 4, 0).await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            server
+                .skip(ANOSCH_HOME, anosch, 1_792_000_000, 0, 4, 0)
+                .await,
+            StatusCode::BAD_REQUEST
+        );
+        let mut part = 3u16.to_le_bytes().to_vec();
+        part.extend_from_slice(&150u16.to_le_bytes());
+        assert_eq!(frames(&mut body, 1).await, [(streams::FRAME_SKIP, part)]);
 
         // The rest as it comes, then the next game from its start.
         let (status, answer) = server

@@ -401,14 +401,28 @@ after the game.
 | 413 | `{"error": "the stream is too big"}` | over 8 MiB, or the server holds 256 MiB of streams |
 | 422 | `{"error": "the server takes no stream of this series"}` | |
 
+A cutscene is no part of the steps: the match stands still while it plays, on
+each machine for as long as it lasts there. So when a player skips part of one
+(the game numbers the parts a player may skip from 0 in each game, its
+presentation's bypass number), the games say so at once, for spectators to skip
+it too:
+
+`POST /api/v1/wfc/streams/skips?profile_id=1000000000&series=1792000000&game=1&section=3&after=150`,
+without a body, `after` being the hundredths of a second since the part began.
+The same checks as a stream; `204` when taken. Both sides may say it: the server
+keeps the first word on each part, 512 parts a game at most.
+
 The server holds the streams in memory only, 30 minutes after their last byte;
 the replays it keeps are the files the games send after each game.
 
 ### Watching
 
 The Matches page of `/admin` shows a **Watch** button while a match's games
-stream. It downloads `watch-match-<match>.msc` (`GET /admin/api/matches/<match>/watch`,
-signed in or with the diagnostics token), a ticket: a replay file of
+stream. It opens `recharged://watch/<match>?ticket=...&release=R4QE`, a link
+Recharged 1.2 registers itself for when it starts (`GET /admin/api/matches/<match>/watch?as=link`
+gives it as `{"url": ...}`). **Ticket** downloads the same ticket as
+`watch-match-<match>.msc` (`GET /admin/api/matches/<match>/watch`), both signed
+in or with the diagnostics token: a replay file of
 version 2 whose header is `{"match": 12, "ticket": "...", "release": "R4QE"}`.
 Recharged opens it like a replay (open it with Recharged, or drop it on its
 launcher) and plays the match from
@@ -419,7 +433,9 @@ of the server its `[online] server` names. The ticket is good for four hours, fo
 that match, on the server that made it (its key is new at each start). The body
 is a stream of frames: a kind byte, a little-endian u32 length and that many
 bytes. `1` a game starts (its number, u32 LE) and its stream follows from its
-first byte; `2` the game's next bytes; `3` its stream is complete; `0` nothing new
+first byte; `2` the game's next bytes; `3` its stream is complete; `4` a player
+skipped a part of a cutscene of the game (its number, u16 LE, then `after`, u16
+LE), which the spectator skips too, as far into the part; `0` nothing new
 (every 5 seconds). A spectator who comes in a game gets that game from its start,
 then follows the series' games, until the match is no longer in progress.
 
