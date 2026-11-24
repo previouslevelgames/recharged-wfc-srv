@@ -1059,14 +1059,20 @@ mod lag {
         Rate(u32),
         /// Games sending one after another.
         Games(usize),
+        /// Games streaming at once, each STREAM_CHUNK every STREAM_EVERY.
+        Streams(usize),
     }
 
-    const PHASES: [(&str, u64, Load); 4] = [
+    const PHASES: [(&str, u64, Load); 5] = [
         ("alone", 20, Load::None),
         ("10 replays a second", 20, Load::Rate(10)),
         ("8 games at once, as fast as they can", 20, Load::Games(8)),
+        ("16 games streaming, 10 KB/s each", 20, Load::Streams(16)),
         ("alone again", 10, Load::None),
     ];
+    /// A live stream's pace: 50 times a real game's (about 200 bytes a second).
+    const STREAM_CHUNK: usize = 1024;
+    const STREAM_EVERY: Duration = Duration::from_millis(100);
     /// A replay's size: a 3-minute game of two players with Wii Remotes.
     const REPLAY_BYTES: usize = 90 * 1024;
 
@@ -1238,6 +1244,21 @@ mod lag {
                         }
                     })]
                 }
+                Load::Streams(count) => (0..count)
+                    .map(|_| {
+                        let (series, games_done, failures) =
+                            (series.clone(), games_done.clone(), failures.clone());
+                        games.spawn(async move {
+                            match one_stream(http, profile_id, &series, until).await {
+                                Ok(bytes) => games_done.lock().unwrap().push((index, bytes, 0.0)),
+                                Err(error) => {
+                                    eprintln!("stream: {error}");
+                                    failures.fetch_add(1, Ordering::Relaxed);
+                                }
+                            }
+                        })
+                    })
+                    .collect(),
                 Load::Games(count) => (0..count)
                     .map(|_| {
                         let (series, replay, games_done, failures) = (
@@ -1297,6 +1318,15 @@ mod lag {
             if matches!(load, Load::None) {
                 continue;
             }
+            if matches!(load, Load::Streams(_)) {
+                let sent: f64 = games_done
+                    .iter()
+                    .filter(|(at, _, _)| *at == index)
+                    .map(|(_, bytes, _)| *bytes)
+                    .sum();
+                eprintln!("  {name}: {:.1} MB streamed", sent / 1e6);
+                continue;
+            }
             let phase: Vec<&(usize, f64, f64)> = games_done
                 .iter()
                 .filter(|(at, _, _)| *at == index)
@@ -1337,8 +1367,14 @@ mod lag {
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(failed, 0);
         // Every replay sent was kept (the first game, which waited for the
-        // server to ask, sent none).
-        assert_eq!(files, games_done.len());
+        // server to ask, sent none; streams keep no file).
+        let streams = PHASES
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, _, load))| matches!(load, Load::Streams(_)))
+            .map(|(index, _)| games_done.iter().filter(|(at, _, _)| *at == index).count())
+            .sum::<usize>();
+        assert_eq!(files, games_done.len() - streams);
     }
 
     /// Count, median, 90th, 99th, 99.9th percentile and the largest.
@@ -1453,6 +1489,69 @@ mod lag {
             return Err(format!("replay: {status} {body}"));
         }
         Ok((report_ms, sent.elapsed().as_secs_f64() * 1e3))
+    }
+
+    /// One game of a series of its own streaming until `until`: its start
+    /// (answered `"stream": true`), then one chunked request of its steps.
+    /// The bytes sent.
+    async fn one_stream(
+        http: SocketAddr,
+        profile_id: i32,
+        series: &AtomicUsize,
+        until: Instant,
+    ) -> Result<f64, String> {
+        let series = 1_800_000_000 + series.fetch_add(1, Ordering::Relaxed) as i64;
+        let start = serde_json::json!({
+            "profile_id": profile_id, "release": "R4QE", "event": "start", "series": series,
+            "mode": "ranked", "best_of": 3, "side": "home", "mii": "Mario",
+            "opponent_mii": "Luigi", "captains": {"home": "mario", "away": "bowser"},
+            "sidekicks": {"home": [], "away": []}, "game": null, "reason": null,
+            "replays": true,
+        })
+        .to_string();
+        let (status, body) = post(http, "/api/v1/wfc/reports", start.as_bytes()).await?;
+        if status != 200 || !body.contains(r#""stream":true"#) {
+            return Err(format!("start: {status} {body}"));
+        }
+        let mut stream = TcpStream::connect(http).await.map_err(|e| e.to_string())?;
+        let head = format!(
+            "POST /api/v1/wfc/streams?profile_id={profile_id}&series={series}&game=1&offset=0 HTTP/1.1\r\n\
+             Host: 2.31.48.136\r\nContent-Type: application/octet-stream\r\n\
+             Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n"
+        );
+        stream
+            .write_all(head.as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
+        let chunk = [0x5a; STREAM_CHUNK];
+        let mut sent = 0;
+        let mut tick = tokio::time::interval(STREAM_EVERY);
+        while Instant::now() < until {
+            tick.tick().await;
+            stream
+                .write_all(format!("{STREAM_CHUNK:x}\r\n").as_bytes())
+                .await
+                .map_err(|e| e.to_string())?;
+            stream.write_all(&chunk).await.map_err(|e| e.to_string())?;
+            stream.write_all(b"\r\n").await.map_err(|e| e.to_string())?;
+            sent += STREAM_CHUNK;
+        }
+        stream
+            .write_all(b"0\r\n\r\n")
+            .await
+            .map_err(|e| e.to_string())?;
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .await
+            .map_err(|e| e.to_string())?;
+        if !response.starts_with("HTTP/1.1 200") {
+            return Err(format!(
+                "stream: {}",
+                response.lines().next().unwrap_or_default()
+            ));
+        }
+        Ok(sent as f64)
     }
 
     async fn post(http: SocketAddr, path: &str, body: &[u8]) -> Result<(u16, String), String> {
