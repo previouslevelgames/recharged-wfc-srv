@@ -145,7 +145,10 @@ pub async fn create(
         return error(StatusCode::BAD_REQUEST, "name: 1 to 64 characters");
     }
     let Some(format) = Format::parse(&form.format) else {
-        return error(StatusCode::BAD_REQUEST, "format: single or double");
+        return error(
+            StatusCode::BAD_REQUEST,
+            "format: single, double or single_ash",
+        );
     };
     if !rules::SERIES.contains(&form.best_of) || !rules::SERIES.contains(&form.finals_best_of) {
         return error(StatusCode::BAD_REQUEST, "best of 1, 3, 5 or 7");

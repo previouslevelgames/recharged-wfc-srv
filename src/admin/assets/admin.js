@@ -3048,6 +3048,13 @@ const SIDE_NAMES = {
   losers: 'Losers',
   grand_final: 'Grand final',
   grand_final_reset: 'Grand final reset',
+  ash: 'Ash bracket',
+};
+
+const FORMAT_NAMES = {
+  single: 'Single elimination',
+  double: 'Double elimination',
+  single_ash: 'Single elimination + ash bracket',
 };
 
 /** A tournament's action, then the page again; errors in its status line. */
@@ -3146,7 +3153,7 @@ function renderTournament(tournament) {
       h('button', { class: 'button danger', type: 'button', onclick: () => tournamentAction(tournament.id, 'POST', `${base}/cancel`, null, `Call ${tournament.name} off? Its open matches end.`) }, 'Call off'),
     h('span', { class: 'editor-status', id: `tournament-status-${tournament.id}`, role: 'status' }),
   ];
-  const format = tournament.format === 'double' ? 'Double elimination' : 'Single elimination';
+  const format = FORMAT_NAMES[tournament.format] || tournament.format;
   const limit = tournament.max_entrants ? ` of ${integer.format(tournament.max_entrants)}` : '';
   return h(
     'section',
@@ -3198,7 +3205,7 @@ const tournamentForm = {
       h(
         'div',
         { class: 'editor-row' },
-        field('Format', select('tournament-format', [['single', 'Single elimination'], ['double', 'Double elimination']], 'double')),
+        field('Format', select('tournament-format', Object.entries(FORMAT_NAMES), 'double')),
         field('Rules', select('tournament-rules', ruleSets.map((set) => [set.id, set.name]), (ruleSets.find((set) => set.name === 'Competitive') || {}).id)),
       ),
       h(
