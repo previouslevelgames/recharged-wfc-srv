@@ -1,5 +1,6 @@
 //! A tournament's bracket, without the database (docs/tournaments.md,
-//! "Brackets"): the sets of single or double elimination for a number of
+//! "Brackets"): the sets of single or double elimination (or single with an
+//! ash bracket) for a number of
 //! entrants in seed order, where each set's two players come from, and, from
 //! the results so far, who plays each set, who won it and the standings.
 //!
@@ -12,6 +13,10 @@
 pub enum Format {
     Single,
     Double,
+    /// Single elimination, and the losers of its first round play a single
+    /// elimination of their own, the ash bracket. It gives no places: those
+    /// are the main bracket's.
+    SingleAsh,
 }
 
 impl Format {
@@ -19,6 +24,7 @@ impl Format {
         match self {
             Format::Single => "single",
             Format::Double => "double",
+            Format::SingleAsh => "single_ash",
         }
     }
 
@@ -26,6 +32,7 @@ impl Format {
         match name {
             "single" => Some(Format::Single),
             "double" => Some(Format::Double),
+            "single_ash" => Some(Format::SingleAsh),
             _ => None,
         }
     }
@@ -41,6 +48,8 @@ pub enum Side {
     /// Played only when the player from the losers' bracket won the grand
     /// final: then both have lost once.
     GrandFinalReset,
+    /// The ash bracket: the losers of the main bracket's first round.
+    Ash,
 }
 
 impl Side {
@@ -50,6 +59,7 @@ impl Side {
             Side::Losers => "losers",
             Side::GrandFinal => "grand_final",
             Side::GrandFinalReset => "grand_final_reset",
+            Side::Ash => "ash",
         }
     }
 }
@@ -76,8 +86,8 @@ pub struct SetPlan {
     pub position: u32,
     pub from: [From; 2],
     /// A final (single: the last round; double: the winners' and losers'
-    /// finals and the grand final, reset included): it may be played to
-    /// more games.
+    /// finals and the grand final, reset included; the ash bracket's last
+    /// round): it may be played to more games.
     pub finals: bool,
 }
 
@@ -109,37 +119,16 @@ pub fn plan(format: Format, entrants: usize) -> Vec<SetPlan> {
     let rounds = size.trailing_zeros();
     let order = seed_order(size);
     let mut sets = Vec::new();
+    let seeds: Vec<From> = order.iter().map(|&seed| From::Seed(seed)).collect();
     // The winners' bracket, round by round: the index of each round's sets.
-    let mut winners: Vec<Vec<usize>> = Vec::new();
-    for round in 1..=rounds {
-        let mut this = Vec::new();
-        let count = size >> round;
-        for position in 0..count {
-            let from = if round == 1 {
-                [
-                    From::Seed(order[2 * position]),
-                    From::Seed(order[2 * position + 1]),
-                ]
-            } else {
-                let before = &winners[round as usize - 2];
-                [
-                    From::Winner(before[2 * position]),
-                    From::Winner(before[2 * position + 1]),
-                ]
-            };
-            this.push(sets.len());
-            sets.push(SetPlan {
-                side: Side::Winners,
-                round,
-                position: position as u32,
-                from,
-                finals: round == rounds,
-            });
+    let winners = elimination(&mut sets, Side::Winners, &seeds);
+    match format {
+        Format::Single => return sets,
+        Format::SingleAsh => {
+            ash(&mut sets, entrants, &order, &winners[0]);
+            return sets;
         }
-        winners.push(this);
-    }
-    if format == Format::Single {
-        return sets;
+        Format::Double => {}
     }
     // The losers' bracket: the first round pairs the losers of the winners'
     // first; then each round takes the losers of the next winners' round
@@ -232,6 +221,67 @@ pub fn plan(format: Format, entrants: usize) -> Vec<SetPlan> {
         finals: true,
     });
     sets
+}
+
+/// A single elimination on `side` whose first round pairs `first` two by
+/// two (a power of 2 of them, at least 2), each round's winners playing
+/// each other until one is left; the last round is its final. The index of
+/// each round's sets.
+fn elimination(sets: &mut Vec<SetPlan>, side: Side, first: &[From]) -> Vec<Vec<usize>> {
+    let rounds = first.len().trailing_zeros();
+    let mut done: Vec<Vec<usize>> = Vec::new();
+    for round in 1..=rounds {
+        let count = first.len() >> round;
+        let mut this = Vec::with_capacity(count);
+        for position in 0..count {
+            let from = match done.last() {
+                None => [first[2 * position], first[2 * position + 1]],
+                Some(before) => [
+                    From::Winner(before[2 * position]),
+                    From::Winner(before[2 * position + 1]),
+                ],
+            };
+            this.push(sets.len());
+            sets.push(SetPlan {
+                side,
+                round,
+                position: position as u32,
+                from,
+                finals: round == rounds,
+            });
+        }
+        done.push(this);
+    }
+    done
+}
+
+/// The ash bracket after the main one, whose first round's sets are
+/// `first_round` (its seeds by `order`): the losers of the sets of that
+/// round that are played (a bye is no loss) play a single elimination,
+/// seeded by the seed expected to lose each (the worse one), byes to the
+/// best. With fewer than 2 such sets there is none.
+fn ash(sets: &mut Vec<SetPlan>, entrants: usize, order: &[usize], first_round: &[usize]) {
+    let mut played: Vec<(usize, usize)> = first_round
+        .iter()
+        .enumerate()
+        .filter_map(|(position, &set)| {
+            let worse = order[2 * position].max(order[2 * position + 1]);
+            (worse < entrants).then_some((worse, set))
+        })
+        .collect();
+    if played.len() < 2 {
+        return;
+    }
+    played.sort_unstable();
+    let first: Vec<From> = seed_order(played.len().next_power_of_two())
+        .iter()
+        .map(|&seed| match played.get(seed) {
+            Some(&(_, set)) => From::Loser(set),
+            // A seed past the entrants: a bye.
+            None => From::Seed(MAX_ENTRANTS),
+        })
+        .collect();
+    elimination(sets, Side::Ash, &first);
 }
 
 /// Who is in one of a set's two places.
@@ -409,7 +459,7 @@ pub fn finished(resolved: &[Resolved]) -> bool {
 /// the champion 1, the last set's loser 2, and so on; players out in the
 /// same round share a place (two 3rds in single elimination, for instance).
 /// A player who left before playing a set has none. Before the end, `None`
-/// for all.
+/// for all. The ash bracket gives no places: they are the main bracket's.
 pub fn standings(plan: &[SetPlan], entrants: usize, resolved: &[Resolved]) -> Vec<Option<u32>> {
     let mut places = vec![None; entrants];
     if !finished(resolved) {
@@ -420,7 +470,8 @@ pub fn standings(plan: &[SetPlan], entrants: usize, resolved: &[Resolved]) -> Ve
     let mut out: Vec<Option<usize>> = vec![None; entrants];
     let mut rounds: Vec<(Side, u32)> = Vec::new();
     let mut played = vec![false; entrants];
-    for (set, done) in plan.iter().zip(resolved) {
+    let main = |set: &&SetPlan| set.side != Side::Ash;
+    for (set, done) in plan.iter().zip(resolved).filter(|(set, _)| main(set)) {
         let key = (set.side, set.round);
         if !rounds.contains(&key) {
             rounds.push(key);
@@ -438,9 +489,10 @@ pub fn standings(plan: &[SetPlan], entrants: usize, resolved: &[Resolved]) -> Ve
         }
     }
     // The champion: the winner of the last set decided.
-    let last = resolved
+    let last = plan
         .iter()
-        .rposition(|set| matches!(set.outcome, Outcome::Won { .. }));
+        .zip(resolved)
+        .rposition(|(set, done)| main(&set) && matches!(done.outcome, Outcome::Won { .. }));
     let champion = last.and_then(|at| resolved[at].winner());
     // Out later = better: players are ranked by the round they went out in,
     // from the last one back.
@@ -510,7 +562,7 @@ mod tests {
 
     #[test]
     fn sets_come_after_the_ones_they_take_players_from() {
-        for format in [Format::Single, Format::Double] {
+        for format in [Format::Single, Format::Double, Format::SingleAsh] {
             for entrants in 2..=64 {
                 let sets = plan(format, entrants);
                 for (index, set) in sets.iter().enumerate() {
@@ -727,5 +779,117 @@ mod tests {
             .collect();
         assert_eq!(drop_in, [From::Loser(semis[1]), From::Loser(semis[0])]);
         assert_eq!(sets.iter().filter(|set| set.finals).count(), 4);
+    }
+
+    /// The ash bracket's sets of a plan.
+    fn ash_of(sets: &[SetPlan]) -> Vec<usize> {
+        (0..sets.len())
+            .filter(|&at| sets[at].side == Side::Ash)
+            .collect()
+    }
+
+    #[test]
+    fn the_ash_bracket_takes_the_losers_of_the_first_round_played() {
+        // Entrants, and the players of the ash bracket: the sets of the
+        // first round that are played (a bye is no loss).
+        for (entrants, players) in [
+            (32usize, 16usize),
+            (16, 8),
+            (12, 4),
+            (11, 3),
+            (10, 2),
+            (9, 1),
+            (3, 1),
+            (2, 1),
+        ] {
+            let sets = plan(Format::SingleAsh, entrants);
+            let ash = ash_of(&sets);
+            let expected = if players >= 2 {
+                players.next_power_of_two() - 1
+            } else {
+                0
+            };
+            assert_eq!(ash.len(), expected, "{entrants}");
+            assert_eq!(
+                ash.iter().filter(|&&at| sets[at].finals).count(),
+                usize::from(players >= 2),
+                "{entrants}"
+            );
+            // The main bracket is the single elimination's, the ash after it.
+            let single = plan(Format::Single, entrants);
+            assert_eq!(sets[..single.len()], single[..], "{entrants}");
+            assert!(ash.iter().all(|&at| at >= single.len()), "{entrants}");
+        }
+    }
+
+    #[test]
+    fn the_ash_bracket_is_seeded_by_the_first_rounds_losers() {
+        // 16: the 9th seed against the 16th, the 12th against the 13th, ...
+        // (from 0 here), and the best of them wins it.
+        let (sets, resolved) = play(Format::SingleAsh, 16, seeds_win);
+        let ash = ash_of(&sets);
+        let first: Vec<[Slot; 2]> = ash
+            .iter()
+            .filter(|&&at| sets[at].round == 1)
+            .map(|&at| resolved[at].slots)
+            .collect();
+        let pair = |a, b| [Slot::Player(a), Slot::Player(b)];
+        assert_eq!(
+            first,
+            [pair(8, 15), pair(11, 12), pair(9, 14), pair(10, 13)]
+        );
+        assert_eq!(resolved[*ash.last().unwrap()].winner(), Some(8));
+        // 11: 3 of them, the best with a bye.
+        let (sets, resolved) = play(Format::SingleAsh, 11, seeds_win);
+        let ash = ash_of(&sets);
+        assert_eq!(ash.len(), 3);
+        assert_eq!(resolved[ash[0]].slots, [Slot::Player(8), Slot::Empty]);
+        assert_eq!(resolved[ash[1]].slots, pair(9, 10));
+        assert_eq!(resolved[ash[2]].slots, pair(8, 9));
+    }
+
+    #[test]
+    fn the_ash_bracket_changes_no_places() {
+        let upsets = |a: usize, b: usize| if a > b { 0 } else { 1 };
+        for entrants in 2..=64 {
+            for pick in [seeds_win as fn(usize, usize) -> usize, upsets] {
+                let (sets, resolved) = play(Format::SingleAsh, entrants, pick);
+                assert!(finished(&resolved), "{entrants}");
+                let (single, alone) = play(Format::Single, entrants, pick);
+                assert_eq!(
+                    standings(&sets, entrants, &resolved),
+                    standings(&single, entrants, &alone),
+                    "{entrants}"
+                );
+                // Who played the ash bracket lost once in the main one.
+                let mut losses = vec![0; entrants];
+                for set in &resolved {
+                    if let Some(loser) = set.loser() {
+                        losses[loser] += 1;
+                    }
+                }
+                assert!(losses.iter().all(|&n| n <= 2), "{entrants}: {losses:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_first_round_walkover_leaves_its_place_in_the_ash_bracket_empty() {
+        // 4: seed 4 leaves before playing; the loser of 2 against 3 has the
+        // ash bracket to themselves.
+        let sets = plan(Format::SingleAsh, 4);
+        let ash = ash_of(&sets);
+        assert_eq!(ash.len(), 1);
+        let mut results = vec![None; sets.len()];
+        results[1] = Some(0);
+        let resolved = resolve(&sets, 4, &results, &[false, false, false, true]);
+        assert_eq!(resolved[ash[0]].slots, [Slot::Player(2), Slot::Empty]);
+        assert_eq!(
+            resolved[ash[0]].outcome,
+            Outcome::Won {
+                slot: 0,
+                walkover: true
+            }
+        );
     }
 }
