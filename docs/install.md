@@ -34,6 +34,7 @@ In **Docker → Add Container**, enable **Advanced View** and use these settings
 | Port (NAT negotiation) | Config Type **Port**: Container Port `27901`, Host Port `27901`, UDP |
 | Path (SQL data) | Config Type **Path**: Container Path `/var/lib/postgresql`, Host Path `/mnt/user/appdata/recharged-wfc-srv/postgres`, Access Mode **Read/Write** |
 | Path (logs) | Config Type **Path**: Container Path `/var/log/recharged-wfc-srv`, Host Path `/mnt/user/appdata/recharged-wfc-srv/logs`, Access Mode **Read/Write** |
+| Path (Replays) | Only with `REPLAYS` ([Replays](#replays)): Config Type **Path**, Container Path `/var/lib/recharged-wfc-srv/replays`, Host Path `/mnt/user/appdata/recharged-wfc-srv/replays`, Access Mode **Read/Write** |
 | WebUI | `http://[IP]:[PORT:8080]/status` |
 | Extra Parameters (Advanced) | `--stop-timeout=30` |
 | Autostart | Enabled |
@@ -79,6 +80,9 @@ enter the **Key** and **Value** from the table, and set **Password Mask: Yes** f
 | `SERVER_LABEL` | no | A short name such as `DEV` for a test server: `/admin` and the sign-in pages show it in their header and tab title, with an orange tab icon, so they are not mistaken for the live server's. At most 16 letters, digits, spaces, `-`, `_` or `.`. Unset, no label. |
 | `LOG_DIR` | no | Log folder inside the container. Default: `/var/log/recharged-wfc-srv`, the mapped **Path (logs)**. Leave unset to use this default. |
 | `LOG_RETENTION_DAYS` | no | Days of log files to keep. Default: `14`. |
+| `REPLAYS` | no | Which online games' replays the server keeps: `all` (every game, for tests), `ranked` (every ranked game) or `top` (ranked games with a player in the first `REPLAY_TOP` places of the season's board, this season or the last). See [Replays](#replays). Unset or `off`: none. |
+| `REPLAY_TOP` | no | The places `top` counts, 1 to 1000. Default: `10`. |
+| `REPLAY_DIR` | no | Replay folder inside the container. Default: `/var/lib/recharged-wfc-srv/replays`, the mapped **Path (Replays)**. Leave unset to use this default. |
 | `RUST_LOG` | no | Which messages to log. Default: `info`. `info,tower_http=debug` adds one line per HTTP request. |
 
 With the mapping above, the **SQL data lives on your Unraid server at**
@@ -109,6 +113,23 @@ on the dashboard's **Logs** page (`/admin/logs`), without access to the server.
 The container log (**Docker → container icon → Logs**) shows the same lines plus
 PostgreSQL's, but Docker deletes it whenever Unraid recreates the container,
 e.g. on an update.
+
+## Replays
+
+With `REPLAYS` set, the server keeps the replays of online games: `all` of
+them while testing, then every `ranked` game, or with `top` only the ranked
+games of the top players ([reports.md](reports.md#replays)). Recharged 1.2
+games send them after the game when the server asks; older games send none. Each is a file of tens of KB in **Path
+(Replays)**, by year and month, e.g.
+`/mnt/user/appdata/recharged-wfc-srv/replays/2026/11/1234-1.msc`, kept for
+good. Map the path: without it the files live inside the container, and Docker
+deletes them whenever Unraid recreates it, e.g. on an update. The server's log
+says at the start where it keeps them, or why not (`Replays off: ...`).
+
+The games of those series also stream to the server as they are played: the
+dashboard's **Matches** page then has a **Watch** button, whose file a Recharged
+set to this server opens to watch the match live ([reports.md](reports.md#live-streams)).
+The streams stay in memory only.
 
 ## Connecting the game
 
@@ -395,6 +416,8 @@ Set them up as in [Unraid setup](#unraid-setup), with these differences:
   folder a second time.
 - Each server its own **Path (logs)**, e.g. `.../recharged-wfc-srv/logs-2`:
   two servers would write the same daily file.
+- The same **Path (Replays)** on every server: a game's replay is kept once,
+  whichever server takes it.
 - Each server its own **Host Ports**, or its own address: the game's ports are
   fixed.
 
@@ -428,8 +451,8 @@ docker compose up -d --no-build --wait
 ```
 
 Compose runs PostgreSQL in a container of its own, `db`, and the server as
-`server`. `POSTGRES_DATA_DIR` and `LOG_DATA_DIR` set the **host** folders for
-the SQL data and the logs, and `HTTP_PORT` sets the host HTTP port (default 80,
+`server`. `POSTGRES_DATA_DIR`, `LOG_DATA_DIR` and `REPLAY_DATA_DIR` set the
+**host** folders for the SQL data, the logs and the replays, and `HTTP_PORT` sets the host HTTP port (default 80,
 which the game needs); GPCM, the master server, the server browser and NAT
 negotiation use 29900, 27900/udp, 28910 and 27901/udp. In Unraid, use the
 **Path** and **Port** mappings above. Repeat the last two commands to update.

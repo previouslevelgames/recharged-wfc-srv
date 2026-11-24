@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO replays (match_id, game, home_place, away_place) VALUES ($1, $2, $3, $4)\n             ON CONFLICT DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int4",
+        "Int4",
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "9dee8dfa5f7e0fba5317da05ee81b002ddb2d98c1e3a572736b1b0ac32b3aa37"
+}

@@ -9,7 +9,7 @@ use std::{
 use recharged_wfc_srv::App;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use tokio::net::{TcpListener, UdpSocket};
-use tracing::info;
+use tracing::{info, warn};
 use tracing_appender::{
     non_blocking::WorkerGuard,
     rolling::{RollingFileAppender, Rotation},
@@ -72,6 +72,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let admin = recharged_wfc_srv::admin::Config::from_env()?;
     let profiles = recharged_wfc_srv::profiles::Config::from_env()?;
     let relay = recharged_wfc_srv::relay::Config::from_env()?;
+    let mut replays = recharged_wfc_srv::replays::Config::from_env()?;
 
     // DATABASE_URL in local development; the container provides PG* instead.
     let database = match env::var("DATABASE_URL") {
@@ -139,7 +140,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
         None => info!("NAT negotiation relay off: set NATNEG_RELAY_ADDRESS to enable it"),
     }
 
-    let app = App::new(pool);
+    match &replays {
+        Some(config) => match config.prepare() {
+            Ok(()) => info!(
+                "Replays of {} kept in {}",
+                config.describe(),
+                config.dir.display()
+            ),
+            Err(error) => {
+                warn!(
+                    "Replays off: {} cannot be written to: {error}",
+                    config.dir.display()
+                );
+                replays = None;
+            }
+        },
+        None => info!("Replays off: set REPLAYS to all, ranked or top to keep online games"),
+    }
+
+    let app = App::new(pool).with_replays(replays);
     let router = app.router(admin, profiles);
     // HTTP stops gracefully on a signal; the others stop with it.
     tokio::select! {
@@ -150,6 +169,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         result = app.serve_server_browser(browser) => result?,
         result = app.serve_natneg(natneg, relay) => result?,
         result = app.sample_online() => result?,
+        result = app.find_replay_players() => result?,
     }
     Ok(())
 }

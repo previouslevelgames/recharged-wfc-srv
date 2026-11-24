@@ -72,6 +72,9 @@ pub struct Listed {
     /// Whether the NAT relay carried a reporting side's game while the match
     /// ran.
     relayed: bool,
+    /// Whether its games stream as they are played (src/streams.rs): the
+    /// Watch button is offered.
+    live: bool,
 }
 
 #[derive(Serialize)]
@@ -160,15 +163,19 @@ struct Event {
     body: String,
 }
 
-pub async fn read(pool: &PgPool) -> Result<Matches, sqlx::Error> {
+/// The list; `live` tells the matches whose games stream.
+pub async fn read(pool: &PgPool, live: impl Fn(i64) -> bool) -> Result<Matches, sqlx::Error> {
     reports::settle_idle(pool).await?;
     let mut tx = snapshot(pool).await?;
-    let matches = Matches {
+    let mut matches = Matches {
         totals: totals(&mut tx).await?,
         matches: listed(&mut tx, None, SHOWN).await?,
         relay_kept_days: relay_store::KEPT_DAYS,
     };
     tx.commit().await?;
+    for listed in &mut matches.matches {
+        listed.live = live(listed.id);
+    }
     Ok(matches)
 }
 
@@ -249,18 +256,25 @@ async fn listed(
             last_report_at: row.last_report_at,
             ended_at: row.ended_at,
             relayed: row.relayed,
+            live: false,
         })
         .collect())
 }
 
 /// The match `match_id`, if there is one.
-pub async fn detail(pool: &PgPool, match_id: i64) -> Result<Option<Detail>, sqlx::Error> {
+/// The match `match_id`; `live` tells whether its games stream.
+pub async fn detail(
+    pool: &PgPool,
+    match_id: i64,
+    live: impl Fn(i64) -> bool,
+) -> Result<Option<Detail>, sqlx::Error> {
     reports::settle_idle(pool).await?;
     let mut tx = snapshot(pool).await?;
-    let Some(summary) = listed(&mut tx, Some(match_id), 1).await?.pop() else {
+    let Some(mut summary) = listed(&mut tx, Some(match_id), 1).await?.pop() else {
         tx.commit().await?;
         return Ok(None);
     };
+    summary.live = live(match_id);
     let reporters = reports::sides(&mut tx, &[match_id])
         .await?
         .remove(&match_id)
@@ -417,9 +431,9 @@ pub(crate) mod tests {
 
         /// Sends `report` as its game does. The match it went to.
         pub async fn send(&self, report: &Value) -> i64 {
-            let app = reports::router(self.pool.clone(), self.gpcm.clone()).layer(MockConnectInfo(
-                std::net::SocketAddr::from(([10, 0, 0, 1], 5000)),
-            ));
+            let app = reports::router(self.pool.clone(), self.gpcm.clone(), None, None).layer(
+                MockConnectInfo(std::net::SocketAddr::from(([10, 0, 0, 1], 5000))),
+            );
             let request = Request::post("/api/v1/wfc/reports")
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(report.to_string()))
@@ -460,7 +474,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
 
-        let page = read(&games.pool).await.unwrap();
+        let page = read(&games.pool, |_| false).await.unwrap();
         let listed: Vec<_> = page
             .matches
             .iter()
@@ -502,7 +516,10 @@ pub(crate) mod tests {
         games.send(&Games::game(away.clone(), 1, 1, 3)).await;
         games.send(&Games::game(home.clone(), 2, 1, 0)).await;
 
-        let detail = detail(&games.pool, match_id).await.unwrap().unwrap();
+        let detail = detail(&games.pool, match_id, |_| false)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(detail.summary.state, "in_progress");
         let statuses: Vec<_> = detail
             .games
@@ -548,7 +565,7 @@ pub(crate) mod tests {
         assert_eq!(body["game"]["number"], 2);
 
         assert!(
-            super::detail(&games.pool, match_id + 1)
+            super::detail(&games.pool, match_id + 1, |_| false)
                 .await
                 .unwrap()
                 .is_none()
@@ -568,7 +585,10 @@ pub(crate) mod tests {
         gave_up["cause"] = json!("forfeit");
         games.send(&gave_up).await;
 
-        let detail = detail(&games.pool, match_id).await.unwrap().unwrap();
+        let detail = detail(&games.pool, match_id, |_| false)
+            .await
+            .unwrap()
+            .unwrap();
         let summary = &detail.summary;
         assert_eq!(
             (
@@ -621,14 +641,17 @@ pub(crate) mod tests {
         let start = OffsetDateTime::now_utc() - time::Duration::minutes(5);
         write(&games.pool, vec![opened(9, [None, Some(games.sam)], start)]).await;
 
-        let page = read(&games.pool).await.unwrap();
+        let page = read(&games.pool, |_| false).await.unwrap();
         let listed: Vec<_> = page
             .matches
             .iter()
             .map(|listed| (listed.id, listed.relayed))
             .collect();
         assert_eq!(listed, [(relayed, true), (direct, false)]);
-        let detail = detail(&games.pool, relayed).await.unwrap().unwrap();
+        let detail = detail(&games.pool, relayed, |_| false)
+            .await
+            .unwrap()
+            .unwrap();
         let [relaying] = &detail.relayed[..] else {
             panic!("one: {:?}", detail.relayed);
         };
@@ -640,7 +663,7 @@ pub(crate) mod tests {
             ("00000009", Some("Sam"))
         );
         assert!(
-            super::detail(&games.pool, direct)
+            super::detail(&games.pool, direct, |_| false)
                 .await
                 .unwrap()
                 .unwrap()
@@ -672,7 +695,7 @@ pub(crate) mod tests {
             .send(&games.report(games.anosch, 3, "home", "start"))
             .await;
         assert!(
-            detail(&pool, match_id)
+            detail(&pool, match_id, |_| false)
                 .await
                 .unwrap()
                 .unwrap()
@@ -689,11 +712,16 @@ pub(crate) mod tests {
             .await
             .unwrap();
 
-        let shown = detail(&pool, match_id).await.unwrap().unwrap();
+        let shown = detail(&pool, match_id, |_| false).await.unwrap().unwrap();
         assert_eq!(shown.desyncs.len(), 1, "its own, not the other match's");
         assert_eq!(shown.dossiers_kept_days, dossiers::KEPT_DAYS);
         assert_eq!(
-            detail(&pool, other).await.unwrap().unwrap().desyncs.len(),
+            detail(&pool, other, |_| false)
+                .await
+                .unwrap()
+                .unwrap()
+                .desyncs
+                .len(),
             1
         );
     }
@@ -712,7 +740,7 @@ pub(crate) mod tests {
         .execute(&games.pool)
         .await
         .unwrap();
-        let page = read(&games.pool).await.unwrap();
+        let page = read(&games.pool, |_| false).await.unwrap();
         assert_eq!(page.matches[0].state, "abandoned");
         assert!(page.matches[0].ended_at.is_some());
     }

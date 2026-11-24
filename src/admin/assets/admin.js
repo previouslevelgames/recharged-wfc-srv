@@ -1305,6 +1305,22 @@ function matchPath(match) {
   return `/admin/matches/${match.id}`;
 }
 
+/** While a match's games stream (REPLAYS on the server), a ticket to watch it
+ * in Recharged: open the file with Recharged, or drop it on its launcher. */
+function watchButton(match) {
+  if (!match.live) return null;
+  return h(
+    'a',
+    {
+      class: 'button',
+      href: `/admin/api/matches/${match.id}/watch`,
+      download: '',
+      title: 'Watch the match in Recharged, half a second behind the players: open the downloaded file with Recharged, or drop it on its launcher. The ticket lasts four hours.',
+    },
+    'Watch',
+  );
+}
+
 /** A game the NAT relay carried: its Mii (to its profile) and address. */
 function relayedGame(game) {
   const who = game.profile_id == null ? h('span', { class: 'sub' }, 'Profile unknown') : miiLink(game.mii_name || `Profile ${game.profile_id}`, game.profile_id);
@@ -1363,7 +1379,7 @@ function renderMatches(data, now) {
           { label: 'Away', cell: (m) => matchTeam(m.away, m.winner === 'away') },
           { label: 'State', cell: (m) => onlineState(m, now) },
           { label: 'Connection', cell: connection },
-          { label: '', class: 'actions', cell: (m) => h('a', { class: 'button', href: matchPath(m) }, 'Open') },
+          { label: '', class: 'actions', cell: (m) => [watchButton(m), h('a', { class: 'button', href: matchPath(m) }, 'Open')] },
         ],
         matches,
         'No matches yet. A match appears here when a Recharged build reports the first kickoff of a series.',
@@ -1512,6 +1528,7 @@ function renderMatch(data, now) {
         sides,
         'No sides.',
       ),
+      watchButton(match),
     ),
     card(
       'Connection',

@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT release FROM online_matches WHERE match_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "release",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "online_matches",
+            "name": "release"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "5f141fa707c44df744e386dd5d616de38e2e1eca9ca1cd41a9f3ad215bc49143"
+}

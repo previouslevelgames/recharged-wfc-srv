@@ -1,0 +1,50 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT game, home_place, away_place FROM replays ORDER BY game",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "game",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "replays",
+            "name": "game"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "home_place",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "replays",
+            "name": "home_place"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "away_place",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "replays",
+            "name": "away_place"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "c11d9cc46b2fcf615dcb107348dd44fa534e4aca54c4677e2dbe260b8064a18f"
+}

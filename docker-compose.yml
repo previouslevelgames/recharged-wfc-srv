@@ -29,6 +29,8 @@ x-server-environment: &server-environment
   NATNEG_RELAY_ADDRESS: ${NATNEG_RELAY_ADDRESS:-}
   NATNEG_RELAY_MAX: ${NATNEG_RELAY_MAX:-}
   LOG_RETENTION_DAYS: ${LOG_RETENTION_DAYS:-}
+  REPLAYS: ${REPLAYS:-}
+  REPLAY_TOP: ${REPLAY_TOP:-}
 
 services:
   db:
@@ -71,6 +73,7 @@ services:
       <<: *server-environment
     volumes:
       - ${LOG_DATA_DIR:-./data/logs}:/var/log/recharged-wfc-srv
+      - ${REPLAY_DATA_DIR:-./data/replays}:/var/lib/recharged-wfc-srv/replays
 
   # A second server on the same database, with COMPOSE_PROFILES=second-server.
   # The game's ports are fixed, so it needs its own address in front to take
@@ -91,3 +94,5 @@ services:
     volumes:
       # Its own: two servers would write the same daily file.
       - ${SERVER_2_LOG_DATA_DIR:-./data/logs-2}:/var/log/recharged-wfc-srv
+      # The same: a game's replay is kept once, whichever server takes it.
+      - ${REPLAY_DATA_DIR:-./data/replays}:/var/lib/recharged-wfc-srv/replays

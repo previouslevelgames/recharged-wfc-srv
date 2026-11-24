@@ -1300,11 +1300,12 @@ dependencies = [
 
 [[package]]
 name = "recharged-wfc-srv"
-version = "1.2.25"
+version = "1.2.26"
 dependencies = [
  "axum",
  "axum-extra",
  "base64 0.23.1",
+ "futures-util",
  "hmac",
  "maxminddb",
  "md-5",

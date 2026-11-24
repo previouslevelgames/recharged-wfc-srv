@@ -21,8 +21,10 @@ mod pairing;
 pub mod profiles;
 pub mod relay;
 mod relay_store;
+pub mod replays;
 mod reports;
 mod serverbrowser;
+mod streams;
 mod switches;
 
 pub const REVISION: &str = env!("BUILD_REVISION");
@@ -50,6 +52,10 @@ pub struct App {
     /// Matches' games kept for RANKED: the profile service sets them, the
     /// server browser lists by them.
     pairings: Arc<pairing::Pairings>,
+    /// Replays of ranked games with a top player, when kept.
+    replays: Option<Arc<replays::Replays>>,
+    /// The games streaming as they are played, with replays.
+    streams: Option<Arc<streams::Streams>>,
 }
 
 impl App {
@@ -65,9 +71,18 @@ impl App {
             master: Arc::default(),
             activity,
             pairings: Arc::default(),
+            replays: None,
+            streams: None,
             pool,
             tickets,
         }
+    }
+
+    /// Keeps replays of ranked games with a top player, with `config`.
+    pub fn with_replays(mut self, config: Option<replays::Config>) -> Self {
+        self.streams = config.as_ref().map(|_| Arc::default());
+        self.replays = config.map(|config| Arc::new(replays::Replays::new(config)));
+        self
     }
 
     /// The HTTP routes: status, players online, NAS, gamestats2, match
@@ -88,7 +103,12 @@ impl App {
                 self.gpcm.clone(),
                 self.pairings.clone(),
             ))
-            .merge(reports::router(self.pool.clone(), self.gpcm.clone()))
+            .merge(reports::router(
+                self.pool.clone(),
+                self.gpcm.clone(),
+                self.replays.clone(),
+                self.streams.clone(),
+            ))
             .merge(online::router(self.pool.clone(), self.gpcm.clone()));
         // The Maintenance page switches test sign-in and posts the launcher's
         // message while profiles run.
@@ -102,6 +122,7 @@ impl App {
                 self.pairings.clone(),
                 config,
                 test_sign_in,
+                self.streams.clone(),
             ));
         }
         if let Some(config) = profiles {
@@ -164,6 +185,15 @@ impl App {
     /// Samples the players online once a minute, for `/admin`'s Monitoring.
     pub async fn sample_online(&self) -> std::io::Result<()> {
         online::run(self.pool.clone(), self.gpcm.clone()).await
+    }
+
+    /// Works out the top players whose ranked games are kept as replays,
+    /// once a minute; without replays, waits for good.
+    pub async fn find_replay_players(&self) -> std::io::Result<()> {
+        match &self.replays {
+            Some(replays) => replays.run(self.pool.clone()).await,
+            None => std::future::pending().await,
+        }
     }
 }
 

@@ -1531,6 +1531,10 @@ td.actions {
   text-align: right;
 }
 
+td.actions .button + .button {
+  margin-left: 8px;
+}
+
 .editor {
   display: grid;
   gap: 16px;
