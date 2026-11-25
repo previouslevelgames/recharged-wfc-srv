@@ -901,10 +901,13 @@ pub async fn ready(
                     Err(matches::Refusal::Busy) => return Ok(Err(Refusal::Busy)),
                     Err(_) => return Ok(Err(Refusal::NotFound)),
                 };
-            // Another READY may have made one in between: the first stays.
+            // The other READY may have given the set this match already (it
+            // made it, this one went to it); one made otherwise meanwhile
+            // stays, this one goes.
             let taken = sqlx::query!(
                 "UPDATE tournament_sets SET state = 'playing', match_id = $2, updated_at = now()
-                 WHERE tournament_set_id = $1 AND state = 'ready'",
+                 WHERE tournament_set_id = $1
+                   AND (state = 'ready' OR state = 'playing' AND match_id = $2)",
                 set.id,
                 made.id,
             )
@@ -1670,6 +1673,31 @@ mod tests {
         assert_eq!(
             decide(&pool, id, set.id, Some(p[2])).await.unwrap(),
             Err(Refusal::State("finished".into()))
+        );
+    }
+
+    #[sqlx::test]
+    async fn two_readys_at_once_make_one_match(pool: PgPool) {
+        let (id, p) = tournament(&pool, Format::Single, &["Mario", "Luigi"]).await;
+        start(&pool, id, Seeding::Joined).await.unwrap().unwrap();
+        let set = set_of(&pool, id, p[0]).await;
+        // Mario's READY has made the match, not yet given it to the set,
+        // when Luigi's comes: his goes to that match, which goes.
+        let rules = get(&pool, id).await.unwrap().unwrap().rules_for(1);
+        let made = matches::tournament_set(&pool, p[0], p[1], &rules, set.id, p[0])
+            .await
+            .unwrap()
+            .unwrap();
+        let going = ready(&pool, id, set.id, p[1], true)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!((going.id, going.stage()), (made.id, "go"));
+        let now = set_of(&pool, id, p[0]).await;
+        assert_eq!(
+            (now.state.as_str(), now.match_id),
+            ("playing", Some(made.id))
         );
     }
 

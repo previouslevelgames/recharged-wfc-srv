@@ -470,7 +470,8 @@ pub async fn challenge(
 /// The match of tournament set `tournament_set` between `home` and `away`,
 /// by `rule_set`: accepted at once (the players are in by the bracket), with
 /// `ready`'s Ready to play!. Like a challenge, it waits while either player
-/// has a match to be played, and calls off their stopped ones.
+/// has a match to be played, and calls off their stopped ones. The other
+/// player's READY made it in between: that one, with this Ready to play!.
 pub async fn tournament_set(
     pool: &PgPool,
     home: i64,
@@ -481,6 +482,17 @@ pub async fn tournament_set(
 ) -> Result<Result<Match, Refusal>, sqlx::Error> {
     let mut transaction = pool.begin().await?;
     lock_players(&mut transaction, home, away).await?;
+    let open = sqlx::query_scalar!(
+        "SELECT match_id FROM matches WHERE tournament_set_id = $1 AND state = 'accepted'
+         ORDER BY match_id DESC LIMIT 1",
+        tournament_set,
+    )
+    .fetch_optional(&mut *transaction)
+    .await?;
+    if let Some(open) = open {
+        transaction.commit().await?;
+        return ready_to_play(pool, open, ready, true).await;
+    }
     if busy(&mut transaction, home, away).await? {
         return Ok(Err(Refusal::Busy));
     }
