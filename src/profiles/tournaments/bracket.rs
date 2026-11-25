@@ -9,7 +9,8 @@
 //! from them, so the store keeps nothing that could disagree with them.
 
 /// Single elimination, or double: a player is out after two lost sets.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Format {
     Single,
     Double,

@@ -16,7 +16,7 @@ use serde_json::{Value, json};
 use tracing::info;
 
 use super::{
-    bracket::{self, Format},
+    bracket,
     store::{self, Refusal, Set, Tournament},
 };
 use crate::profiles::{
@@ -171,13 +171,10 @@ pub(in crate::profiles) async fn get(
 /// Where a set's two players come from, by the bracket: `{"seed": n}` (from
 /// 0; a bye past the entrants), or `{"winner": <set id>}` / `{"loser": …}`.
 fn sources(tournament: &Tournament, entrants: usize, sets: &[Set]) -> Vec<Value> {
-    let Some(format) = Format::parse(tournament.format) else {
-        return Vec::new();
-    };
     if sets.is_empty() || !(2..=bracket::MAX_ENTRANTS).contains(&entrants) {
         return Vec::new();
     }
-    let plan = bracket::plan(format, entrants);
+    let plan = bracket::plan(tournament.format, entrants);
     if plan.len() != sets.len() {
         return Vec::new();
     }

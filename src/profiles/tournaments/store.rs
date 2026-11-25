@@ -37,7 +37,7 @@ pub struct Tournament {
     pub id: i64,
     pub name: String,
     pub organizer: Option<i64>,
-    pub format: &'static str,
+    pub format: Format,
     /// `registration`, `running`, `finished` or `cancelled`.
     pub state: String,
     pub rule_set: String,
@@ -286,7 +286,7 @@ fn tournament(row: TournamentRow) -> Option<Tournament> {
         id: row.tournament_id,
         name: row.name,
         organizer: row.organizer,
-        format: format.name(),
+        format,
         state: row.state,
         rule_set: row.rule_set,
         rules,
@@ -607,7 +607,7 @@ pub async fn leave(
     player_id: i64,
 ) -> Result<Result<Vec<i64>, Refusal>, sqlx::Error> {
     let mut transaction = pool.begin().await?;
-    let Some((state, ..)) = lock(&mut transaction, id).await? else {
+    let Some((state, format, _)) = lock(&mut transaction, id).await? else {
         return Ok(Err(Refusal::NotFound));
     };
     let gone = match state.as_str() {
@@ -634,7 +634,7 @@ pub async fn leave(
         return Ok(Err(Refusal::NotIn));
     }
     let called_off = if state == "running" {
-        refresh(&mut transaction, id).await?
+        refresh(&mut transaction, id, format).await?
     } else {
         Vec::new()
     };
@@ -722,7 +722,7 @@ pub async fn start(
         .execute(&mut *transaction)
         .await?;
     }
-    refresh(&mut transaction, id).await?;
+    refresh(&mut transaction, id, format).await?;
     transaction.commit().await?;
     Ok(Ok(()))
 }
@@ -773,7 +773,7 @@ pub async fn decide(
     winner: Option<i64>,
 ) -> Result<Result<Vec<i64>, Refusal>, sqlx::Error> {
     let mut transaction = pool.begin().await?;
-    let Some((state, ..)) = lock(&mut transaction, id).await? else {
+    let Some((state, format, _)) = lock(&mut transaction, id).await? else {
         return Ok(Err(Refusal::NotFound));
     };
     if state != "running" {
@@ -827,7 +827,7 @@ pub async fn decide(
     )
     .execute(&mut *transaction)
     .await?;
-    called_off.extend(refresh(&mut transaction, id).await?);
+    called_off.extend(refresh(&mut transaction, id, format).await?);
     transaction.commit().await?;
     Ok(Ok(called_off))
 }
@@ -979,7 +979,7 @@ pub async fn advance(pool: &PgPool) -> Result<Vec<i64>, sqlx::Error> {
     .await?;
     for row in ended {
         let mut transaction = pool.begin().await?;
-        let Some((state, ..)) = lock(&mut transaction, row.tournament_id).await? else {
+        let Some((state, format, _)) = lock(&mut transaction, row.tournament_id).await? else {
             continue;
         };
         let Some(found) = matches::find(&mut *transaction, row.match_id).await? else {
@@ -1015,7 +1015,7 @@ pub async fn advance(pool: &PgPool) -> Result<Vec<i64>, sqlx::Error> {
             .execute(&mut *transaction)
             .await?;
             tracing::info!(target: "profiles", tournament_id = row.tournament_id, set_id = row.tournament_set_id, match_id = row.match_id, goes_on = resume.is_some(), "tournament set's game broke off");
-            called_off.extend(refresh(&mut transaction, row.tournament_id).await?);
+            called_off.extend(refresh(&mut transaction, row.tournament_id, format).await?);
             transaction.commit().await?;
             continue;
         }
@@ -1082,7 +1082,7 @@ pub async fn advance(pool: &PgPool) -> Result<Vec<i64>, sqlx::Error> {
             }
         }
         tracing::info!(target: "profiles", tournament_id = row.tournament_id, set_id = row.tournament_set_id, match_id = row.match_id, state = found.state, "tournament set's match ended");
-        called_off.extend(refresh(&mut transaction, row.tournament_id).await?);
+        called_off.extend(refresh(&mut transaction, row.tournament_id, format).await?);
         transaction.commit().await?;
     }
     Ok(called_off)
@@ -1172,17 +1172,8 @@ async fn resume_of(
 async fn refresh(
     transaction: &mut Transaction<'_, Postgres>,
     id: i64,
+    format: Format,
 ) -> Result<Vec<i64>, sqlx::Error> {
-    let Some(format) = sqlx::query_scalar!(
-        "SELECT format FROM tournaments WHERE tournament_id = $1",
-        id
-    )
-    .fetch_one(&mut **transaction)
-    .await
-    .map(|format| Format::parse(&format))?
-    else {
-        return Ok(Vec::new());
-    };
     let entrants = sqlx::query!(
         "SELECT player_id, dropped_at IS NOT NULL AS \"dropped!\" FROM tournament_entrants
          WHERE tournament_id = $1 AND seed IS NOT NULL ORDER BY seed",
