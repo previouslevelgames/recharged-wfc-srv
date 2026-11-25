@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 
+use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, Postgres, Transaction};
 use time::OffsetDateTime;
@@ -170,26 +171,34 @@ impl Set {
     /// the players' seeds (`seed_of`, from 0 the best): the lower seed in the
     /// first, then each in turn. None until both are known.
     pub fn game_home(&self, seed_of: impl Fn(i64) -> Option<i32>) -> Option<i64> {
-        // A game that goes on keeps its sides.
-        if let Some(resume) = &self.resume {
-            return Some(resume.home.player);
-        }
-        game_home(
-            (self.home?, self.away?),
+        next_home(
+            self.resume.as_ref(),
+            self.home.zip(self.away),
             seed_of,
             self.home_wins.unwrap_or(0) + self.away_wins.unwrap_or(0),
         )
     }
 }
 
-/// Of `players` (a set's home and away places), who plays at home in the
-/// game after `played` games won: the one with the worse seed (the higher
-/// number; the away place without seeds) in the first, then each in turn.
-pub fn game_home(
-    players: (i64, i64),
+/// Who plays at home in a set's next game: a game that goes on (`resume`)
+/// keeps its sides, else [`game_home`] of its `players`. None until both
+/// are known.
+fn next_home(
+    resume: Option<&Resume>,
+    players: Option<(i64, i64)>,
     seed_of: impl Fn(i64) -> Option<i32>,
     played: i16,
 ) -> Option<i64> {
+    match resume {
+        Some(resume) => Some(resume.home.player),
+        None => players.map(|players| game_home(players, seed_of, played)),
+    }
+}
+
+/// Of `players` (a set's home and away places), who plays at home in the
+/// game after `played` games won: the one with the worse seed (the higher
+/// number; the away place without seeds) in the first, then each in turn.
+pub fn game_home(players: (i64, i64), seed_of: impl Fn(i64) -> Option<i32>, played: i16) -> i64 {
     let (home, away) = players;
     let worse_is_home = match (seed_of(home), seed_of(away)) {
         (Some(home), Some(away)) => home > away,
@@ -200,7 +209,7 @@ pub fn game_home(
     } else {
         (away, home)
     };
-    Some(if played % 2 == 0 { worse } else { better })
+    if played % 2 == 0 { worse } else { better }
 }
 
 /// How the entrants get their seeds when the tournament starts.
@@ -446,14 +455,19 @@ pub async fn played_games(
         for game in &games {
             let (mine, theirs) = (text(game, "my_captain"), text(game, "opponent_captain"));
             let (my_score, their_score) = (score(game, "my_score"), score(game, "opponent_score"));
+            let ((home_captain, away_captain), (home_score, away_score)) = if home {
+                ((mine, theirs), (my_score, their_score))
+            } else {
+                ((theirs, mine), (their_score, my_score))
+            };
             played
                 .entry(row.tournament_set_id)
                 .or_default()
                 .push(PlayedGame {
-                    home_captain: if home { mine.clone() } else { theirs.clone() },
-                    away_captain: if home { theirs } else { mine },
-                    home_score: if home { my_score } else { their_score },
-                    away_score: if home { their_score } else { my_score },
+                    home_captain,
+                    away_captain,
+                    home_score,
+                    away_score,
                     stadium: game["stadium"].as_str().map(str::to_owned),
                     interrupted: game["interrupted"].as_bool().unwrap_or(false),
                 });
@@ -496,18 +510,18 @@ pub async fn set_context(
         let resume: Option<Resume> = row
             .resume
             .and_then(|resume| serde_json::from_value(resume).ok());
-        let game_home = match (row.home, row.away) {
-            // A game that goes on keeps its sides.
-            _ if resume.is_some() => resume.as_ref().map(|resume| resume.home.player),
-            (Some(home), Some(away)) => game_home(
-                (home, away),
-                |player| {
-                    if player == home { seeds.0 } else { seeds.1 }
-                },
-                home_wins + away_wins,
-            ),
-            _ => None,
-        };
+        let game_home = next_home(
+            resume.as_ref(),
+            row.home.zip(row.away),
+            |player| {
+                if Some(player) == row.home {
+                    seeds.0
+                } else {
+                    seeds.1
+                }
+            },
+            home_wins + away_wins,
+        );
         serde_json::json!({
             "id": row.tournament_id,
             "name": row.name,
@@ -669,18 +683,15 @@ pub async fn start(
     }
     match seeding {
         Seeding::Joined => {}
-        Seeding::Shuffled => {
-            for at in (1..players.len()).rev() {
-                players.swap(at, rand::random_range(0..=at));
-            }
-        }
+        Seeding::Shuffled => players.shuffle(&mut rand::rng()),
         Seeding::Given(order) => {
+            // The entrants' players are each in it once: the same sorted
+            // lists name each of them once.
             let mut sorted = order.clone();
             sorted.sort_unstable();
-            sorted.dedup();
             let mut entrants = players.clone();
             entrants.sort_unstable();
-            if sorted != entrants || order.len() != players.len() {
+            if sorted != entrants {
                 return Ok(Err(Refusal::BadSeeding));
             }
             players = order;
@@ -858,9 +869,7 @@ async fn settled_after(
     Ok(plan.iter().enumerate().any(|(at, set)| {
         set.from.iter().any(|from| {
             matches!(from, bracket::From::Winner(i) | bracket::From::Loser(i) if *i == index)
-        }) && results
-            .iter()
-            .any(|row| row.index as usize == at && row.result.is_some())
+        }) && results.get(at).is_some_and(|row| row.result.is_some())
     }))
 }
 
@@ -1971,12 +1980,12 @@ mod tests {
 
     #[test]
     fn the_away_place_is_at_home_first_without_seeds() {
-        assert_eq!(game_home((1, 2), |_| None, 0), Some(2));
-        assert_eq!(game_home((1, 2), |_| None, 1), Some(1));
+        assert_eq!(game_home((1, 2), |_| None, 0), 2);
+        assert_eq!(game_home((1, 2), |_| None, 1), 1);
         // Seed 0 is the best: the other starts at home, wherever they are.
         let seeds = |player: i64| Some(if player == 1 { 3 } else { 0 });
-        assert_eq!(game_home((1, 2), seeds, 0), Some(1));
-        assert_eq!(game_home((1, 2), seeds, 3), Some(2));
+        assert_eq!(game_home((1, 2), seeds, 0), 1);
+        assert_eq!(game_home((1, 2), seeds, 3), 2);
     }
 
     #[sqlx::test]
