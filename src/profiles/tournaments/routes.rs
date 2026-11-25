@@ -161,11 +161,7 @@ pub(in crate::profiles) async fn get(
     if let Err(response) = state.sweep().await {
         return response;
     }
-    match page(&state, id, player.as_ref()).await {
-        Ok(Some(view)) => Json(view).into_response(),
-        Ok(None) => json_error(StatusCode::NOT_FOUND, "no such tournament"),
-        Err(error) => database_error(error),
-    }
+    respond_page(&state, id, player.as_ref()).await
 }
 
 /// Where a set's two players come from, by the bracket: `{"seed": n}` (from
@@ -322,7 +318,7 @@ pub(in crate::profiles) async fn join(
     match store::join(&state.pool, id, player.id).await {
         Ok(Ok(())) => {
             info!(target: "profiles", tournament_id = id, player_id = player.id, "joined a tournament");
-            respond_page(&state, id, &player).await
+            respond_page(&state, id, Some(&player)).await
         }
         Ok(Err(refusal)) => refused(refusal),
         Err(error) => database_error(error),
@@ -342,19 +338,17 @@ pub(in crate::profiles) async fn leave(
     };
     match store::leave(&state.pool, id, player.id).await {
         Ok(Ok(called_off)) => {
-            for match_id in called_off {
-                state.pairings.end(match_id);
-            }
+            state.pairings.end_all(called_off);
             info!(target: "profiles", tournament_id = id, player_id = player.id, "left a tournament");
-            respond_page(&state, id, &player).await
+            respond_page(&state, id, Some(&player)).await
         }
         Ok(Err(refusal)) => refused(refusal),
         Err(error) => database_error(error),
     }
 }
 
-async fn respond_page(state: &ProfilesState, id: i64, player: &Player) -> Response {
-    match page(state, id, Some(player)).await {
+async fn respond_page(state: &ProfilesState, id: i64, player: Option<&Player>) -> Response {
+    match page(state, id, player).await {
         Ok(Some(view)) => Json(view).into_response(),
         Ok(None) => json_error(StatusCode::NOT_FOUND, "no such tournament"),
         Err(error) => database_error(error),

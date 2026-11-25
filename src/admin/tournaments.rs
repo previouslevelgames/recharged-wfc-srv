@@ -119,6 +119,24 @@ fn database(failure: sqlx::Error) -> Response {
     error(StatusCode::INTERNAL_SERVER_ERROR, "the database failed")
 }
 
+/// The answer to a change that may call matches off: their pairings end,
+/// `done` logs it.
+fn applied(
+    state: &AdminState,
+    outcome: Result<Result<Vec<i64>, Refusal>, sqlx::Error>,
+    done: impl FnOnce(),
+) -> Response {
+    match outcome {
+        Ok(Ok(called_off)) => {
+            state.pairings.end_all(called_off);
+            done();
+            StatusCode::NO_CONTENT.into_response()
+        }
+        Ok(Err(refusal)) => refused(refusal),
+        Err(failure) => database(failure),
+    }
+}
+
 /// Who may change tournaments: an editor. Otherwise the refusal.
 fn editor(state: &AdminState, jar: &CookieJar, headers: &HeaderMap) -> Result<String, Response> {
     match state.editor(jar, headers) {
@@ -254,17 +272,9 @@ pub async fn cancel(
         Ok(email) => email,
         Err(response) => return response,
     };
-    match store::cancel(&state.pool, id).await {
-        Ok(Ok(called_off)) => {
-            for match_id in called_off {
-                state.pairings.end(match_id);
-            }
-            info!(target: "admin", %email, id, "tournament called off");
-            StatusCode::NO_CONTENT.into_response()
-        }
-        Ok(Err(refusal)) => refused(refusal),
-        Err(failure) => database(failure),
-    }
+    applied(&state, store::cancel(&state.pool, id).await, || {
+        info!(target: "admin", %email, id, "tournament called off");
+    })
 }
 
 /// `POST /admin/api/tournaments/<id>/entrants/<player>/drop`: disqualifies
@@ -279,17 +289,13 @@ pub async fn drop_entrant(
         Ok(email) => email,
         Err(response) => return response,
     };
-    match store::leave(&state.pool, id, player_id).await {
-        Ok(Ok(called_off)) => {
-            for match_id in called_off {
-                state.pairings.end(match_id);
-            }
+    applied(
+        &state,
+        store::leave(&state.pool, id, player_id).await,
+        || {
             info!(target: "admin", %email, id, player_id, "tournament entrant dropped");
-            StatusCode::NO_CONTENT.into_response()
-        }
-        Ok(Err(refusal)) => refused(refusal),
-        Err(failure) => database(failure),
-    }
+        },
+    )
 }
 
 #[derive(Deserialize)]
@@ -310,15 +316,8 @@ pub async fn decide(
         Ok(email) => email,
         Err(response) => return response,
     };
-    match store::decide(&state.pool, id, set_id, form.winner).await {
-        Ok(Ok(called_off)) => {
-            for match_id in called_off {
-                state.pairings.end(match_id);
-            }
-            info!(target: "admin", %email, id, set_id, winner = ?form.winner, "tournament set decided");
-            StatusCode::NO_CONTENT.into_response()
-        }
-        Ok(Err(refusal)) => refused(refusal),
-        Err(failure) => database(failure),
-    }
+    let outcome = store::decide(&state.pool, id, set_id, form.winner).await;
+    applied(&state, outcome, || {
+        info!(target: "admin", %email, id, set_id, winner = ?form.winner, "tournament set decided");
+    })
 }

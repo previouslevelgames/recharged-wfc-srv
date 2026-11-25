@@ -175,6 +175,14 @@ impl Pairings {
         self.matches.lock().unwrap().remove(&match_id);
     }
 
+    /// [`Self::end`] for each of `match_ids`.
+    pub fn end_all(&self, match_ids: impl IntoIterator<Item = i64>) {
+        let mut matches = self.matches.lock().unwrap();
+        for match_id in match_ids {
+            matches.remove(&match_id);
+        }
+    }
+
     /// How the games of `match_id` stand.
     pub fn pairing(&self, match_id: i64) -> Pairing {
         let now = Instant::now();

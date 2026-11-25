@@ -920,16 +920,14 @@ impl ProfilesState {
     /// Ends the sets that waited too long or lost a player, and their
     /// pairings.
     pub(super) async fn sweep(&self) -> Result<(), Response> {
-        for match_id in matches::sweep(&self.pool).await.map_err(database_error)? {
-            self.pairings.end(match_id);
-        }
+        self.pairings
+            .end_all(matches::sweep(&self.pool).await.map_err(database_error)?);
         // Tournament sets go on from their matches' ends.
-        for match_id in super::tournaments::store::advance(&self.pool)
-            .await
-            .map_err(database_error)?
-        {
-            self.pairings.end(match_id);
-        }
+        self.pairings.end_all(
+            super::tournaments::store::advance(&self.pool)
+                .await
+                .map_err(database_error)?,
+        );
         // Searches ask their next player.
         search::advance(&self.pool, &self.busy_profiles())
             .await
