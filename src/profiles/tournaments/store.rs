@@ -806,16 +806,7 @@ pub async fn decide(
     };
     let mut called_off = Vec::new();
     if let Some(match_id) = set.match_id {
-        called_off.extend(
-            sqlx::query_scalar!(
-                "UPDATE matches SET state = 'cancelled', updated_at = now()
-                 WHERE match_id = $1 AND state IN ('challenged', 'accepted')
-                 RETURNING match_id",
-                match_id,
-            )
-            .fetch_all(&mut *transaction)
-            .await?,
-        );
+        called_off.extend(call_off(&mut transaction, match_id).await?);
     }
     sqlx::query!(
         "UPDATE tournament_sets SET result = $2, state = 'ready',
@@ -1165,6 +1156,22 @@ async fn resume_of(
     }))
 }
 
+/// Calls off match `match_id` if it is still to be played: the match called
+/// off by it, or none.
+async fn call_off(
+    transaction: &mut Transaction<'_, Postgres>,
+    match_id: i64,
+) -> Result<Option<i64>, sqlx::Error> {
+    sqlx::query_scalar!(
+        "UPDATE matches SET state = 'cancelled', updated_at = now()
+                 WHERE match_id = $1 AND state IN ('challenged', 'accepted')
+                 RETURNING match_id",
+        match_id,
+    )
+    .fetch_optional(&mut **transaction)
+    .await
+}
+
 /// Works the bracket out again from the results and who left, and writes
 /// each set's players and state; a finished bracket ends the tournament with
 /// its standings. Open matches of sets that no longer play (a player left)
@@ -1226,16 +1233,7 @@ async fn refresh(
             && row.state == "playing"
             && let Some(match_id) = row.match_id
         {
-            called_off.extend(
-                sqlx::query_scalar!(
-                    "UPDATE matches SET state = 'cancelled', updated_at = now()
-                     WHERE match_id = $1 AND state IN ('challenged', 'accepted')
-                     RETURNING match_id",
-                    match_id,
-                )
-                .fetch_all(&mut **transaction)
-                .await?,
-            );
+            called_off.extend(call_off(transaction, match_id).await?);
         }
         let changed = (
             row.state.as_str(),
