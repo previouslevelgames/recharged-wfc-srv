@@ -130,12 +130,17 @@ fn applied(
     }
 }
 
-/// Who may change tournaments: an editor. Otherwise the refusal.
-fn editor(state: &AdminState, jar: &CookieJar, headers: &HeaderMap) -> Result<String, Response> {
-    match state.editor(jar, headers) {
-        Ok(editor) => Ok(editor.email),
-        Err(StatusCode::UNAUTHORIZED) => Err(error(StatusCode::UNAUTHORIZED, "signed out")),
-        Err(status) => Err(status.into_response()),
+/// Who may change tournaments: an editor's address. Otherwise the status
+/// [`denied`] answers with.
+fn editor(state: &AdminState, jar: &CookieJar, headers: &HeaderMap) -> Result<String, StatusCode> {
+    state.editor(jar, headers).map(|editor| editor.email)
+}
+
+/// The answer to one who may not change tournaments ([`editor`]'s status).
+fn denied(status: StatusCode) -> Response {
+    match status {
+        StatusCode::UNAUTHORIZED => error(StatusCode::UNAUTHORIZED, "signed out"),
+        status => status.into_response(),
     }
 }
 
@@ -160,7 +165,7 @@ pub async fn create(
 ) -> Response {
     let email = match editor(&state, &jar, &headers) {
         Ok(email) => email,
-        Err(response) => return response,
+        Err(status) => return denied(status),
     };
     let name = form.name.trim();
     if !(1..=64).contains(&name.chars().count()) {
@@ -236,7 +241,7 @@ pub async fn start(
 ) -> Response {
     let email = match editor(&state, &jar, &headers) {
         Ok(email) => email,
-        Err(response) => return response,
+        Err(status) => return denied(status),
     };
     let seeding = match form.seeding {
         SeedingForm::Named(name) if name == "joined" => Seeding::Joined,
@@ -268,7 +273,7 @@ pub async fn cancel(
 ) -> Response {
     let email = match editor(&state, &jar, &headers) {
         Ok(email) => email,
-        Err(response) => return response,
+        Err(status) => return denied(status),
     };
     applied(&state, store::cancel(&state.pool, id).await, || {
         info!(target: "admin", %email, id, "tournament called off");
@@ -285,7 +290,7 @@ pub async fn drop_entrant(
 ) -> Response {
     let email = match editor(&state, &jar, &headers) {
         Ok(email) => email,
-        Err(response) => return response,
+        Err(status) => return denied(status),
     };
     applied(
         &state,
@@ -312,7 +317,7 @@ pub async fn decide(
 ) -> Response {
     let email = match editor(&state, &jar, &headers) {
         Ok(email) => email,
-        Err(response) => return response,
+        Err(status) => return denied(status),
     };
     let outcome = store::decide(&state.pool, id, set_id, form.winner).await;
     applied(&state, outcome, || {
