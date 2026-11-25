@@ -1,7 +1,7 @@
 //! The Tournaments page (docs/tournaments.md, "The admin page"): the
 //! tournaments the server runs, made, started, called off and decided here.
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use axum::{
     Json,
@@ -18,7 +18,7 @@ use super::{AdminState, error};
 use crate::profiles::{
     rules::{self, RuleSet},
     tournaments::{
-        bracket::Format,
+        bracket::{Format, MAX_ENTRANTS},
         store::{self, Entrant, NewTournament, Refusal, Seeding, Set, Tournament},
     },
 };
@@ -49,20 +49,24 @@ struct Named<T> {
 pub async fn read(pool: &PgPool) -> Result<Tournaments, sqlx::Error> {
     let mut tournaments = Vec::new();
     for tournament in store::list(pool).await? {
-        let mut entrants = Vec::new();
-        for entrant in store::entrants(pool, tournament.id).await? {
-            let name = sqlx::query_scalar!(
-                "SELECT display_name FROM players WHERE player_id = $1",
-                entrant.player_id,
-            )
-            .fetch_optional(pool)
-            .await?
-            .unwrap_or_default();
-            entrants.push(Named {
+        let listed = store::entrants(pool, tournament.id).await?;
+        let ids: Vec<i64> = listed.iter().map(|entrant| entrant.player_id).collect();
+        let mut names: HashMap<i64, String> = sqlx::query!(
+            "SELECT player_id, display_name FROM players WHERE player_id = ANY($1)",
+            &ids,
+        )
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|row| (row.player_id, row.display_name))
+        .collect();
+        let entrants = listed
+            .into_iter()
+            .map(|entrant| Named {
+                name: names.remove(&entrant.player_id).unwrap_or_default(),
                 item: entrant,
-                name,
-            });
-        }
+            })
+            .collect();
         let sets = store::sets(pool, tournament.id).await?;
         tournaments.push(Shown {
             tournament,
@@ -155,9 +159,12 @@ pub async fn create(
     }
     if form
         .max_entrants
-        .is_some_and(|max| !(2..=256).contains(&max))
+        .is_some_and(|max| !(2..=MAX_ENTRANTS as i32).contains(&max))
     {
-        return error(StatusCode::BAD_REQUEST, "max_entrants: 2 to 256");
+        return error(
+            StatusCode::BAD_REQUEST,
+            &format!("max_entrants: 2 to {MAX_ENTRANTS}"),
+        );
     }
     let rule_set = match rules::get(&state.pool, form.rule_set).await {
         Ok(Some(rule_set)) => rule_set,
