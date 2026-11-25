@@ -297,15 +297,7 @@ impl Owners {
         let profiles: Vec<i32> = rows.iter().map(|row| row.profile_id).collect();
         let players = players::players_of(&mut *conn, &profiles).await?;
         let ids: Vec<i64> = players.values().copied().collect();
-        let names = sqlx::query!(
-            "SELECT player_id, display_name FROM players WHERE player_id = ANY($1)",
-            &ids
-        )
-        .fetch_all(&mut *conn)
-        .await?
-        .into_iter()
-        .map(|row| (row.player_id, row.display_name))
-        .collect();
+        let names = crate::profiles::player_names(&mut *conn, &ids).await?;
         Ok(Self { players, names })
     }
 }

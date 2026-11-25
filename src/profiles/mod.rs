@@ -65,6 +65,7 @@ use crate::{
 pub use config::{Config, DiscordClient, DiscordEndpoints, VARIABLES};
 use discord::SignInError;
 use mii_sign_in::ClientAddress;
+pub(crate) use players::names as player_names;
 use players::{Identity, LinkRefusal, Player};
 use sign_in::{Link, Outcome, Poll, SIGN_IN_TTL, SignIns};
 

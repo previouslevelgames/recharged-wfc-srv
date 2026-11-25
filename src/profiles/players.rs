@@ -288,6 +288,22 @@ pub async fn player(pool: &PgPool, player_id: i64) -> Result<Option<Player>, sql
     Ok(players(pool, &[player_id]).await?.remove(&player_id))
 }
 
+/// The display name of each of `player_ids` there is, in one ask.
+pub async fn names(
+    executor: impl sqlx::PgExecutor<'_>,
+    player_ids: &[i64],
+) -> Result<HashMap<i64, String>, sqlx::Error> {
+    Ok(sqlx::query!(
+        "SELECT player_id, display_name FROM players WHERE player_id = ANY($1)",
+        player_ids,
+    )
+    .fetch_all(executor)
+    .await?
+    .into_iter()
+    .map(|row| (row.player_id, row.display_name))
+    .collect())
+}
+
 /// [`player`] for each of `player_ids` there is, in one ask.
 pub async fn players(
     pool: &PgPool,

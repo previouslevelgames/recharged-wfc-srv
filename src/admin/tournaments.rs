@@ -1,7 +1,7 @@
 //! The Tournaments page (docs/tournaments.md, "The admin page"): the
 //! tournaments the server runs, made, started, called off and decided here.
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use axum::{
     Json,
@@ -16,6 +16,7 @@ use tracing::{info, warn};
 
 use super::{AdminState, error};
 use crate::profiles::{
+    player_names,
     rules::{self, RuleSet},
     tournaments::{
         bracket::{Format, MAX_ENTRANTS},
@@ -34,15 +35,15 @@ pub struct Tournaments {
 struct Shown {
     #[serde(flatten)]
     tournament: Tournament,
-    entrants: Vec<Named<Entrant>>,
+    entrants: Vec<NamedEntrant>,
     sets: Vec<Set>,
 }
 
 /// An entrant and the player's name.
 #[derive(Serialize)]
-struct Named<T> {
+struct NamedEntrant {
     #[serde(flatten)]
-    item: T,
+    entrant: Entrant,
     name: String,
 }
 
@@ -54,23 +55,15 @@ pub async fn read(pool: &PgPool) -> Result<Tournaments, sqlx::Error> {
             .iter()
             .filter_map(|entrant| entrant.player_id)
             .collect();
-        let mut names: HashMap<i64, String> = sqlx::query!(
-            "SELECT player_id, display_name FROM players WHERE player_id = ANY($1)",
-            &ids,
-        )
-        .fetch_all(pool)
-        .await?
-        .into_iter()
-        .map(|row| (row.player_id, row.display_name))
-        .collect();
+        let mut names = player_names(pool, &ids).await?;
         let entrants = listed
             .into_iter()
-            .map(|entrant| Named {
+            .map(|entrant| NamedEntrant {
                 name: entrant
                     .player_id
                     .and_then(|id| names.remove(&id))
                     .unwrap_or_default(),
-                item: entrant,
+                entrant,
             })
             .collect();
         let sets = store::sets(pool, tournament.id).await?;
