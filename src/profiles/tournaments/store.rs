@@ -793,7 +793,7 @@ pub async fn decide(
     sqlx::query!(
         "UPDATE tournament_sets SET result = $2, state = 'ready',
                 decided_by = CASE WHEN $2::smallint IS NULL THEN NULL ELSE 'organizer' END,
-                home_wins = NULL, away_wins = NULL, updated_at = now()
+                home_wins = NULL, away_wins = NULL, resume = NULL, updated_at = now()
          WHERE tournament_set_id = $1",
         set_id,
         result,
@@ -1747,6 +1747,38 @@ mod tests {
             (now.state.as_str(), now.match_id),
             ("playing", Some(again.id))
         );
+    }
+
+    #[sqlx::test]
+    async fn a_set_played_again_starts_from_its_draft(pool: PgPool) {
+        let (id, p) = tournament(&pool, Format::Single, &["Mario", "Luigi"]).await;
+        start(&pool, id, Seeding::Joined).await.unwrap().unwrap();
+        let set = set_of(&pool, id, p[0]).await;
+        let team = |player: i64| ResumeTeam {
+            player,
+            captain: "mario".into(),
+            sidekicks: vec!["toad".into(), "boo".into(), "koopa".into()],
+            score: 1,
+        };
+        let resume = Resume {
+            stadium: "the_palace".into(),
+            seconds: 70,
+            home: team(p[0]),
+            away: team(p[1]),
+        };
+        sqlx::query!(
+            "UPDATE tournament_sets SET resume = $2 WHERE tournament_set_id = $1",
+            set.id,
+            serde_json::json!(resume),
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(set_of(&pool, id, p[0]).await.resume.is_some());
+        // The organizer has it played again: from the start, not from the
+        // game that broke off.
+        decide(&pool, id, set.id, None).await.unwrap().unwrap();
+        assert_eq!(set_of(&pool, id, p[0]).await.resume, None);
     }
 
     #[sqlx::test]
