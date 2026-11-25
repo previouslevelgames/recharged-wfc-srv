@@ -1,0 +1,76 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT game, side AS \"side!\", bytes AS \"bytes!\", steps AS \"steps!\",\n                  received_at AS \"received_at!\"\n           FROM replays WHERE match_id = $1 AND file IS NOT NULL\n           ORDER BY game",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "game",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "replays",
+            "name": "game"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "side!",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "replays",
+            "name": "side"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "bytes!",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "replays",
+            "name": "bytes"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "steps!",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "replays",
+            "name": "steps"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "received_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "replays",
+            "name": "received_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "c92fe04be400b59226454352529980f8b130d3315bc88200a95943984f1b7318"
+}

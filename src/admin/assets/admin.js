@@ -1348,6 +1348,48 @@ function watchButton(match) {
   ];
 }
 
+/** A game whose replay the server keeps: Replay opens it in Recharged (a
+ * recharged:// link with a ticket, as Watch does), then the match's later kept
+ * games; Download gives the replay file itself, for Recharged 1.2 (open it, or
+ * drop it on its launcher). */
+function replayButtons(match, kept) {
+  const play = async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      const response = await fetch(`/admin/api/matches/${match.id}/watch?as=link&game=${kept.game}`, { credentials: 'same-origin' });
+      if (!response.ok) throw new Error(response.status === 404 ? 'the server keeps no replay of this game' : `HTTP ${response.status}`);
+      window.location.href = (await response.json()).url;
+    } catch (error) {
+      button.title = `No ticket: ${error.message}`;
+    } finally {
+      button.disabled = false;
+    }
+  };
+  return [
+    h(
+      'button',
+      {
+        class: 'button',
+        type: 'button',
+        onclick: play,
+        title: `Watch game ${kept.game} in Recharged 1.2, then the match's later games. Without Recharged 1.2 started once on this computer, download the file.`,
+      },
+      'Replay',
+    ),
+    h(
+      'a',
+      {
+        class: 'button',
+        href: `/admin/api/matches/${match.id}/replays/${kept.game}`,
+        download: '',
+        title: `The replay file (${bytes(kept.bytes)}, ${duration(kept.steps / 50)}, sent by the ${kept.side} side): open it with Recharged 1.2, or drop it on its launcher.`,
+      },
+      'Download',
+    ),
+  ];
+}
+
 /** A game the NAT relay carried: its Mii (to its profile) and address. */
 function relayedGame(game) {
   const who = game.profile_id == null ? h('span', { class: 'sub' }, 'Profile unknown') : miiLink(game.mii_name || `Profile ${game.profile_id}`, game.profile_id);
@@ -1528,7 +1570,7 @@ function renderMatch(data, now) {
     if (data.error) return [unreachable(data.error)];
     return [banner({ level: 'warning', title: 'No such match', detail: `No game reported a match ${route.id}.` })];
   }
-  const { match, sides, games, events, relayed, relay_kept_days: keptDays, desyncs, dossiers_kept_days: dossierDays } = detail;
+  const { match, sides, games, events, relayed, relay_kept_days: keptDays, desyncs, dossiers_kept_days: dossierDays, replays } = detail;
   const outOfSync = games.some((game) => ['home', 'away'].some((side) => game[side]?.ending === 'desync'));
   setHead(`${match.home.mii} vs ${match.away.mii}`, [
     `${MODES[match.mode] || match.mode} · ${match.release} · best of ${match.best_of} · started `,
@@ -1599,6 +1641,14 @@ function renderMatch(data, now) {
           { label: 'Stadium', cell: (row) => gameCell(row, 'stadium', (name) => STADIUM_NAMES[name] || name) },
           { label: 'Ending', cell: endingCell },
           { label: 'Length', cell: (row) => gameCell(row, 'seconds', gameLength) },
+          {
+            label: 'Replay',
+            class: 'actions',
+            cell: (row) => {
+              const kept = row.first && replays.find((replay) => replay.game === row.game.number);
+              return kept ? replayButtons(match, kept) : '';
+            },
+          },
         ],
         gameRows(games),
         'No game reported yet.',

@@ -109,7 +109,8 @@ pub fn router(
                     .route("/api/v1/wfc/streams/skips", post(receive_skip))
                     .route_layer(middleware::from_fn_with_state(state.clone(), from_a_login)),
             )
-            .route("/api/v1/wfc/streams/{match_id}", get(watch_stream));
+            .route("/api/v1/wfc/streams/{match_id}", get(watch_stream))
+            .route("/api/v1/wfc/replays/{match_id}/{game}", get(kept_replay));
     }
     router.with_state(state)
 }
@@ -567,18 +568,8 @@ async fn watch_stream(
     let Some(streams) = &state.streams else {
         return json_error(StatusCode::NOT_FOUND, "no streams here");
     };
-    let Some(ticket) = headers
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-    else {
-        return json_error(StatusCode::UNAUTHORIZED, "a ticket from the Matches page");
-    };
-    if !streams.ticket_valid(ticket.trim(), match_id, streams::now()) {
-        return json_error(
-            StatusCode::FORBIDDEN,
-            "the ticket does not let you watch this match",
-        );
+    if let Some(refused) = refuse_ticket(streams, &headers, match_id) {
+        return refused;
     }
     info!(target: "streams", match_id, "spectator joins");
     let frames = streams.clone().watch(match_id, state.pool.clone());
@@ -590,6 +581,79 @@ async fn watch_stream(
         Body::from_stream(frames),
     )
         .into_response()
+}
+
+/// The answer that refuses a request without a watch ticket of `match_id`
+/// from the Matches page of `/admin` (`Authorization: Bearer`, out of the
+/// request logs); none for one with it.
+fn refuse_ticket(
+    streams: &Streams,
+    headers: &axum::http::HeaderMap,
+    match_id: i64,
+) -> Option<Response> {
+    let Some(ticket) = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+    else {
+        return Some(json_error(
+            StatusCode::UNAUTHORIZED,
+            "a ticket from the Matches page",
+        ));
+    };
+    if !streams.ticket_valid(ticket.trim(), match_id, streams::now()) {
+        return Some(json_error(
+            StatusCode::FORBIDDEN,
+            "the ticket does not let you watch this match",
+        ));
+    }
+    None
+}
+
+/// A game's kept replay for a spectator (docs/reports.md, "Watching"): the
+/// file as the game sent it, with a ticket of its match; `X-Next-Game` names
+/// the match's next game whose replay the server keeps.
+async fn kept_replay(
+    State(state): State<ReportsState>,
+    Path((match_id, game)): Path<(i64, i32)>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let (Some(replays), Some(streams)) = (&state.replays, &state.streams) else {
+        return json_error(StatusCode::NOT_FOUND, "no replays here");
+    };
+    if let Some(refused) = refuse_ticket(streams, &headers, match_id) {
+        return refused;
+    }
+    match replays.kept(&state.pool, match_id, game).await {
+        Ok(Some(kept)) => {
+            info!(target: "replays", match_id, game, "replay watched");
+            let mut response = (
+                [
+                    (axum::http::header::CONTENT_TYPE, "application/octet-stream"),
+                    (axum::http::header::CACHE_CONTROL, "no-store"),
+                ],
+                kept.bytes,
+            )
+                .into_response();
+            if let Some(next) = kept.next {
+                response
+                    .headers_mut()
+                    .insert("x-next-game", axum::http::HeaderValue::from(next));
+            }
+            response
+        }
+        Ok(None) => json_error(
+            StatusCode::NOT_FOUND,
+            "the server keeps no replay of this game",
+        ),
+        Err(error) => {
+            warn!(target: "replays", ?error, match_id, game, "replay unreadable");
+            json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "the server could not read the replay",
+            )
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -890,6 +954,36 @@ mod tests {
                 "/api/v1/wfc/streams/skips?profile_id={profile_id}&series={series}&game={game}&section={section}&after={after}"
             );
             self.post_to(&path, address, Vec::new()).await.0
+        }
+
+        /// The kept replay of `game` of `match_id`, as a spectator asks with
+        /// `ticket`: the status, the headers and the body.
+        async fn kept(
+            &self,
+            match_id: i64,
+            game: i32,
+            ticket: Option<&str>,
+        ) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+            let app = router(
+                self.pool.clone(),
+                self.gpcm.clone(),
+                self.replays.clone(),
+                self.streams.clone(),
+            )
+            .layer(MockConnectInfo(SocketAddr::from(([192, 0, 2, 1], 51000))));
+            let mut request = Request::get(format!("/api/v1/wfc/replays/{match_id}/{game}"));
+            if let Some(ticket) = ticket {
+                request = request.header(header::AUTHORIZATION, format!("Bearer {ticket}"));
+            }
+            let response = app
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            let (status, headers) = (response.status(), response.headers().clone());
+            let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+                .await
+                .unwrap();
+            (status, headers, body.to_vec())
         }
 
         /// A spectator's stream of `match_id` with `ticket`: the status, and
@@ -1689,6 +1783,44 @@ mod tests {
         );
         use sha2::Digest;
         assert_eq!(row.sha256.unwrap(), sha2::Sha256::digest(&file).to_vec());
+
+        // A spectator with the match's ticket gets the kept file; with none,
+        // another match's or of a game not kept, nothing.
+        let streams = server.streams.clone().unwrap();
+        let ticket = streams.ticket(match_id, streams::now());
+        let (status, headers, body) = server.kept(match_id, 1, Some(&ticket)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, file);
+        assert!(headers.get("x-next-game").is_none());
+        assert_eq!(
+            server.kept(match_id, 1, None).await.0,
+            StatusCode::UNAUTHORIZED
+        );
+        let other = streams.ticket(match_id + 1, streams::now());
+        assert_eq!(
+            server.kept(match_id, 1, Some(&other)).await.0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            server.kept(match_id, 2, Some(&ticket)).await.0,
+            StatusCode::NOT_FOUND
+        );
+        // A later game kept: the file names it.
+        sqlx::query(
+            "INSERT INTO replays (match_id, game, side, file, bytes, steps, received_at)
+             VALUES ($1, 3, 'away', $2, 300, 9150, now())",
+        )
+        .bind(match_id)
+        .bind(&kept)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let (status, headers, _) = server.kept(match_id, 1, Some(&ticket)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(headers["x-next-game"], "3");
+        let (status, headers, _) = server.kept(match_id, 3, Some(&ticket)).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(headers.get("x-next-game").is_none());
     }
 
     #[sqlx::test]
