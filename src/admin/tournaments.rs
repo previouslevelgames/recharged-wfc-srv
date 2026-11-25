@@ -50,7 +50,10 @@ pub async fn read(pool: &PgPool) -> Result<Tournaments, sqlx::Error> {
     let mut tournaments = Vec::new();
     for tournament in store::list(pool).await? {
         let listed = store::entrants(pool, tournament.id).await?;
-        let ids: Vec<i64> = listed.iter().map(|entrant| entrant.player_id).collect();
+        let ids: Vec<i64> = listed
+            .iter()
+            .filter_map(|entrant| entrant.player_id)
+            .collect();
         let mut names: HashMap<i64, String> = sqlx::query!(
             "SELECT player_id, display_name FROM players WHERE player_id = ANY($1)",
             &ids,
@@ -63,7 +66,10 @@ pub async fn read(pool: &PgPool) -> Result<Tournaments, sqlx::Error> {
         let entrants = listed
             .into_iter()
             .map(|entrant| Named {
-                name: names.remove(&entrant.player_id).unwrap_or_default(),
+                name: entrant
+                    .player_id
+                    .and_then(|id| names.remove(&id))
+                    .unwrap_or_default(),
                 item: entrant,
             })
             .collect();

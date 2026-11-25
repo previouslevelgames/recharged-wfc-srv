@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS (SELECT 1 FROM tournament_entrants a JOIN tournament_entrants b USING (tournament_id)\n                          JOIN tournaments t USING (tournament_id)\n                          WHERE a.player_id = $1 AND b.player_id = $2\n                            AND t.state IN ('registration', 'running')) AS \"together!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "together!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "06c57ace68c11136a3b91aa07a84a50df398c3728a8fd45949c235fbc1a1df4b"
+}

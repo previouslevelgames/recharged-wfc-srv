@@ -3082,7 +3082,13 @@ function renderTournament(tournament) {
   const entrants = table(
     [
       { label: 'Seed', num: true, cell: (entrant) => (entrant.seed == null ? '–' : integer.format(entrant.seed + 1)) },
-      { label: 'Player', cell: (entrant) => [h('strong', null, entrant.name), entrant.dropped && h('span', { class: 'sub' }, ' left')] },
+      {
+        label: 'Player',
+        cell: (entrant) =>
+          entrant.player_id == null
+            ? h('span', { class: 'sub' }, 'deleted player')
+            : [h('strong', null, entrant.name), entrant.dropped && h('span', { class: 'sub' }, ' left')],
+      },
       { label: 'Place', num: true, cell: (entrant) => (entrant.place ? integer.format(entrant.place) : '–') },
       {
         label: '',
@@ -3090,6 +3096,7 @@ function renderTournament(tournament) {
         cell: (entrant) =>
           ['registration', 'running'].includes(tournament.state) &&
           !entrant.dropped &&
+          entrant.player_id != null &&
           h(
             'button',
             {

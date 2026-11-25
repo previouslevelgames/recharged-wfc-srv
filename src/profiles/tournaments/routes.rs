@@ -138,7 +138,7 @@ pub(in crate::profiles) async fn list(
                 Ok(entrants) => entrants,
                 Err(error) => return database_error(error),
             };
-            let entrant = entrants.iter().find(|e| e.player_id == player.id);
+            let entrant = entrants.iter().find(|e| e.player_id == Some(player.id));
             view["joined"] = json!(entrant.is_some());
             view["place"] = json!(entrant.and_then(|e| e.place));
         }
@@ -236,12 +236,15 @@ async fn page(
     let entrants = store::entrants(&state.pool, id).await?;
     let sets = store::sets(&state.pool, id).await?;
     let played = store::played_games(&state.pool, id).await?;
-    let ids: Vec<i64> = entrants.iter().map(|entrant| entrant.player_id).collect();
+    let ids: Vec<i64> = entrants
+        .iter()
+        .filter_map(|entrant| entrant.player_id)
+        .collect();
     let people = players::players(&state.pool, &ids).await?;
     let entrant_views: Vec<Value> = entrants
         .iter()
         .map(|entrant| {
-            let found = people.get(&entrant.player_id);
+            let found = entrant.player_id.and_then(|id| people.get(&id));
             json!({
                 "player": {
                     "id": entrant.player_id,
@@ -262,7 +265,7 @@ async fn page(
     let from = sources(&tournament, seeded, &sets);
     let me = match player {
         Some(player) => {
-            let entrant = entrants.iter().find(|e| e.player_id == player.id);
+            let entrant = entrants.iter().find(|e| e.player_id == Some(player.id));
             let reason = ineligible(state, player).await;
             let set = sets
                 .iter()
@@ -287,7 +290,7 @@ async fn page(
     let seed_of = |player: i64| {
         entrants
             .iter()
-            .find(|e| e.player_id == player)
+            .find(|e| e.player_id == Some(player))
             .and_then(|e| e.seed)
     };
     Ok(Some(json!({

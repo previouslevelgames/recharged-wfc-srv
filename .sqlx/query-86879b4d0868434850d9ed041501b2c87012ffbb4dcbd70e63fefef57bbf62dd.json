@@ -1,0 +1,29 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tournament_entrants SET player_id = $2\n         WHERE player_id = $1 AND tournament_id NOT IN (\n             SELECT tournament_id FROM tournament_entrants WHERE player_id = $2)\n         RETURNING tournament_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tournament_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tournament_entrants",
+            "name": "tournament_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "86879b4d0868434850d9ed041501b2c87012ffbb4dcbd70e63fefef57bbf62dd"
+}

@@ -125,4 +125,11 @@ with `name`, `format`, `rule_set` (an id), `best_of`, `finals_best_of`,
 …/<id>/entrants/<player>/drop`), and decides a set (`POST
 …/<id>/sets/<set>/decide` with `{"winner": <player id>}`, or `null` to have
 it played again). A finished set can be changed until a set after it has a
-result; calling off a tournament ends its open matches.
+result; calling off a tournament ends its open matches, and nobody plays its
+sets not played yet.
+
+A player still in a tournament open or running (not left) can't be deleted,
+nor merged with a player in the same one: take them out of it first. Merged,
+`from`'s places in tournaments become `into`'s; deleted, the entrant stays
+without its player (`player_id` null), so the seeds and the bracket stay as
+they were.

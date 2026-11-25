@@ -75,7 +75,9 @@ impl Tournament {
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Entrant {
-    pub player_id: i64,
+    /// None: their player was deleted since (the entrant stays, for the
+    /// seeds and the bracket).
+    pub player_id: Option<i64>,
     /// From 0, once the tournament started.
     pub seed: Option<i32>,
     #[serde(with = "time::serde::timestamp")]
@@ -579,6 +581,23 @@ pub async fn join(
     Ok(Ok(()))
 }
 
+/// Whether `player_id` is in a tournament open for entries or running (and
+/// hasn't left it): the admin deletes no such player, the seeds and sets of
+/// it count on them.
+pub async fn still_in_one(
+    executor: impl sqlx::PgExecutor<'_>,
+    player_id: i64,
+) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"SELECT EXISTS (SELECT 1 FROM tournament_entrants e JOIN tournaments t USING (tournament_id)
+                          WHERE e.player_id = $1 AND e.dropped_at IS NULL
+                            AND t.state IN ('registration', 'running')) AS "in!""#,
+        player_id,
+    )
+    .fetch_one(executor)
+    .await
+}
+
 /// `player_id` leaves: before the start they are no longer in it; once it
 /// runs they lose their open sets and go no further (as when the organizer
 /// disqualifies them). The matches called off by it.
@@ -638,8 +657,9 @@ pub async fn start(
         return Ok(Err(Refusal::State(state)));
     }
     let mut players = sqlx::query_scalar!(
-        "SELECT player_id FROM tournament_entrants WHERE tournament_id = $1
-         ORDER BY joined_at, player_id",
+        r#"SELECT player_id AS "player_id!" FROM tournament_entrants
+           WHERE tournament_id = $1 AND player_id IS NOT NULL
+           ORDER BY joined_at, player_id"#,
         id,
     )
     .fetch_all(&mut *transaction)
@@ -1170,7 +1190,9 @@ async fn refresh(
     )
     .fetch_all(&mut **transaction)
     .await?;
-    let players: Vec<i64> = entrants.iter().map(|row| row.player_id).collect();
+    // (None: a player deleted since, who had left: the admin deletes no
+    // player still in it.)
+    let players: Vec<Option<i64>> = entrants.iter().map(|row| row.player_id).collect();
     let dropped: Vec<bool> = entrants.iter().map(|row| row.dropped).collect();
     let stored = sqlx::query!(
         "SELECT tournament_set_id, state, home, away, result, decided_by, winner, match_id
@@ -1190,7 +1212,7 @@ async fn refresh(
         .collect();
     let resolved = bracket::resolve(&plan, players.len(), &results, &dropped);
     let player = |slot: Slot| match slot {
-        Slot::Player(seed) => Some(players[seed]),
+        Slot::Player(seed) => players[seed],
         _ => None,
     };
     let mut called_off = Vec::new();
@@ -1208,7 +1230,7 @@ async fn refresh(
             Outcome::Won { .. } => ("finished", row.decided_by.clone()),
             Outcome::Void => ("void", None),
         };
-        let winner = set.winner().map(|seed| players[seed]);
+        let winner = set.winner().and_then(|seed| players[seed]);
         if state != "playing"
             && row.state == "playing"
             && let Some(match_id) = row.match_id
@@ -1259,9 +1281,9 @@ async fn refresh(
         let places = bracket::standings(&plan, players.len(), &resolved);
         for (seed, place) in places.iter().enumerate() {
             sqlx::query!(
-                "UPDATE tournament_entrants SET place = $3 WHERE tournament_id = $1 AND player_id = $2",
+                "UPDATE tournament_entrants SET place = $3 WHERE tournament_id = $1 AND seed = $2",
                 id,
-                players[seed],
+                seed as i32,
                 place.map(|place| place as i32),
             )
             .execute(&mut **transaction)
@@ -1444,7 +1466,7 @@ mod tests {
         play(&pool, id, &final_set, p[1]).await;
         let tournament = get(&pool, id).await.unwrap().unwrap();
         assert_eq!(tournament.state, "finished");
-        let places: Vec<(i64, Option<i32>)> = entrants(&pool, id)
+        let places: Vec<(Option<i64>, Option<i32>)> = entrants(&pool, id)
             .await
             .unwrap()
             .into_iter()
@@ -1453,10 +1475,10 @@ mod tests {
         assert_eq!(
             places,
             [
-                (p[0], Some(3)),
-                (p[1], Some(1)),
-                (p[2], Some(3)),
-                (p[3], Some(2))
+                (Some(p[0]), Some(3)),
+                (Some(p[1]), Some(1)),
+                (Some(p[2]), Some(3)),
+                (Some(p[3]), Some(2))
             ]
         );
     }
@@ -1809,6 +1831,39 @@ mod tests {
             .collect();
         // Mario's bye stays as it was.
         assert_eq!(states, ["finished", "void", "void"]);
+    }
+
+    #[sqlx::test]
+    async fn a_deleted_player_keeps_their_place(pool: PgPool) {
+        let (id, p) = tournament(&pool, Format::Single, &["Mario", "Luigi", "Peach"]).await;
+        start(&pool, id, Seeding::Joined).await.unwrap().unwrap();
+        // The admin deletes nobody still in it; once Peach left, her player
+        // may go, and the bracket goes on with her seed.
+        assert!(still_in_one(&pool, p[2]).await.unwrap());
+        leave(&pool, id, p[2]).await.unwrap().unwrap();
+        assert!(!still_in_one(&pool, p[2]).await.unwrap());
+        sqlx::query!("DELETE FROM players WHERE player_id = $1", p[2])
+            .execute(&pool)
+            .await
+            .unwrap();
+        let final_set = set_of(&pool, id, p[0]).await;
+        assert_eq!(final_set.away, Some(p[1]));
+        play(&pool, id, &final_set, p[0]).await;
+        assert_eq!(get(&pool, id).await.unwrap().unwrap().state, "finished");
+        let seeds: Vec<(Option<i64>, Option<i32>)> = entrants(&pool, id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|entrant| (entrant.player_id, entrant.seed))
+            .collect();
+        assert_eq!(
+            seeds,
+            [
+                (Some(p[0]), Some(0)),
+                (Some(p[1]), Some(1)),
+                (None, Some(2))
+            ]
+        );
     }
 
     #[sqlx::test]
