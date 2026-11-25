@@ -707,8 +707,8 @@ pub async fn start(
     Ok(Ok(()))
 }
 
-/// Calls a tournament off, before or while it runs. The matches called off
-/// by it.
+/// Calls a tournament off, before or while it runs: its sets not played yet
+/// are played by nobody. The matches called off by it.
 pub async fn cancel(pool: &PgPool, id: i64) -> Result<Result<Vec<i64>, Refusal>, sqlx::Error> {
     let mut transaction = pool.begin().await?;
     let Some((state, ..)) = lock(&mut transaction, id).await? else {
@@ -731,6 +731,13 @@ pub async fn cancel(pool: &PgPool, id: i64) -> Result<Result<Vec<i64>, Refusal>,
         id,
     )
     .fetch_all(&mut *transaction)
+    .await?;
+    sqlx::query!(
+        "UPDATE tournament_sets SET state = 'void', updated_at = now()
+         WHERE tournament_id = $1 AND state IN ('pending', 'ready', 'playing', 'disputed')",
+        id,
+    )
+    .execute(&mut *transaction)
     .await?;
     transaction.commit().await?;
     Ok(Ok(called_off))
@@ -1781,6 +1788,27 @@ mod tests {
         // game that broke off.
         decide(&pool, id, set.id, None).await.unwrap().unwrap();
         assert_eq!(set_of(&pool, id, p[0]).await.resume, None);
+    }
+
+    #[sqlx::test]
+    async fn a_tournament_called_off_has_no_set_to_play(pool: PgPool) {
+        let (id, p) = tournament(&pool, Format::Single, &["Mario", "Luigi", "Peach"]).await;
+        start(&pool, id, Seeding::Joined).await.unwrap().unwrap();
+        let set = set_of(&pool, id, p[1]).await;
+        let made = ready(&pool, id, set.id, p[1], true)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(cancel(&pool, id).await.unwrap(), Ok(vec![made.id]));
+        let states: Vec<String> = sets(&pool, id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|set| set.state)
+            .collect();
+        // Mario's bye stays as it was.
+        assert_eq!(states, ["finished", "void", "void"]);
     }
 
     #[sqlx::test]
