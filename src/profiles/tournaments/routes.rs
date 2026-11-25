@@ -3,7 +3,7 @@
 //! bracket, joining and leaving, and READY for a set. Only a player who
 //! signed in with Discord plays one (a test player too, on a test server).
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use axum::{
     Json,
@@ -82,15 +82,14 @@ async fn maybe_signed_in(
     state.signed_in(headers).await.map(Some)
 }
 
-/// A tournament as the list and its page show it.
-async fn summary(state: &ProfilesState, tournament: &Tournament) -> Result<Value, sqlx::Error> {
-    let organizer = match tournament.organizer {
-        Some(id) => players::player(&state.pool, id)
-            .await?
-            .map(|player| json!({ "id": player.id, "name": player.name })),
-        None => None,
-    };
-    Ok(json!({
+/// A tournament as the list and its page show it, with its organizer's
+/// player (from `people`, the players looked up for it).
+fn summary(tournament: &Tournament, people: &HashMap<i64, Player>) -> Value {
+    let organizer = tournament
+        .organizer
+        .and_then(|id| people.get(&id))
+        .map(|player| json!({ "id": player.id, "name": player.name }));
+    json!({
         "id": tournament.id,
         "name": tournament.name,
         "organizer": organizer,
@@ -106,7 +105,7 @@ async fn summary(state: &ProfilesState, tournament: &Tournament) -> Result<Value
         "created_at": tournament.created_at.unix_timestamp(),
         "started_at": tournament.started_at.map(|time| time.unix_timestamp()),
         "ended_at": tournament.ended_at.map(|time| time.unix_timestamp()),
-    }))
+    })
 }
 
 /// `GET /api/v1/tournaments`: open for entries or running, then the last
@@ -127,12 +126,14 @@ pub(in crate::profiles) async fn list(
         Ok(tournaments) => tournaments,
         Err(error) => return database_error(error),
     };
+    let organizers: Vec<i64> = tournaments.iter().filter_map(|t| t.organizer).collect();
+    let people = match players::players(&state.pool, &organizers).await {
+        Ok(people) => people,
+        Err(error) => return database_error(error),
+    };
     let mut listed = Vec::new();
     for tournament in &tournaments {
-        let mut view = match summary(&state, tournament).await {
-            Ok(view) => view,
-            Err(error) => return database_error(error),
-        };
+        let mut view = summary(tournament, &people);
         if let Some(player) = &player {
             let entrants = match store::entrants(&state.pool, tournament.id).await {
                 Ok(entrants) => entrants,
@@ -223,15 +224,20 @@ async fn page(
     id: i64,
     player: Option<&Player>,
 ) -> Result<Option<Value>, sqlx::Error> {
-    let Some(tournament) = store::get(&state.pool, id).await? else {
+    let pool = &state.pool;
+    let (tournament, entrants, sets, played) = tokio::try_join!(
+        store::get(pool, id),
+        store::entrants(pool, id),
+        store::sets(pool, id),
+        store::played_games(pool, id),
+    )?;
+    let Some(tournament) = tournament else {
         return Ok(None);
     };
-    let entrants = store::entrants(&state.pool, id).await?;
-    let sets = store::sets(&state.pool, id).await?;
-    let played = store::played_games(&state.pool, id).await?;
     let ids: Vec<i64> = entrants
         .iter()
         .filter_map(|entrant| entrant.player_id)
+        .chain(tournament.organizer)
         .collect();
     let people = players::players(&state.pool, &ids).await?;
     let entrant_views: Vec<Value> = entrants
@@ -287,7 +293,7 @@ async fn page(
             .and_then(|e| e.seed)
     };
     Ok(Some(json!({
-        "tournament": summary(state, &tournament).await?,
+        "tournament": summary(&tournament, &people),
         "entrants": entrant_views,
         "sets": sets
             .iter()
