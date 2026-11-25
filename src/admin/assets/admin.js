@@ -2979,9 +2979,7 @@ const editor = {
   },
 
   status(text, tone) {
-    const status = document.getElementById('rule-status');
-    status.textContent = text;
-    status.dataset.tone = tone || '';
+    setStatus(document.getElementById('rule-status'), text, tone);
   },
 
   async save() {
@@ -3057,25 +3055,30 @@ const FORMAT_NAMES = {
   single_ash: 'Single elimination + ash bracket',
 };
 
+/** An editor's status line says `text`, in `tone`. */
+function setStatus(status, text, tone) {
+  status.textContent = text;
+  status.dataset.tone = tone || '';
+}
+
 /** A tournament's action, then the page again; errors in its status line. */
 async function tournamentAction(id, method, path, body, confirmText) {
   if (confirmText && !window.confirm(confirmText)) return;
   const status = document.getElementById(`tournament-status-${id}`);
   try {
     await send(method, path, body);
-    if (status) status.textContent = '';
+    if (status) setStatus(status, '');
     poll();
   } catch (error) {
-    if (status) {
-      status.textContent = error.message;
-      status.dataset.tone = 'critical';
-    }
+    if (status) setStatus(status, error.message, 'critical');
   }
 }
 
 function renderTournament(tournament) {
   const names = new Map(tournament.entrants.map((entrant) => [entrant.player_id, entrant.name]));
   const name = (id) => (id == null ? h('span', { class: 'sub' }, '–') : names.get(id) || `#${id}`);
+  // A set's player, in bold once they won it.
+  const player = (set, id) => (set.winner && set.winner === id ? h('strong', null, name(id)) : name(id));
   const [stateText, stateTone] = TOURNAMENT_STATES[tournament.state] || [tournament.state, null];
   const base = `/admin/api/tournaments/${tournament.id}`;
   const running = tournament.state === 'running';
@@ -3124,8 +3127,8 @@ function renderTournament(tournament) {
     ? table(
         [
           { label: 'Round', cell: (set) => `${SIDE_NAMES[set.side] || set.side}${set.side.startsWith('grand') ? '' : ` ${set.round}`}` },
-          { label: 'Home', cell: (set) => (set.winner && set.winner === set.home ? h('strong', null, name(set.home)) : name(set.home)) },
-          { label: 'Away', cell: (set) => (set.winner && set.winner === set.away ? h('strong', null, name(set.away)) : name(set.away)) },
+          { label: 'Home', cell: (set) => player(set, set.home) },
+          { label: 'Away', cell: (set) => player(set, set.away) },
           { label: 'Score', cell: (set) => (set.home_wins == null ? '–' : `${set.home_wins} - ${set.away_wins}`) },
           { label: 'Best of', num: true, cell: (set) => integer.format(set.games) },
           {
@@ -3151,30 +3154,26 @@ function renderTournament(tournament) {
         '',
       )
     : null;
+  const start = (seeding, kind, how, label) =>
+    tournament.state === 'registration' &&
+    h('button', { class: kind, type: 'button', disabled: tournament.entrants.length < 2, onclick: () => tournamentAction(tournament.id, 'POST', `${base}/start`, { seeding }, `Start it with the entrants seeded ${how}? Entries close.`) }, label);
   const tools = [
-    tournament.state === 'registration' &&
-      h('button', { class: 'button primary', type: 'button', disabled: tournament.entrants.length < 2, onclick: () => tournamentAction(tournament.id, 'POST', `${base}/start`, { seeding: 'joined' }, 'Start it with the entrants seeded in the order they joined? Entries close.') }, 'Start'),
-    tournament.state === 'registration' &&
-      h('button', { class: 'button', type: 'button', disabled: tournament.entrants.length < 2, onclick: () => tournamentAction(tournament.id, 'POST', `${base}/start`, { seeding: 'shuffled' }, 'Start it with the entrants seeded at random? Entries close.') }, 'Start shuffled'),
+    start('joined', 'button primary', 'in the order they joined', 'Start'),
+    start('shuffled', 'button', 'at random', 'Start shuffled'),
     ['registration', 'running'].includes(tournament.state) &&
       h('button', { class: 'button danger', type: 'button', onclick: () => tournamentAction(tournament.id, 'POST', `${base}/cancel`, null, `Call ${tournament.name} off? Its open matches end.`) }, 'Call off'),
     h('span', { class: 'editor-status', id: `tournament-status-${tournament.id}`, role: 'status' }),
   ];
   const format = FORMAT_NAMES[tournament.format] || tournament.format;
   const limit = tournament.max_entrants ? ` of ${integer.format(tournament.max_entrants)}` : '';
-  return h(
-    'section',
-    { class: 'card' },
-    h(
-      'header',
-      { class: 'card-head' },
-      h('h2', null, tournament.name, ' ', badge(stateTone, stateText)),
-      h('p', null, `${format} · ${tournament.rule_set}, best of ${tournament.best_of} (finals ${tournament.finals_best_of}) · ${integer.format(tournament.entrants.length)}${limit} entrants`),
-    ),
-    h('div', { class: 'card-tools' }, tools),
-    h('div', { class: 'table-wrap' }, entrants),
-    sets && h('div', { class: 'table-wrap' }, sets),
+  const node = card(
+    [tournament.name, ' ', badge(stateTone, stateText)],
+    `${format} · ${tournament.rule_set}, best of ${tournament.best_of} (finals ${tournament.finals_best_of}) · ${integer.format(tournament.entrants.length)}${limit} entrants`,
+    entrants,
+    tools,
   );
+  if (sets) node.append(h('div', { class: 'table-wrap' }, sets));
+  return node;
 }
 
 function renderTournaments(data) {
@@ -3201,10 +3200,9 @@ const tournamentForm = {
 
   load(ruleSets, series, unfolded) {
     if (this.node) return;
-    const field = (label, control) => h('label', { class: 'editor-field' }, h('span', null, label), control);
-    const select = (id, values, selected) =>
-      h('select', { id }, values.map(([value, text]) => h('option', { value, selected: String(value) === String(selected) }, text)));
-    const bestOf = series.map((games) => [games, `Best of ${games}`]);
+    const { field, select } = editor;
+    const bestOf = Object.fromEntries(series.map((games) => [games, `Best of ${games}`]));
+    const ruleNames = Object.fromEntries(ruleSets.map((set) => [set.id, set.name]));
     // A tournament's sets play their own best of, whatever the rule set says.
     const note = h('p', { class: 'editor-note' });
     const noteRules = () => {
@@ -3220,14 +3218,14 @@ const tournamentForm = {
       h(
         'div',
         { class: 'editor-row' },
-        field('Format', select('tournament-format', Object.entries(FORMAT_NAMES), 'double')),
-        field('Rules', select('tournament-rules', ruleSets.map((set) => [set.id, set.name]), (ruleSets.find((set) => set.name === 'Competitive') || {}).id)),
+        field('Format', select('tournament-format', Object.keys(FORMAT_NAMES), FORMAT_NAMES, 'double')),
+        field('Rules', select('tournament-rules', ruleSets.map((set) => set.id), ruleNames, (ruleSets.find((set) => set.name === 'Competitive') || {}).id)),
       ),
       h(
         'div',
         { class: 'editor-row' },
-        field('Sets', select('tournament-best-of', bestOf, 3)),
-        field('Finals', select('tournament-finals', bestOf, 5)),
+        field('Sets', select('tournament-best-of', series, bestOf, 3)),
+        field('Finals', select('tournament-finals', series, bestOf, 5)),
         field('Most entrants', h('input', { id: 'tournament-max', type: 'number', min: '2', max: '256', placeholder: 'no limit' })),
       ),
       note,
@@ -3263,12 +3261,10 @@ const tournamentForm = {
         max_entrants: max ? Number(max) : null,
       });
       document.getElementById('tournament-name').value = '';
-      status.textContent = 'Made';
-      status.dataset.tone = 'good';
+      setStatus(status, 'Made', 'good');
       poll();
     } catch (error) {
-      status.textContent = error.message;
-      status.dataset.tone = 'critical';
+      setStatus(status, error.message, 'critical');
     }
   },
 };
