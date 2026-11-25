@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT home FROM tournament_sets WHERE tournament_set_id = $1 AND state = 'playing'",
+  "query": "SELECT home FROM tournament_sets\n             WHERE tournament_set_id = $1 AND state = 'playing' AND match_id = $2",
   "describe": {
     "columns": [
       {
@@ -17,6 +17,7 @@
     ],
     "parameters": {
       "Left": [
+        "Int8",
         "Int8"
       ]
     },
@@ -24,5 +25,5 @@
       true
     ]
   },
-  "hash": "505e5e68861fedd349e90b3b3a5691568d8355f2c8a2677abd387bb36a530b29"
+  "hash": "ac23616ddb01a26f1948617d536cd518fc212cb865ec89defccf7c3332a4e90c"
 }

@@ -950,9 +950,13 @@ pub async fn advance(pool: &PgPool) -> Result<(), sqlx::Error> {
         if state != "running" {
             continue;
         }
+        // Still playing that match: another sweep may have moved the set on
+        // meanwhile, and a READY given it its next match.
         let home = sqlx::query_scalar!(
-            "SELECT home FROM tournament_sets WHERE tournament_set_id = $1 AND state = 'playing'",
+            "SELECT home FROM tournament_sets
+             WHERE tournament_set_id = $1 AND state = 'playing' AND match_id = $2",
             row.tournament_set_id,
+            row.match_id,
         )
         .fetch_optional(&mut *transaction)
         .await?;
