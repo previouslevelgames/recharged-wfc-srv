@@ -936,9 +936,11 @@ pub async fn ready(
 
 /// Moves on the sets whose match ended: a result counts for the set, a set
 /// without one is to be played again, and disagreeing reports (or a draw)
-/// wait for the organizer. Called with every sweep of the matches.
-pub async fn advance(pool: &PgPool) -> Result<(), sqlx::Error> {
+/// wait for the organizer. Called with every sweep of the matches. The
+/// matches called off by it (a set that no longer plays).
+pub async fn advance(pool: &PgPool) -> Result<Vec<i64>, sqlx::Error> {
     replay_without_match(pool).await?;
+    let mut called_off = Vec::new();
     let ended = sqlx::query!(
         "SELECT s.tournament_id, s.tournament_set_id, m.match_id
          FROM tournament_sets s JOIN matches m ON m.match_id = s.match_id
@@ -986,7 +988,7 @@ pub async fn advance(pool: &PgPool) -> Result<(), sqlx::Error> {
             .execute(&mut *transaction)
             .await?;
             tracing::info!(target: "profiles", tournament_id = row.tournament_id, set_id = row.tournament_set_id, match_id = row.match_id, goes_on = resume.is_some(), "tournament set's game broke off");
-            refresh(&mut transaction, row.tournament_id).await?;
+            called_off.extend(refresh(&mut transaction, row.tournament_id).await?);
             transaction.commit().await?;
             continue;
         }
@@ -1053,10 +1055,10 @@ pub async fn advance(pool: &PgPool) -> Result<(), sqlx::Error> {
             }
         }
         tracing::info!(target: "profiles", tournament_id = row.tournament_id, set_id = row.tournament_set_id, match_id = row.match_id, state = found.state, "tournament set's match ended");
-        refresh(&mut transaction, row.tournament_id).await?;
+        called_off.extend(refresh(&mut transaction, row.tournament_id).await?);
         transaction.commit().await?;
     }
-    Ok(())
+    Ok(called_off)
 }
 
 /// The sets playing a match that was deleted (an admin's merge deletes the
