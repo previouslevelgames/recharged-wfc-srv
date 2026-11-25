@@ -406,8 +406,8 @@ pub struct PlayedGame {
 }
 
 /// The games each set of the tournament played, by set, in their order:
-/// one from each finished match of the set, as its home player reported it
-/// (else its away player).
+/// one from each finished match of the set between its players now, as its
+/// home player reported it (else its away player).
 pub async fn played_games(
     pool: &PgPool,
     id: i64,
@@ -418,6 +418,7 @@ pub async fn played_games(
            JOIN matches m ON m.tournament_set_id = s.tournament_set_id AND m.state = 'finished'
            JOIN match_reports r ON r.match_id = m.match_id
            WHERE s.tournament_id = $1
+             AND m.home IN (s.home, s.away) AND m.away IN (s.home, s.away)
            ORDER BY s.tournament_set_id, m.match_id, (r.player_id = s.home) DESC"#,
         id,
     )
@@ -1198,9 +1199,17 @@ async fn refresh(
             row.winner,
         ) != (state, home, away, &decided_by, winner);
         if changed {
+            // Other players (the organizer decided an earlier set again):
+            // the games won and a game to go on from were the others'.
             sqlx::query!(
                 "UPDATE tournament_sets SET state = $2, home = $3, away = $4, decided_by = $5,
-                        winner = $6, updated_at = now()
+                        winner = $6, updated_at = now(),
+                        home_wins = CASE WHEN (home, away) IS DISTINCT FROM ($3, $4)
+                                         THEN NULL ELSE home_wins END,
+                        away_wins = CASE WHEN (home, away) IS DISTINCT FROM ($3, $4)
+                                         THEN NULL ELSE away_wins END,
+                        resume = CASE WHEN (home, away) IS DISTINCT FROM ($3, $4)
+                                      THEN NULL ELSE resume END
                  WHERE tournament_set_id = $1",
                 row.tournament_set_id,
                 state,
@@ -1319,48 +1328,55 @@ mod tests {
     /// game, both players pressing READY for each, their games meeting, both
     /// reporting it.
     async fn play(pool: &PgPool, id: i64, set: &Set, winner: i64) {
-        let (home, away) = (set.home.unwrap(), set.away.unwrap());
+        let home = set.home.unwrap();
         for game in 0..set.games / 2 + 1 {
-            let made = ready(pool, id, set.id, home, true)
-                .await
-                .unwrap()
-                .unwrap()
-                .unwrap();
-            assert_eq!(made.stage(), "open");
-            assert_eq!(made.rules.games, 1);
-            assert_eq!(made.tournament_set, Some(set.id));
-            let going = ready(pool, id, set.id, away, true)
-                .await
-                .unwrap()
-                .unwrap()
-                .unwrap();
-            assert_eq!((going.id, going.stage()), (made.id, "go"));
-            matches::game_ready(pool, made.id, 0, true).await.unwrap();
-            for player_id in [home, away] {
-                let won = player_id == winner;
-                // The same game from both sides: the home player has Mario.
-                let mut seen = if won { game_of(2, 1) } else { game_of(1, 2) };
-                if player_id == away {
-                    std::mem::swap(&mut seen.my_captain, &mut seen.opponent_captain);
-                }
-                matches::report(pool, made.id, player_id, &[seen])
-                    .await
-                    .unwrap()
-                    .unwrap();
-            }
-            advance(pool).await.unwrap();
-            let now = sets(pool, id)
-                .await
-                .unwrap()
-                .into_iter()
-                .find(|s| s.id == set.id)
-                .unwrap();
+            let now = play_game(pool, id, set, winner).await;
             let won = i16::from(game + 1);
             let wins = if winner == home { (won, 0) } else { (0, won) };
             assert_eq!((now.home_wins, now.away_wins), (Some(wins.0), Some(wins.1)));
             let last = game + 1 == set.games / 2 + 1;
             assert_eq!(now.state, if last { "finished" } else { "ready" });
         }
+    }
+
+    /// One game of `set`, `winner` winning it, as [`play`] plays them; the
+    /// set after it.
+    async fn play_game(pool: &PgPool, id: i64, set: &Set, winner: i64) -> Set {
+        let (home, away) = (set.home.unwrap(), set.away.unwrap());
+        let made = ready(pool, id, set.id, home, true)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(made.stage(), "open");
+        assert_eq!(made.rules.games, 1);
+        assert_eq!(made.tournament_set, Some(set.id));
+        let going = ready(pool, id, set.id, away, true)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!((going.id, going.stage()), (made.id, "go"));
+        matches::game_ready(pool, made.id, 0, true).await.unwrap();
+        for player_id in [home, away] {
+            let won = player_id == winner;
+            // The same game from both sides: the home player has Mario.
+            let mut seen = if won { game_of(2, 1) } else { game_of(1, 2) };
+            if player_id == away {
+                std::mem::swap(&mut seen.my_captain, &mut seen.opponent_captain);
+            }
+            matches::report(pool, made.id, player_id, &[seen])
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        advance(pool).await.unwrap();
+        sets(pool, id)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == set.id)
+            .unwrap()
     }
 
     fn game_of(mine: u32, theirs: u32) -> Game {
@@ -1654,6 +1670,41 @@ mod tests {
         assert_eq!(
             decide(&pool, id, set.id, Some(p[2])).await.unwrap(),
             Err(Refusal::State("finished".into()))
+        );
+    }
+
+    #[sqlx::test]
+    async fn a_set_whose_players_change_starts_again(pool: PgPool) {
+        let (id, p) = tournament(&pool, Format::Single, &["Mario", "Luigi", "Peach"]).await;
+        start(&pool, id, Seeding::Joined).await.unwrap().unwrap();
+        // The organizer gives Peach the semifinal, and she wins the final's
+        // first game against Mario; then the semifinal goes to Luigi.
+        let semifinal = set_of(&pool, id, p[1]).await;
+        decide(&pool, id, semifinal.id, Some(p[2]))
+            .await
+            .unwrap()
+            .unwrap();
+        let final_set = set_of(&pool, id, p[0]).await;
+        let played = play_game(&pool, id, &final_set, p[2]).await;
+        assert_eq!((played.home_wins, played.away_wins), (Some(0), Some(1)));
+        assert_eq!(
+            played_games(&pool, id).await.unwrap()[&final_set.id].len(),
+            1
+        );
+        decide(&pool, id, semifinal.id, Some(p[1]))
+            .await
+            .unwrap()
+            .unwrap();
+        let again = set_of(&pool, id, p[0]).await;
+        assert_eq!(
+            (again.away, again.home_wins, again.away_wins, again.resume),
+            (Some(p[1]), None, None, None)
+        );
+        assert!(
+            !played_games(&pool, id)
+                .await
+                .unwrap()
+                .contains_key(&final_set.id)
         );
     }
 
