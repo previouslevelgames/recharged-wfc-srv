@@ -4,6 +4,8 @@
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+
 use sqlx::PgPool;
 use time::{Duration, OffsetDateTime};
 
@@ -283,7 +285,15 @@ pub async fn link(
 }
 
 pub async fn player(pool: &PgPool, player_id: i64) -> Result<Option<Player>, sqlx::Error> {
-    let row = sqlx::query!(
+    Ok(players(pool, &[player_id]).await?.remove(&player_id))
+}
+
+/// [`player`] for each of `player_ids` there is, in one ask.
+pub async fn players(
+    pool: &PgPool,
+    player_ids: &[i64],
+) -> Result<HashMap<i64, Player>, sqlx::Error> {
+    let rows = sqlx::query!(
         r#"SELECT players.player_id, players.display_name,
                   discord.username AS "discord?", discord.avatar_url AS "avatar_url?",
                   test.username AS "test?", wfc.username AS "friend_code?",
@@ -296,26 +306,29 @@ pub async fn player(pool: &PgPool, player_id: i64) -> Result<Option<Player>, sql
                   ON test.player_id = players.player_id AND test.provider = 'test'
            LEFT JOIN player_identities wfc
                   ON wfc.player_id = players.player_id AND wfc.provider = 'wfc'
-           WHERE players.player_id = $1"#,
-        player_id,
+           WHERE players.player_id = ANY($1)"#,
+        player_ids,
     )
-    .fetch_optional(pool)
+    .fetch_all(pool)
     .await?;
-    let Some(row) = row else {
-        return Ok(None);
-    };
-    let mut miis = super::mii_data::of_players(pool, &[player_id]).await?;
-    Ok(Some(Player {
-        id: row.player_id,
-        name: row.display_name,
-        avatar_url: row.avatar_url,
-        mii_data: miis.remove(&player_id),
-        account: account(row.discord.is_some(), row.test.is_some()),
-        discord: row.discord,
-        test: row.test.is_some(),
-        friend_code: row.friend_code,
-        country: row.country,
-    }))
+    let mut miis = super::mii_data::of_players(pool, player_ids).await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let player = Player {
+                id: row.player_id,
+                name: row.display_name,
+                avatar_url: row.avatar_url,
+                mii_data: miis.remove(&row.player_id),
+                account: account(row.discord.is_some(), row.test.is_some()),
+                discord: row.discord,
+                test: row.test.is_some(),
+                friend_code: row.friend_code,
+                country: row.country,
+            };
+            (player.id, player)
+        })
+        .collect())
 }
 
 /// The player's Discord account id (the long number), which never changes;

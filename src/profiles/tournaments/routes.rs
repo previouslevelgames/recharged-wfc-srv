@@ -3,7 +3,7 @@
 //! bracket, joining and leaving, and READY for a set. Only a player who
 //! signed in with Discord plays one (a test player too, on a test server).
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use axum::{
     Json,
@@ -236,12 +236,8 @@ async fn page(
     let entrants = store::entrants(&state.pool, id).await?;
     let sets = store::sets(&state.pool, id).await?;
     let played = store::played_games(&state.pool, id).await?;
-    let mut people: HashMap<i64, Player> = HashMap::new();
-    for entrant in &entrants {
-        if let Some(found) = players::player(&state.pool, entrant.player_id).await? {
-            people.insert(found.id, found);
-        }
-    }
+    let ids: Vec<i64> = entrants.iter().map(|entrant| entrant.player_id).collect();
+    let people = players::players(&state.pool, &ids).await?;
     let entrant_views: Vec<Value> = entrants
         .iter()
         .map(|entrant| {
