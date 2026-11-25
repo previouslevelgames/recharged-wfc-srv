@@ -381,22 +381,16 @@ pub async fn get(
     match_id: i64,
     player_id: i64,
 ) -> Result<Option<Match>, sqlx::Error> {
-    let row = sqlx::query_as!(
-        Row,
-        "SELECT match_id, state, home, away, rule_set, rules, rules_hash, winner, created_at,
-                home_ready_at, away_ready_at, go_at, playing_at, rematch_of, random,
-                forfeited_by, forfeited_at, tournament_set_id
-         FROM matches WHERE match_id = $1 AND (home = $2 OR away = $2)",
-        match_id,
-        player_id,
-    )
-    .fetch_optional(pool)
-    .await?;
-    Ok(row.and_then(stored))
+    Ok(find(pool, match_id)
+        .await?
+        .filter(|found| found.side(player_id).is_some()))
 }
 
 /// Match `match_id`, whoever's it is.
-pub async fn find(pool: &PgPool, match_id: i64) -> Result<Option<Match>, sqlx::Error> {
+pub async fn find(
+    executor: impl sqlx::PgExecutor<'_>,
+    match_id: i64,
+) -> Result<Option<Match>, sqlx::Error> {
     let row = sqlx::query_as!(
         Row,
         "SELECT match_id, state, home, away, rule_set, rules, rules_hash, winner, created_at,
@@ -405,7 +399,7 @@ pub async fn find(pool: &PgPool, match_id: i64) -> Result<Option<Match>, sqlx::E
          FROM matches WHERE match_id = $1",
         match_id,
     )
-    .fetch_optional(pool)
+    .fetch_optional(executor)
     .await?;
     Ok(row.and_then(stored))
 }

@@ -982,7 +982,7 @@ pub async fn advance(pool: &PgPool) -> Result<Vec<i64>, sqlx::Error> {
         let Some((state, ..)) = lock(&mut transaction, row.tournament_id).await? else {
             continue;
         };
-        let Some(found) = matches::find(pool, row.match_id).await? else {
+        let Some(found) = matches::find(&mut *transaction, row.match_id).await? else {
             continue;
         };
         if state != "running" {
