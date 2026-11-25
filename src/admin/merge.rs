@@ -588,9 +588,9 @@ mod tests {
             &pool,
             "INSERT INTO players (display_name) VALUES ('Birnen'), ('Birnen Mii'), ('Kiki');
              INSERT INTO tournaments (name, organizer, format, rule_set, rules, best_of,
-                                      finals_best_of, state)
-             VALUES ('Cup', 2, 'single', 'Competitive', '{}', 3, 3, 'registration'),
-                    ('Old', NULL, 'single', 'Competitive', '{}', 3, 3, 'finished');
+                                      semifinals_best_of, finals_best_of, state)
+             VALUES ('Cup', 2, 'single', 'Competitive', '{}', 3, 3, 3, 'registration'),
+                    ('Old', NULL, 'single', 'Competitive', '{}', 3, 3, 3, 'finished');
              INSERT INTO tournament_entrants (tournament_id, player_id)
              VALUES (1, 2), (1, 1), (2, 2), (2, 3);",
         )

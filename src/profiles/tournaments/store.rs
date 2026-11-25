@@ -28,6 +28,7 @@ pub struct NewTournament {
     /// The rules and the name of the rule set they come from.
     pub rule_set: RuleSet,
     pub best_of: u8,
+    pub semifinals_best_of: u8,
     pub finals_best_of: u8,
     pub max_entrants: Option<i32>,
     pub starts_at: Option<OffsetDateTime>,
@@ -44,6 +45,7 @@ pub struct Tournament {
     pub rule_set: String,
     pub rules: Rules,
     pub best_of: u8,
+    pub semifinals_best_of: u8,
     pub finals_best_of: u8,
     pub max_entrants: Option<i32>,
     #[serde(with = "time::serde::timestamp::option")]
@@ -247,8 +249,8 @@ pub enum Refusal {
 pub async fn create(pool: &PgPool, new: &NewTournament) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar!(
         "INSERT INTO tournaments (name, organizer, format, rule_set, rules, best_of,
-                                  finals_best_of, max_entrants, starts_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                                  semifinals_best_of, finals_best_of, max_entrants, starts_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          RETURNING tournament_id",
         new.name,
         new.organizer,
@@ -256,6 +258,7 @@ pub async fn create(pool: &PgPool, new: &NewTournament) -> Result<i64, sqlx::Err
         new.rule_set.name,
         new.rule_set.rules.to_json(),
         i16::from(new.best_of),
+        i16::from(new.semifinals_best_of),
         i16::from(new.finals_best_of),
         new.max_entrants,
         new.starts_at,
@@ -273,6 +276,7 @@ struct TournamentRow {
     rule_set: String,
     rules: String,
     best_of: i16,
+    semifinals_best_of: i16,
     finals_best_of: i16,
     max_entrants: Option<i32>,
     starts_at: Option<OffsetDateTime>,
@@ -300,6 +304,7 @@ fn tournament(row: TournamentRow) -> Option<Tournament> {
         rule_set: row.rule_set,
         rules,
         best_of: row.best_of as u8,
+        semifinals_best_of: row.semifinals_best_of as u8,
         finals_best_of: row.finals_best_of as u8,
         max_entrants: row.max_entrants,
         starts_at: row.starts_at,
@@ -314,7 +319,7 @@ pub async fn get(pool: &PgPool, id: i64) -> Result<Option<Tournament>, sqlx::Err
     let row = sqlx::query_as!(
         TournamentRow,
         r#"SELECT tournament_id, name, organizer, format, state, rule_set, rules, best_of,
-                  finals_best_of, max_entrants, starts_at, created_at, started_at, ended_at,
+                  semifinals_best_of, finals_best_of, max_entrants, starts_at, created_at, started_at, ended_at,
                   (SELECT count(*) FROM tournament_entrants e
                    WHERE e.tournament_id = t.tournament_id) AS "entrants!"
            FROM tournaments t WHERE tournament_id = $1"#,
@@ -331,7 +336,7 @@ pub async fn list(pool: &PgPool) -> Result<Vec<Tournament>, sqlx::Error> {
     let rows = sqlx::query_as!(
         TournamentRow,
         r#"SELECT tournament_id, name, organizer, format, state, rule_set, rules, best_of,
-                  finals_best_of, max_entrants, starts_at, created_at, started_at, ended_at,
+                  semifinals_best_of, finals_best_of, max_entrants, starts_at, created_at, started_at, ended_at,
                   (SELECT count(*) FROM tournament_entrants e
                    WHERE e.tournament_id = t.tournament_id) AS "entrants!"
            FROM tournaments t
@@ -709,7 +714,7 @@ pub async fn start(
     }
     let row = sqlx::query!(
         "UPDATE tournaments SET state = 'running', started_at = now() WHERE tournament_id = $1
-         RETURNING best_of, finals_best_of",
+         RETURNING best_of, semifinals_best_of, finals_best_of",
         id,
     )
     .fetch_one(&mut *transaction)
@@ -717,6 +722,8 @@ pub async fn start(
     for (index, set) in bracket::plan(format, players.len()).iter().enumerate() {
         let games = if set.finals {
             row.finals_best_of
+        } else if set.semifinals {
+            row.semifinals_best_of
         } else {
             row.best_of
         };
@@ -1339,6 +1346,7 @@ mod tests {
                 format,
                 rule_set,
                 best_of: 3,
+                semifinals_best_of: 3,
                 finals_best_of: 5,
                 max_entrants: None,
                 starts_at: None,
@@ -1434,6 +1442,46 @@ mod tests {
 
     fn game_of(mine: u32, theirs: u32) -> Game {
         game(mine, theirs)
+    }
+
+    #[sqlx::test]
+    async fn sets_semifinals_and_finals_play_their_own_games(pool: PgPool) {
+        let (id, _) = tournament(
+            &pool,
+            Format::Double,
+            &["A", "B", "C", "D", "E", "F", "G", "H"],
+        )
+        .await;
+        sqlx::query!(
+            "UPDATE tournaments SET best_of = 1, semifinals_best_of = 3, finals_best_of = 5
+             WHERE tournament_id = $1",
+            id,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert_eq!(start(&pool, id, Seeding::Joined).await.unwrap(), Ok(()));
+        let games: Vec<(String, i32, u8)> = sets(&pool, id)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|set| (set.side, set.round, set.games))
+            .collect();
+        let of = |side: &str, round: i32| {
+            games
+                .iter()
+                .filter(|(s, r, _)| s == side && *r == round)
+                .map(|&(_, _, games)| games)
+                .collect::<Vec<_>>()
+        };
+        // 8 players: winners' rounds 1-3, losers' rounds 1-4.
+        assert_eq!(of("winners", 1), [1; 4]);
+        assert_eq!(of("winners", 2), [3; 2]);
+        assert_eq!(of("winners", 3), [5]);
+        assert_eq!(of("losers", 2), [1; 2]);
+        assert_eq!(of("losers", 3), [3]);
+        assert_eq!(of("losers", 4), [5]);
+        assert_eq!(of("grand_final", 1), [5]);
     }
 
     #[sqlx::test]

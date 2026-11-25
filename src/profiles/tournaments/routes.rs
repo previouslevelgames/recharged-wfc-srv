@@ -98,6 +98,7 @@ fn summary(tournament: &Tournament, people: &HashMap<i64, Player>) -> Value {
         "rule_set": tournament.rule_set,
         "rules": tournament.rules,
         "best_of": tournament.best_of,
+        "semifinals_best_of": tournament.semifinals_best_of,
         "finals_best_of": tournament.finals_best_of,
         "max_entrants": tournament.max_entrants,
         "entrants": tournament.entrants,

@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO tournaments (name, organizer, format, rule_set, rules, best_of,\n                                  finals_best_of, max_entrants, starts_at)\n         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)\n         RETURNING tournament_id",
+  "query": "INSERT INTO tournaments (name, organizer, format, rule_set, rules, best_of,\n                                  semifinals_best_of, finals_best_of, max_entrants, starts_at)\n         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)\n         RETURNING tournament_id",
   "describe": {
     "columns": [
       {
@@ -24,6 +24,7 @@
         "Text",
         "Int2",
         "Int2",
+        "Int2",
         "Int4",
         "Timestamptz"
       ]
@@ -32,5 +33,5 @@
       false
     ]
   },
-  "hash": "f185c56402013b82de9187197c34979af1434a49296d9e525aff3f59956a4535"
+  "hash": "a8ddc07d94a0643353694604786434d941343d5c2491edf6a015b9ac91abb6b3"
 }

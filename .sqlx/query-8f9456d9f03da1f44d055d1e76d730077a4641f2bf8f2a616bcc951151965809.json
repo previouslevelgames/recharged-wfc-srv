@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tournaments SET best_of = 1, semifinals_best_of = 3, finals_best_of = 5\n             WHERE tournament_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8f9456d9f03da1f44d055d1e76d730077a4641f2bf8f2a616bcc951151965809"
+}

@@ -24,7 +24,7 @@ READY, and the tournament's page says `"eligible": false, "reason":
 | `format` | `single` or `double` elimination, or `single_ash`: single elimination with an ash bracket |
 | `state` | `registration` (open for entries), `running`, `finished` or `cancelled` |
 | `rule_set`, `rules` | The rules its matches are played by, copied from a rule set when it was made |
-| `best_of`, `finals_best_of` | Games of a set, and of a final: in single elimination the last round (and the ash bracket's); in double the winners' final, the losers' final, the grand final and its reset |
+| `best_of`, `semifinals_best_of`, `finals_best_of` | Games of a set, of a semifinal and of a final (1, 3, 5 or 7: first to 1, 2, 3 or 4). Finals: in single elimination the last round (and the ash bracket's); in double the winners' final, the losers' final, the grand final and its reset. Semifinals: the round before the final on the winners', the losers' and the ash bracket's side (none on a side of one round) |
 | `max_entrants` | The most who can join (2 to 256), or `null` |
 
 When it starts, the entrants get their seeds (in the order they joined, at
@@ -118,8 +118,8 @@ from: `{"stadium", "seconds", "home": "you" | "opponent", "you":
 
 `/admin/tournaments` lists them like `GET /api/v1/tournaments`, with each
 one's entrants and sets. An admin makes one (`POST /admin/api/tournaments`
-with `name`, `format`, `rule_set` (an id), `best_of`, `finals_best_of`,
-`max_entrants`), starts it (`POST …/<id>/start` with `{"seeding":
+with `name`, `format`, `rule_set` (an id), `best_of`, `semifinals_best_of`,
+`finals_best_of`, `max_entrants`), starts it (`POST …/<id>/start` with `{"seeding":
 "joined"}`, `"shuffled"` or the players' ids in seed order), calls it off
 (`POST …/<id>/cancel`), disqualifies an entrant (`POST
 …/<id>/entrants/<player>/drop`), and decides a set (`POST

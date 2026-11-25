@@ -2321,6 +2321,7 @@ async fn a_tournament_set_from_join_to_ready(pool: PgPool) {
             format: Format::Single,
             rule_set,
             best_of: 3,
+            semifinals_best_of: 3,
             finals_best_of: 5,
             max_entrants: None,
             starts_at: None,

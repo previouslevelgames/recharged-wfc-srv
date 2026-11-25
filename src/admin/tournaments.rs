@@ -145,6 +145,7 @@ pub struct NewForm {
     format: String,
     rule_set: i64,
     best_of: u8,
+    semifinals_best_of: u8,
     finals_best_of: u8,
     #[serde(default)]
     max_entrants: Option<i32>,
@@ -171,7 +172,10 @@ pub async fn create(
             "format: single, double or single_ash",
         );
     };
-    if !rules::SERIES.contains(&form.best_of) || !rules::SERIES.contains(&form.finals_best_of) {
+    if ![form.best_of, form.semifinals_best_of, form.finals_best_of]
+        .iter()
+        .all(|games| rules::SERIES.contains(games))
+    {
         return error(StatusCode::BAD_REQUEST, "best of 1, 3, 5 or 7");
     }
     if form
@@ -194,6 +198,7 @@ pub async fn create(
         format,
         rule_set,
         best_of: form.best_of,
+        semifinals_best_of: form.semifinals_best_of,
         finals_best_of: form.finals_best_of,
         max_entrants: form.max_entrants,
         starts_at: None,

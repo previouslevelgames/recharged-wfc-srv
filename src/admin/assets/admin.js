@@ -3168,7 +3168,7 @@ function renderTournament(tournament) {
   const limit = tournament.max_entrants ? ` of ${integer.format(tournament.max_entrants)}` : '';
   const node = card(
     [tournament.name, ' ', badge(stateTone, stateText)],
-    `${format} · ${tournament.rule_set}, best of ${tournament.best_of} (finals ${tournament.finals_best_of}) · ${integer.format(tournament.entrants.length)}${limit} entrants`,
+    `${format} · ${tournament.rule_set}, best of ${tournament.best_of} (semifinals ${tournament.semifinals_best_of}, finals ${tournament.finals_best_of}) · ${integer.format(tournament.entrants.length)}${limit} entrants`,
     entrants,
     tools,
   );
@@ -3201,15 +3201,15 @@ const tournamentForm = {
   load(ruleSets, series, unfolded) {
     if (this.node) return;
     const { field, select } = editor;
-    const bestOf = Object.fromEntries(series.map((games) => [games, `Best of ${games}`]));
+    const bestOf = Object.fromEntries(series.map((games) => [games, `Best of ${games} (first to ${(games + 1) / 2})`]));
     const ruleNames = Object.fromEntries(ruleSets.map((set) => [set.id, set.name]));
     // A tournament's sets play their own best of, whatever the rule set says.
     const note = h('p', { class: 'editor-note' });
     const noteRules = () => {
       const chosen = ruleSets.find((set) => String(set.id) === document.getElementById('tournament-rules').value);
       note.textContent = chosen
-        ? `Sets and finals override the rule set's best of ${chosen.rules.games}.`
-        : "Sets and finals override the rule set's best of.";
+        ? `Sets, semifinals and finals override the rule set's best of ${chosen.rules.games}.`
+        : "Sets, semifinals and finals override the rule set's best of.";
     };
     const body = h(
       'form',
@@ -3225,6 +3225,7 @@ const tournamentForm = {
         'div',
         { class: 'editor-row' },
         field('Sets', select('tournament-best-of', series, bestOf, 3)),
+        field('Semifinals', select('tournament-semifinals', series, bestOf, 3)),
         field('Finals', select('tournament-finals', series, bestOf, 5)),
         field('Most entrants', h('input', { id: 'tournament-max', type: 'number', min: '2', max: '256', placeholder: 'no limit' })),
       ),
@@ -3257,6 +3258,7 @@ const tournamentForm = {
         format: value('tournament-format'),
         rule_set: Number(value('tournament-rules')),
         best_of: Number(value('tournament-best-of')),
+        semifinals_best_of: Number(value('tournament-semifinals')),
         finals_best_of: Number(value('tournament-finals')),
         max_entrants: max ? Number(max) : null,
       });

@@ -90,6 +90,10 @@ pub struct SetPlan {
     /// finals and the grand final, reset included; the ash bracket's last
     /// round): it may be played to more games.
     pub finals: bool,
+    /// A semifinal: the round before a final on its side (the winners', the
+    /// losers' and the ash bracket's), when the side has one; it may be
+    /// played to its own number of games too.
+    pub semifinals: bool,
 }
 
 /// The most entrants a bracket takes.
@@ -124,9 +128,13 @@ pub fn plan(format: Format, entrants: usize) -> Vec<SetPlan> {
     // The winners' bracket, round by round: the index of each round's sets.
     let winners = elimination(&mut sets, Side::Winners, &seeds);
     match format {
-        Format::Single => return sets,
+        Format::Single => {
+            mark_semifinals(&mut sets);
+            return sets;
+        }
         Format::SingleAsh => {
             ash(&mut sets, entrants, &order, &winners[0]);
+            mark_semifinals(&mut sets);
             return sets;
         }
         Format::Double => {}
@@ -150,6 +158,7 @@ pub fn plan(format: Format, entrants: usize) -> Vec<SetPlan> {
                     From::Loser(first[2 * position + 1]),
                 ],
                 finals: false,
+                semifinals: false,
             });
         }
         for winners_round in 2..=rounds as usize {
@@ -175,6 +184,7 @@ pub fn plan(format: Format, entrants: usize) -> Vec<SetPlan> {
                     position: position as u32,
                     from: [From::Winner(stayed), From::Loser(dropped)],
                     finals: winners_round == rounds as usize,
+                    semifinals: false,
                 });
             }
             if winners_round == rounds as usize {
@@ -194,6 +204,7 @@ pub fn plan(format: Format, entrants: usize) -> Vec<SetPlan> {
                         From::Winner(left[2 * position + 1]),
                     ],
                     finals: false,
+                    semifinals: false,
                 });
             }
         }
@@ -211,6 +222,7 @@ pub fn plan(format: Format, entrants: usize) -> Vec<SetPlan> {
         position: 0,
         from: [From::Winner(winners_final), from_losers],
         finals: true,
+        semifinals: false,
     });
     // The winners' side player (the grand final's loser when the reset is
     // played) stays first.
@@ -220,8 +232,32 @@ pub fn plan(format: Format, entrants: usize) -> Vec<SetPlan> {
         position: 0,
         from: [From::Loser(grand_final), From::Winner(grand_final)],
         finals: true,
+        semifinals: false,
     });
+    mark_semifinals(&mut sets);
     sets
+}
+
+/// Marks the semifinals: on the winners', the losers' and the ash bracket's
+/// side, the round before the one of that side's final, when there is one.
+/// (The grand final and its reset follow the finals; a side of one round
+/// has no semifinal.)
+fn mark_semifinals(sets: &mut [SetPlan]) {
+    for side in [Side::Winners, Side::Losers, Side::Ash] {
+        let Some(last) = sets
+            .iter()
+            .filter(|set| set.side == side && set.finals)
+            .map(|set| set.round)
+            .max()
+        else {
+            continue;
+        };
+        for set in sets.iter_mut() {
+            if set.side == side && set.round + 1 == last {
+                set.semifinals = true;
+            }
+        }
+    }
 }
 
 /// A single elimination on `side` whose first round pairs `first` two by
@@ -249,6 +285,7 @@ fn elimination(sets: &mut Vec<SetPlan>, side: Side, first: &[From]) -> Vec<Vec<u
                 position: position as u32,
                 from,
                 finals: round == rounds,
+                semifinals: false,
             });
         }
         done.push(this);
@@ -584,6 +621,47 @@ mod tests {
             assert_eq!(sets.len(), entrants.next_power_of_two() - 1);
             assert_eq!(sets.iter().filter(|set| set.finals).count(), 1);
         }
+    }
+
+    #[test]
+    fn semifinals_are_the_round_before_each_final() {
+        let semis = |format, entrants| {
+            let sets = plan(format, entrants);
+            let mut found: Vec<(Side, u32)> = sets
+                .iter()
+                .filter(|set| set.semifinals)
+                .map(|set| (set.side, set.round))
+                .collect();
+            found.dedup();
+            assert!(sets.iter().all(|set| !(set.semifinals && set.finals)));
+            found
+        };
+        // Two players: the final alone.
+        assert_eq!(semis(Format::Single, 2), []);
+        assert_eq!(semis(Format::Single, 3), [(Side::Winners, 1)]);
+        assert_eq!(semis(Format::Single, 8), [(Side::Winners, 2)]);
+        assert_eq!(
+            plan(Format::Single, 8)
+                .iter()
+                .filter(|set| set.semifinals)
+                .count(),
+            2
+        );
+        assert_eq!(semis(Format::Double, 2), []);
+        assert_eq!(
+            semis(Format::Double, 4),
+            [(Side::Winners, 1), (Side::Losers, 1)]
+        );
+        assert_eq!(
+            semis(Format::Double, 8),
+            [(Side::Winners, 2), (Side::Losers, 3)]
+        );
+        // 8 players: the ash bracket's 4 first-round losers, a round before
+        // its final.
+        assert_eq!(
+            semis(Format::SingleAsh, 8),
+            [(Side::Winners, 2), (Side::Ash, 1)]
+        );
     }
 
     #[test]
