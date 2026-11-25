@@ -878,7 +878,11 @@ pub async fn ready(
     };
     match set.state.as_str() {
         "playing" => {
-            let match_id = set.match_id.expect("a playing set has its match");
+            let Some(match_id) = set.match_id else {
+                // Its match was deleted (an admin's merge): played again.
+                replay_without_match(pool).await?;
+                return Box::pin(self::ready(pool, id, set_id, player_id, ready)).await;
+            };
             match matches::ready_to_play(pool, match_id, player_id, ready).await? {
                 Ok(found) => Ok(Ok(Some(found))),
                 Err(matches::Refusal::State(stage)) => Ok(Err(Refusal::State(stage))),
@@ -934,6 +938,7 @@ pub async fn ready(
 /// without one is to be played again, and disagreeing reports (or a draw)
 /// wait for the organizer. Called with every sweep of the matches.
 pub async fn advance(pool: &PgPool) -> Result<(), sqlx::Error> {
+    replay_without_match(pool).await?;
     let ended = sqlx::query!(
         "SELECT s.tournament_id, s.tournament_set_id, m.match_id
          FROM tournament_sets s JOIN matches m ON m.match_id = s.match_id
@@ -1050,6 +1055,22 @@ pub async fn advance(pool: &PgPool) -> Result<(), sqlx::Error> {
         tracing::info!(target: "profiles", tournament_id = row.tournament_id, set_id = row.tournament_set_id, match_id = row.match_id, state = found.state, "tournament set's match ended");
         refresh(&mut transaction, row.tournament_id).await?;
         transaction.commit().await?;
+    }
+    Ok(())
+}
+
+/// The sets playing a match that was deleted (an admin's merge deletes the
+/// two players' matches) are played again.
+async fn replay_without_match(pool: &PgPool) -> Result<(), sqlx::Error> {
+    let replayed = sqlx::query_scalar!(
+        "UPDATE tournament_sets SET state = 'ready', updated_at = now()
+         WHERE state = 'playing' AND match_id IS NULL
+         RETURNING tournament_set_id",
+    )
+    .fetch_all(pool)
+    .await?;
+    for set_id in replayed {
+        tracing::warn!(target: "profiles", set_id, "tournament set's match is gone: played again");
     }
     Ok(())
 }
@@ -1698,6 +1719,33 @@ mod tests {
         assert_eq!(
             (now.state.as_str(), now.match_id),
             ("playing", Some(made.id))
+        );
+    }
+
+    #[sqlx::test]
+    async fn a_set_whose_match_was_deleted_is_played_again(pool: PgPool) {
+        let (id, p) = tournament(&pool, Format::Single, &["Mario", "Luigi"]).await;
+        start(&pool, id, Seeding::Joined).await.unwrap().unwrap();
+        let set = set_of(&pool, id, p[0]).await;
+        let made = ready(&pool, id, set.id, p[0], true)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        sqlx::query!("DELETE FROM matches WHERE match_id = $1", made.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let again = ready(&pool, id, set.id, p[1], true)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_ne!(again.id, made.id);
+        let now = set_of(&pool, id, p[0]).await;
+        assert_eq!(
+            (now.state.as_str(), now.match_id),
+            ("playing", Some(again.id))
         );
     }
 
