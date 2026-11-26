@@ -4,4 +4,6 @@
 
 pub mod bracket;
 pub mod routes;
+#[cfg(test)]
+mod samples;
 pub mod store;

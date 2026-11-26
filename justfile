@@ -48,6 +48,17 @@ preview: migrate
 preview-dev: migrate
     cargo test --locked --lib preview_the_dev_database -- --ignored --nocapture
 
+# Sample tournaments in the development database, for the brackets on the
+# dashboard and in the game (src/profiles/tournaments/samples.rs): every
+# format, with and without byes, at every stage. `only` keeps the samples
+# whose name has one of its words (by commas): `just tournament-samples double`.
+tournament-samples only="": migrate
+    TOURNAMENT_SAMPLES="{{only}}" cargo test --locked --lib make_tournament_samples -- --ignored --nocapture
+
+# Takes the sample tournaments and their players away again.
+tournament-samples-clear: migrate
+    cargo test --locked --lib clear_tournament_samples -- --ignored --nocapture
+
 # DB-IP's free country database (CC BY 4.0, https://db-ip.com) for players'
 # flags, this month's (or last month's, early in a month), to target/.
 countries:
