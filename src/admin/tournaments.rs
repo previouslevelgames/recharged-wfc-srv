@@ -119,6 +119,7 @@ fn refused(refusal: Refusal) -> Response {
         ),
         Refusal::State(state) => (StatusCode::CONFLICT, format!("it is {state}")),
         Refusal::Full => (StatusCode::CONFLICT, "it is full".into()),
+        Refusal::Closed => (StatusCode::CONFLICT, "its entries are closed".into()),
         Refusal::Joined => (StatusCode::CONFLICT, "already in it".into()),
         Refusal::NotIn => (StatusCode::NOT_FOUND, "not in it".into()),
         Refusal::TooFew => (

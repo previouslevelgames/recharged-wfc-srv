@@ -237,6 +237,8 @@ pub enum Refusal {
     State(String),
     /// It has as many entrants as it takes.
     Full,
+    /// Its entries closed (`registration_ends_at`).
+    Closed,
     /// The player is in it already.
     Joined,
     /// The player isn't in it, or not in that set.
@@ -614,6 +616,16 @@ pub async fn join(
     };
     if state != "registration" {
         return Ok(Err(Refusal::State(state)));
+    }
+    let closed = sqlx::query_scalar!(
+        r#"SELECT coalesce(registration_ends_at <= now(), false) AS "closed!"
+           FROM tournaments WHERE tournament_id = $1"#,
+        id,
+    )
+    .fetch_one(&mut *transaction)
+    .await?;
+    if closed {
+        return Ok(Err(Refusal::Closed));
     }
     let count = sqlx::query_scalar!(
         "SELECT count(*) AS \"count!\" FROM tournament_entrants WHERE tournament_id = $1",
@@ -1682,6 +1694,28 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(join(&pool, other, peach).await.unwrap(), Err(Refusal::Full));
+    }
+
+    #[sqlx::test]
+    async fn entries_close_at_their_time(pool: PgPool) {
+        let (id, _) = tournament(&pool, Format::Single, &["Mario"]).await;
+        let closes = |when: &'static str| {
+            sqlx::query(
+                "UPDATE tournaments SET registration_ends_at = now() + $2::text::interval
+                 WHERE tournament_id = $1",
+            )
+            .bind(id)
+            .bind(when)
+            .execute(&pool)
+        };
+        closes("1 hour").await.unwrap();
+        let luigi = player(&pool, "Luigi").await;
+        join(&pool, id, luigi).await.unwrap().unwrap();
+        closes("-1 second").await.unwrap();
+        let peach = player(&pool, "Peach").await;
+        assert_eq!(join(&pool, id, peach).await.unwrap(), Err(Refusal::Closed));
+        // The ones in it still start it.
+        start(&pool, id, Seeding::Joined).await.unwrap().unwrap();
     }
 
     #[sqlx::test]
