@@ -92,6 +92,7 @@ const LEVELS = {
 // What a rule set can hold (src/profiles/rules.rs), with the names players
 // know.
 const TWEAK_NAMES = {
+  fair_ball_contests: "Defender's priority",
   fast_terrain: 'Fast terrain',
   mirror_match: 'Mirror match',
   no_mega_strikes: 'No Mega Strikes',
@@ -2925,7 +2926,7 @@ const editor = {
   render(set) {
     const rules = set
       ? set.rules
-      : { tweaks: [], skill: 'rookie', limit: 'time', time: 180, goals: 5, games: 3, stadium: 'random' };
+      : { tweaks: ['fair_ball_contests'], skill: 'rookie', limit: 'time', time: 180, goals: 5, games: 3, stadium: 'random' };
     const cheat = (name) => rules[name] || 'none';
     // The CPU's skill: no effect between two games, kept as it was.
     this.skill = rules.skill || 'rookie';
