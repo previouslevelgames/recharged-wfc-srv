@@ -141,18 +141,12 @@ pub async fn pair(
         }
         (Some(player_id), _) | (None, Some(player_id)) => (player_id, false),
         (None, None) => {
-            let name = [&mine.ingamesn, &theirs.ingamesn]
+            let names: Vec<&str> = [&mine.ingamesn, &theirs.ingamesn]
                 .into_iter()
                 .flatten()
-                .map(|name| name.trim().chars().take(64).collect::<String>())
-                .find(|name| !name.is_empty())
-                .unwrap_or_else(|| "Player".to_owned());
-            let player_id = sqlx::query_scalar!(
-                "INSERT INTO players (display_name) VALUES ($1) RETURNING player_id",
-                name,
-            )
-            .fetch_one(&mut *tx)
-            .await?;
+                .map(String::as_str)
+                .collect();
+            let player_id = crate::profiles::players::create_named(&mut tx, &names).await?;
             (player_id, true)
         }
     };

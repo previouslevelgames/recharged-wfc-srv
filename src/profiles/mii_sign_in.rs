@@ -33,6 +33,9 @@ use super::{
 /// name the launcher shows. (The Mii's own name in its record is the
 /// client's to fit.)
 pub const MAX_NAME: usize = 32;
+/// What the launcher shows for a name another player has (docs/profiles.md,
+/// "Names").
+pub const NAME_TAKEN: &str = "that name is taken: choose another one";
 /// New Mii players one address can make in [`WINDOW`].
 pub const NEW_PLAYERS_PER_WINDOW: u32 = 5;
 const WINDOW: Duration = Duration::from_secs(60 * 60);
@@ -184,7 +187,8 @@ pub(super) async fn sign_in_mii(
         );
     }
     let player_id = match players::create_mii(&state.pool, &name).await {
-        Ok(player_id) => player_id,
+        Ok(Some(player_id)) => player_id,
+        Ok(None) => return json_error(StatusCode::CONFLICT, NAME_TAKEN),
         Err(error) => return database_error(error),
     };
     info!(target: "profiles", player_id, "Mii player made");
@@ -284,7 +288,7 @@ async fn session(state: &ProfilesState, player_id: i64) -> Response {
         Err(error) => return database_error(error),
     };
     match players::player(&state.pool, player_id).await {
-        Ok(Some(player)) => signed_in(&token, &player, None),
+        Ok(Some(player)) => Json(signed_in(&token, &player, None)).into_response(),
         Ok(None) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "the player went away"),
         Err(error) => database_error(error),
     }

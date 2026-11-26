@@ -1727,7 +1727,9 @@ async fn a_mii_player_comes_back_by_its_wfc_login(pool: PgPool) {
 
     // A second Mii player with the same Mii takes the profile, not what it
     // identifies: the login still signs Nelly in.
-    let (_, other) = world.mii_sign_in("Nelly", "198.51.100.2").await;
+    let (status, taken) = world.mii_sign_in("nelly", "198.51.100.2").await;
+    assert_eq!(status, StatusCode::CONFLICT, "{taken}");
+    let (_, other) = world.mii_sign_in("Nelly 2", "198.51.100.2").await;
     let other_token = other["token"].as_str().unwrap().to_owned();
     assert_eq!(world.prove(&other_token, pid).await.0, StatusCode::OK);
     let (_, other_me) = world
@@ -2426,4 +2428,51 @@ async fn a_tournament_set_from_join_to_ready(pool: PgPool) {
     let (_, page) = world.send("GET", &uri, &bowser, Value::Null).await;
     assert_eq!(page["sets"][0]["state"], "playing");
     assert_eq!(page["sets"][0]["match"], made["match"]["id"]);
+}
+
+#[sqlx::test]
+async fn a_name_belongs_to_one_player(pool: PgPool) {
+    let world = World::new(pool);
+    let (_, nelly) = world.mii_sign_in("Nelly", "198.51.100.1").await;
+    let nelly = nelly["token"].as_str().unwrap().to_owned();
+    let kiki = world.sign_in("Kiki").await;
+
+    let free = |name: &'static str| {
+        let world = &world;
+        async move {
+            let uri = format!("/api/v1/names?name={}", name.replace(' ', "%20"));
+            world.send("GET", &uri, "", Value::Null).await
+        }
+    };
+    let (status, answer) = free("NELLY").await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_eq!(answer, json!({ "name": "NELLY", "free": false }));
+    assert_eq!(
+        free(" Nelly B. ").await.1,
+        json!({ "name": "Nelly B.", "free": true })
+    );
+    assert_eq!(free("%20").await.0, StatusCode::BAD_REQUEST);
+
+    let rename = |token: String, name: &'static str| {
+        let world = &world;
+        async move {
+            world
+                .send("PUT", "/api/v1/me/name", &token, json!({ "name": name }))
+                .await
+        }
+    };
+    assert_eq!(rename(kiki.clone(), "nelly").await.0, StatusCode::CONFLICT);
+    let (status, renamed) = rename(nelly.clone(), "Nelly B.").await;
+    assert_eq!(status, StatusCode::OK, "{renamed}");
+    assert_eq!(renamed["name"], "Nelly B.");
+    // The old name is free at once.
+    let (status, renamed) = rename(kiki.clone(), "Nelly").await;
+    assert_eq!(status, StatusCode::OK, "{renamed}");
+    assert_eq!(renamed["name"], "Nelly");
+    assert_eq!(
+        rename(String::new(), "Sam").await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (_, me) = world.send("GET", "/api/v1/me", &nelly, Value::Null).await;
+    assert_eq!(me["name"], "Nelly B.");
 }

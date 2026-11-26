@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO players (display_name, heartbeat_at) VALUES ($1, now()) RETURNING player_id",
+  "query": "INSERT INTO players (display_name, heartbeat_at) VALUES ($1, now())\n         ON CONFLICT ((lower(display_name))) DO NOTHING\n         RETURNING player_id",
   "describe": {
     "columns": [
       {
@@ -24,5 +24,5 @@
       false
     ]
   },
-  "hash": "2ab2e63bd4497a222c749951c46f7fabb2aeaf44b4d2b99361883da06e885af1"
+  "hash": "856680d193e0a90dc5c239156c62e2a7ce47f59eb7696e0660f8bdc3e05e0ec5"
 }

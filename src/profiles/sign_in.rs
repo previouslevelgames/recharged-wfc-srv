@@ -58,11 +58,13 @@ pub struct Link {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Outcome {
     /// The launcher's session, and the Discord Social SDK's tokens of a
-    /// Discord sign-in that granted its scopes.
+    /// Discord sign-in that granted its scopes. `created`: the sign-in made
+    /// the player.
     SignedIn {
         token: String,
         player_id: i64,
         discord: Option<SdkTokens>,
+        created: bool,
     },
     /// Why not, for the launcher to show.
     Refused(String),
@@ -200,6 +202,7 @@ mod tests {
             token: "token".into(),
             player_id: 7,
             discord: None,
+            created: false,
         };
         assert!(sign_ins.finish(&id, outcome.clone()));
         assert!(!sign_ins.finish(&id, Outcome::Refused("again".into())));

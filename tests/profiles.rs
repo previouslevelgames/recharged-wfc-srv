@@ -85,6 +85,8 @@ async fn the_launcher_signs_in_with_discord(pool: PgPool) {
     assert_eq!(signed_in["player"]["test"], false);
     assert_eq!(signed_in["player"]["account"], "discord");
     assert_eq!(signed_in["player"]["friend_code"], Value::Null);
+    // The sign-in made the player: the launcher shows "finish your profile".
+    assert_eq!(signed_in["created"], true);
     // The Discord SDK's tokens of the same sign-in, for the launcher's
     // Discord friends: no second authorization.
     assert_eq!(
@@ -138,7 +140,9 @@ async fn the_launcher_signs_in_with_discord(pool: PgPool) {
     .await;
     let (_, signed_in_again) = poll(&app, id).await;
     assert_eq!(signed_in_again["player"]["id"], me["id"]);
-    assert_eq!(signed_in_again["player"]["name"], "nelly");
+    // The name is the player's own: Discord's new one doesn't change it.
+    assert_eq!(signed_in_again["player"]["name"], "Nelly");
+    assert_eq!(signed_in_again["created"], Value::Null);
     assert_ne!(signed_in_again["token"], signed_in["token"]);
 }
 
@@ -598,7 +602,8 @@ async fn a_mii_player_links_discord_to_its_profile(pool: PgPool) {
     assert_eq!(linked["status"], "signed_in");
     assert_eq!(linked["player"]["id"], nelly_id);
     assert_eq!(linked["player"]["account"], "discord");
-    assert_eq!(linked["player"]["name"], "Nelly D.");
+    // The Mii player keeps its name.
+    assert_eq!(linked["player"]["name"], "Nelly");
     assert_eq!(linked["discord"]["access_token"], ACCESS_TOKEN);
 
     // Her old session goes on, with Discord and her friend.

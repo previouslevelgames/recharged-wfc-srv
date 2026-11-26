@@ -31,8 +31,9 @@ mod matches;
 mod mii_data;
 mod mii_sign_in;
 mod miis;
+mod names;
 mod play;
-mod players;
+pub(crate) mod players;
 pub(crate) mod rules;
 mod search;
 mod sign_in;
@@ -51,7 +52,7 @@ use axum::{
     routing::{delete, get, post, put},
 };
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
 use sqlx::PgPool;
 use tracing::{info, warn};
 
@@ -98,6 +99,8 @@ struct ProfilesState {
     mii_players: mii_sign_in::PerAddress,
     /// The known-Mii asks each address made lately.
     known_asks: mii_sign_in::PerAddress,
+    /// The name asks each address made lately.
+    name_asks: mii_sign_in::PerAddress,
     /// Who is logged in to WFC with which login ticket.
     gpcm: Arc<Gpcm>,
     /// Matches' games kept for RANKED, which the server browser reads.
@@ -132,6 +135,7 @@ pub(crate) fn router(
         sign_ins: SignIns::default(),
         mii_players: mii_sign_in::PerAddress::creations(),
         known_asks: mii_sign_in::PerAddress::known(),
+        name_asks: names::asks(),
         gpcm,
         pairings,
         countries,
@@ -149,6 +153,8 @@ pub(crate) fn router(
         .route("/api/v1/sign-out", post(sign_out))
         .route("/api/v1/me", get(me))
         .route("/api/v1/me/country", put(choose_country))
+        .route("/api/v1/me/name", put(names::rename))
+        .route("/api/v1/names", get(names::free))
         .route("/api/v1/me/available", put(play::set_available))
         .route("/api/v1/me/miis", post(mii_data::upload))
         .route("/api/v1/me/stats", get(stats::stats))
@@ -279,13 +285,13 @@ impl ProfilesState {
             .ok_or_else(unauthorized)
     }
 
-    /// Signs in with `identity` and opens a session. The player and its
-    /// token.
-    async fn open(&self, identity: &Identity<'_>) -> Result<(i64, String), sqlx::Error> {
-        let player_id = players::sign_in(&self.pool, identity).await?;
+    /// Signs in with `identity` and opens a session. The player, its token,
+    /// and whether the sign-in made the player.
+    async fn open(&self, identity: &Identity<'_>) -> Result<(i64, String, bool), sqlx::Error> {
+        let (player_id, created) = players::sign_in_or_create(&self.pool, identity).await?;
         let token = players::open_session(&self.pool, player_id).await?;
-        info!(target: "profiles", player_id, provider = identity.provider, "signed in");
-        Ok((player_id, token))
+        info!(target: "profiles", player_id, provider = identity.provider, created, "signed in");
+        Ok((player_id, token, created))
     }
 
     /// Ends the sign-in `id` with a session for `identity`, and the Discord
@@ -305,12 +311,12 @@ impl ProfilesState {
             self.sign_ins.finish(id, Outcome::Conflict(BANNED.into()));
             return Ok(Finished::Banned);
         }
-        let (player_id, token) = match link {
+        let (player_id, token, created) = match link {
             Some(link) => match players::link(&self.pool, link.player_id, identity).await? {
                 Ok(()) => {
                     info!(target: "profiles", player_id = link.player_id, provider = identity.provider, "account linked");
                     let token = players::open_session(&self.pool, link.player_id).await?;
-                    (link.player_id, token)
+                    (link.player_id, token, false)
                 }
                 Err(refusal) => {
                     self.sign_ins
@@ -326,6 +332,7 @@ impl ProfilesState {
                 token: token.clone(),
                 player_id,
                 discord,
+                created,
             },
         ) {
             return Ok(Finished::SignedIn);
@@ -543,8 +550,15 @@ async fn poll_sign_in(State(state): State<Arc<ProfilesState>>, Path(id): Path<St
             token,
             player_id,
             discord,
+            created,
         }) => match players::player(&state.pool, player_id).await {
-            Ok(Some(player)) => signed_in(&token, &player, discord.as_ref()),
+            Ok(Some(player)) => {
+                let mut answer = signed_in(&token, &player, discord.as_ref());
+                if created {
+                    answer["created"] = json!(true);
+                }
+                Json(answer).into_response()
+            }
             Ok(None) => json_error(StatusCode::NOT_FOUND, "unknown sign-in"),
             Err(error) => database_error(error),
         },
@@ -558,12 +572,12 @@ async fn poll_sign_in(State(state): State<Arc<ProfilesState>>, Path(id): Path<St
 
 /// The launcher's session; with `discord`, the Discord Social SDK's tokens,
 /// which connect its Discord friends without a second authorization.
-fn signed_in(token: &str, player: &Player, discord: Option<&discord::SdkTokens>) -> Response {
+fn signed_in(token: &str, player: &Player, discord: Option<&discord::SdkTokens>) -> Value {
     let mut body = json!({ "status": "signed_in", "token": token, "player": player });
     if let Some(tokens) = discord {
         body["discord"] = json!(tokens);
     }
-    Json(body).into_response()
+    body
 }
 
 #[derive(Deserialize)]
@@ -587,8 +601,8 @@ async fn api_test_sign_in(
     };
     let external_id = name.to_lowercase();
     match state.open(&test_identity(&name, &external_id)).await {
-        Ok((player_id, token)) => match players::player(&state.pool, player_id).await {
-            Ok(Some(player)) => signed_in(&token, &player, None),
+        Ok((player_id, token, _)) => match players::player(&state.pool, player_id).await {
+            Ok(Some(player)) => Json(signed_in(&token, &player, None)).into_response(),
             Ok(None) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "the player went away"),
             Err(error) => database_error(error),
         },

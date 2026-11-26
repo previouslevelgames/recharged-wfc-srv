@@ -60,10 +60,15 @@ fn account(discord: bool, test: bool) -> &'static str {
     }
 }
 
-/// Signs in with `identity`: its player, made at the first sign-in. The
-/// player's name and picture follow the account's, and the sign-in is a
-/// heartbeat (the launcher is open).
-pub async fn sign_in(pool: &PgPool, identity: &Identity<'_>) -> Result<i64, sqlx::Error> {
+/// Signs in with `identity`: its player, made at the first sign-in under the
+/// first free of the account's display name and username (else with a number
+/// after it, see [`create_named`]). The name is the player's own from then on:
+/// later sign-ins change only the account's username and picture. The sign-in
+/// is a heartbeat (the launcher is open). Whether the player is new.
+pub async fn sign_in_or_create(
+    pool: &PgPool,
+    identity: &Identity<'_>,
+) -> Result<(i64, bool), sqlx::Error> {
     loop {
         let mut transaction = pool.begin().await?;
         if let Some(player_id) = sqlx::query_scalar!(
@@ -79,23 +84,27 @@ pub async fn sign_in(pool: &PgPool, identity: &Identity<'_>) -> Result<i64, sqlx
         .await?
         {
             sqlx::query!(
-                "UPDATE players SET display_name = $2, last_seen_at = now(), heartbeat_at = now(), activity = NULL,
+                "UPDATE players SET last_seen_at = now(), heartbeat_at = now(), activity = NULL,
                      match_kind = NULL
                  WHERE player_id = $1",
                 player_id,
-                identity.display_name,
             )
             .execute(&mut *transaction)
             .await?;
             transaction.commit().await?;
-            return Ok(player_id);
+            return Ok((player_id, false));
         }
 
-        let player_id = sqlx::query_scalar!(
-            "INSERT INTO players (display_name, heartbeat_at) VALUES ($1, now()) RETURNING player_id",
-            identity.display_name,
+        let player_id = create_named(
+            &mut transaction,
+            &[identity.display_name, identity.username],
         )
-        .fetch_one(&mut *transaction)
+        .await?;
+        sqlx::query!(
+            "UPDATE players SET heartbeat_at = now() WHERE player_id = $1",
+            player_id
+        )
+        .execute(&mut *transaction)
         .await?;
         // A first sign-in of the same account elsewhere may come first: then
         // start again and take its player.
@@ -115,20 +124,102 @@ pub async fn sign_in(pool: &PgPool, identity: &Identity<'_>) -> Result<i64, sqlx
         .is_some()
         {
             transaction.commit().await?;
-            return Ok(player_id);
+            return Ok((player_id, true));
         }
     }
 }
 
+/// [`sign_in_or_create`]'s player, for tests that don't ask whether it is new.
+#[cfg(test)]
+pub async fn sign_in(pool: &PgPool, identity: &Identity<'_>) -> Result<i64, sqlx::Error> {
+    Ok(sign_in_or_create(pool, identity).await?.0)
+}
+
+/// The names [`create_named`] tries for `names`, in order: each of them
+/// (trimmed, the empty ones left out), then the first with a number after it,
+/// as long as a profile name may be ("Mario 2", "Mario 3", ...).
+fn name_candidates<'a>(names: &'a [&'a str]) -> impl Iterator<Item = String> + 'a {
+    let names: Vec<&str> = names
+        .iter()
+        .map(|name| name.trim())
+        .filter(|name| !name.is_empty())
+        .collect();
+    let first = names.first().copied().unwrap_or("Player").to_owned();
+    let numbered = (2u32..).map(move |number| {
+        let suffix = format!(" {number}");
+        let room = super::mii_sign_in::MAX_NAME.saturating_sub(suffix.chars().count());
+        let base: String = first.chars().take(room).collect();
+        format!("{}{suffix}", base.trim_end())
+    });
+    names
+        .into_iter()
+        .map(|name| name.chars().take(64).collect::<String>())
+        .chain(numbered)
+}
+
+/// A new player under the first of `names` no player has (docs/profiles.md,
+/// "Names"), else the first of them with a number after it.
+pub async fn create_named(
+    connection: &mut sqlx::PgConnection,
+    names: &[&str],
+) -> Result<i64, sqlx::Error> {
+    for name in name_candidates(names) {
+        if let Some(player_id) = sqlx::query_scalar!(
+            "INSERT INTO players (display_name) VALUES ($1)
+             ON CONFLICT ((lower(display_name))) DO NOTHING
+             RETURNING player_id",
+            name,
+        )
+        .fetch_optional(&mut *connection)
+        .await?
+        {
+            return Ok(player_id);
+        }
+    }
+    unreachable!("the numbered names never end")
+}
+
 /// A new player without an account to sign in with, under the name it chose:
-/// a Mii player (docs/profiles.md, "Signing in"). Its making is a heartbeat.
-pub async fn create_mii(pool: &PgPool, name: &str) -> Result<i64, sqlx::Error> {
+/// a Mii player (docs/profiles.md, "Signing in"). None when another player has
+/// that name. Its making is a heartbeat.
+pub async fn create_mii(pool: &PgPool, name: &str) -> Result<Option<i64>, sqlx::Error> {
     sqlx::query_scalar!(
-        "INSERT INTO players (display_name, heartbeat_at) VALUES ($1, now()) RETURNING player_id",
+        "INSERT INTO players (display_name, heartbeat_at) VALUES ($1, now())
+         ON CONFLICT ((lower(display_name))) DO NOTHING
+         RETURNING player_id",
+        name,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
+/// Whether a player has `name` (in any letter case).
+pub async fn name_taken(pool: &PgPool, name: &str) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"SELECT EXISTS (SELECT 1 FROM players WHERE lower(display_name) = lower($1)) AS "taken!""#,
         name,
     )
     .fetch_one(pool)
     .await
+}
+
+/// `player_id` is called `name` from now on, unless another player is: false
+/// then. (Its own name in other letters is no other player's.)
+pub async fn rename(pool: &PgPool, player_id: i64, name: &str) -> Result<bool, sqlx::Error> {
+    match sqlx::query!(
+        "UPDATE players SET display_name = $2 WHERE player_id = $1",
+        player_id,
+        name,
+    )
+    .execute(pool)
+    .await
+    {
+        Ok(_) => Ok(true),
+        Err(sqlx::Error::Database(error)) if error.constraint() == Some("players_by_name") => {
+            Ok(false)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 /// Makes the WFC profile `profile_id`, whose friend code is `friend_code`,
@@ -206,8 +297,8 @@ pub enum LinkRefusal {
 }
 
 /// Links the account `identity` (Discord's) to the Mii player `player_id`,
-/// which signs in with it from now on, under its name and picture, and keeps
-/// its friends, sets and WFC profiles. The link is a heartbeat.
+/// which signs in with it from now on and keeps its name, friends, sets and
+/// WFC profiles; the picture is the account's. The link is a heartbeat.
 pub async fn link(
     pool: &PgPool,
     player_id: i64,
@@ -272,11 +363,10 @@ pub async fn link(
     .execute(&mut *transaction)
     .await?;
     sqlx::query!(
-        "UPDATE players SET display_name = $2, last_seen_at = now(), heartbeat_at = now(), activity = NULL,
+        "UPDATE players SET last_seen_at = now(), heartbeat_at = now(), activity = NULL,
                      match_kind = NULL
          WHERE player_id = $1",
         player_id,
-        identity.display_name,
     )
     .execute(&mut *transaction)
     .await?;
@@ -1134,10 +1224,66 @@ mod tests {
         assert_eq!(first, again);
         assert_ne!(first, other);
 
+        // The name is the player's own: a later Discord name doesn't change
+        // it, the username follows Discord's.
         let player = player(&pool, first).await.unwrap().unwrap();
-        assert_eq!(player.name, "Nelly 2");
+        assert_eq!(player.name, "Nelly");
         assert_eq!(player.discord.as_deref(), Some("nelly2"));
         assert!(!player.test);
+    }
+
+    #[sqlx::test]
+    async fn a_new_player_gets_a_free_name(pool: PgPool) {
+        let nelly = create_mii(&pool, "Nelly").await.unwrap().unwrap();
+        // Discord's name taken: its username...
+        let (discord_nelly, created) = sign_in_or_create(&pool, &discord("1", "nelly_d", "NELLY"))
+            .await
+            .unwrap();
+        assert!(created);
+        assert_eq!(
+            player(&pool, discord_nelly).await.unwrap().unwrap().name,
+            "nelly_d"
+        );
+        // ...and with both taken, the name with a number.
+        let (third, _) = sign_in_or_create(&pool, &discord("2", "Nelly", "nelly"))
+            .await
+            .unwrap();
+        assert_eq!(player(&pool, third).await.unwrap().unwrap().name, "nelly 2");
+        assert_eq!(
+            sign_in_or_create(&pool, &discord("2", "Nelly", "nelly"))
+                .await
+                .unwrap(),
+            (third, false)
+        );
+        assert_ne!(nelly, discord_nelly);
+
+        // A long name keeps room for its number.
+        let long = "Abcdefghijklmnopqrstuvwxyz012345";
+        create_mii(&pool, long).await.unwrap().unwrap();
+        let (numbered, _) = sign_in_or_create(&pool, &discord("3", long, long))
+            .await
+            .unwrap();
+        assert_eq!(
+            player(&pool, numbered).await.unwrap().unwrap().name,
+            "Abcdefghijklmnopqrstuvwxyz0123 2"
+        );
+    }
+
+    #[sqlx::test]
+    async fn a_player_renames_to_a_free_name(pool: PgPool) {
+        let nelly = create_mii(&pool, "Nelly").await.unwrap().unwrap();
+        let kiki = create_mii(&pool, "Kiki").await.unwrap().unwrap();
+        assert!(name_taken(&pool, "KIKI").await.unwrap());
+        assert!(!rename(&pool, nelly, "kiki").await.unwrap());
+        // Its own name in other letters, then a free one: the old one is free at once.
+        assert!(rename(&pool, nelly, "NELLY").await.unwrap());
+        assert!(rename(&pool, nelly, "Nelly B.").await.unwrap());
+        assert!(!name_taken(&pool, "nelly").await.unwrap());
+        assert!(rename(&pool, kiki, "Nelly").await.unwrap());
+        assert_eq!(
+            player(&pool, nelly).await.unwrap().unwrap().name,
+            "Nelly B."
+        );
     }
 
     #[sqlx::test]
@@ -1202,8 +1348,10 @@ mod tests {
             (third, third_code),
         ] = profiles.try_into().unwrap();
 
-        let mii = create_mii(&pool, "Nelly").await.unwrap();
-        let other_mii = create_mii(&pool, "Nelly").await.unwrap();
+        let mii = create_mii(&pool, "Nelly").await.unwrap().unwrap();
+        // One name, one player, in any letter case.
+        assert_eq!(create_mii(&pool, "nelly").await.unwrap(), None);
+        let other_mii = create_mii(&pool, "Nelly 2").await.unwrap().unwrap();
         assert_ne!(mii, other_mii);
         let nelly = player(&pool, mii).await.unwrap().unwrap();
         assert_eq!(
@@ -1254,8 +1402,8 @@ mod tests {
 
     #[sqlx::test]
     async fn discord_links_to_a_mii_player_once(pool: PgPool) {
-        let mii = create_mii(&pool, "Nelly").await.unwrap();
-        let other_mii = create_mii(&pool, "Kiki").await.unwrap();
+        let mii = create_mii(&pool, "Nelly").await.unwrap().unwrap();
+        let other_mii = create_mii(&pool, "Kiki").await.unwrap().unwrap();
         let nelly = discord("1", "nelly", "Nelly D.");
 
         assert_eq!(link(&pool, mii, &nelly).await.unwrap(), Ok(()));
@@ -1266,7 +1414,7 @@ mod tests {
                 linked.account,
                 linked.discord.as_deref()
             ),
-            ("Nelly D.", "discord", Some("nelly"))
+            ("Nelly", "discord", Some("nelly"))
         );
         // Signing in with Discord is that player now; the same link again
         // changes nothing.

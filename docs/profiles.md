@@ -91,9 +91,9 @@ signs in at once, answering like a sign-in that ended:
 as long as a Discord display name may be: 1 to 32 characters (counted as
 characters, not bytes), without spaces around it and without control
 characters or invisible formatting ones. (The Mii's own name in its record
-has 10 at most; the launcher fits it.) Mii players' names need not be unique,
-so the launcher shows them with their friend code. 400 for a name that isn't
-one; 429 `{"error": "too many new players from here: try again in an hour"}`
+has 10 at most; the launcher fits it.) A name belongs to one player (see
+"Names"): 409 `{"error": "that name is taken: choose another one"}` when
+another player has it. 400 for a name that isn't one; 429 `{"error": "too many new players from here: try again in an hour"}`
 after 5 new players from one address within an hour (an IPv6 address counts
 with its /64). The address is the caller's, or, from a proxy on the server's
 own network (loopback, private or link-local, such as a Cloudflare Tunnel's
@@ -141,8 +141,8 @@ keeping its friends, chat, sets and WFC profiles: the launcher starts the
 sign-in above with the player's session (`Authorization: Bearer <token>` on
 `POST /api/v1/sign-in`), whose answer then has `"link": true`. The page says
 which profile Discord joins and offers Discord only (no test name). When
-Discord returns, the player gets the Discord account; its name and picture
-are Discord's from then on, it signs in with Discord, and the poll answers
+Discord returns, the player gets the Discord account and keeps its name; its
+picture is Discord's from then on, it signs in with Discord, and the poll answers
 `signed_in` with a new session for the same player (the old one goes on). A
 Discord account that already has a Recharged profile, or a player that got
 another Discord account meanwhile, ends the sign-in with 409
@@ -160,6 +160,23 @@ signs in at once and answers like a sign-in that ended. A test name has 1 to
 player. 403 while test sign-in is off. The sign-in page shows it in a box of
 its own, marked as a test server's, below Discord: a test player has no
 Discord account, so no Discord friends, and nobody finds it by Discord name.
+
+## Names
+
+A name belongs to one player, in any letter case ("Nelly" and "NELLY" are
+one name), so nobody can pose as another player. The name is the player's
+own: a Discord sign-in never changes it. A player made by a Discord (or test)
+sign-in gets the first free of the account's display name and username, else
+the display name with a number after it ("Nelly 2"), and the sign-in's answer
+has `"created": true`, so the launcher can offer to choose another name.
+
+| Route | |
+|---|---|
+| `GET /api/v1/names?name=<name>` | `{"name": "Nelly", "free": false}`, without a session: whether a player could take the name now (trimmed), as the launcher shows it while it is typed. Only a hint: making or renaming a player takes the name. 400 for a name that isn't one, 429 after 60 asks a minute from one address. |
+| `PUT /api/v1/me/name` | `{"name": "<name>"}`: the player is called that from now on, and the answer is the player. 409 `{"error": "that name is taken: choose another one"}` when another player is. The old name is free at once. |
+
+Up to 1.3.0 names needn't be unique; the players that shared one kept it in
+the oldest, the later ones got a number after it.
 
 ## Sessions
 
