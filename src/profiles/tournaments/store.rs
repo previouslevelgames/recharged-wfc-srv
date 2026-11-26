@@ -239,6 +239,8 @@ pub enum Refusal {
     Full,
     /// Its entries closed (`registration_ends_at`).
     Closed,
+    /// Its sets aren't played before `starts_at`.
+    NotYet,
     /// The player is in it already.
     Joined,
     /// The player isn't in it, or not in that set.
@@ -949,6 +951,13 @@ pub async fn ready(
     };
     if tournament.state != "running" {
         return Ok(Err(Refusal::State(tournament.state)));
+    }
+    if ready
+        && tournament
+            .starts_at
+            .is_some_and(|at| at > OffsetDateTime::now_utc())
+    {
+        return Ok(Err(Refusal::NotYet));
     }
     let Some(set) = sets(pool, id)
         .await?
@@ -1716,6 +1725,42 @@ mod tests {
         assert_eq!(join(&pool, id, peach).await.unwrap(), Err(Refusal::Closed));
         // The ones in it still start it.
         start(&pool, id, Seeding::Joined).await.unwrap().unwrap();
+    }
+
+    #[sqlx::test]
+    async fn sets_are_played_from_its_start_time(pool: PgPool) {
+        let (id, p) = tournament(&pool, Format::Single, &["Mario", "Luigi"]).await;
+        start(&pool, id, Seeding::Joined).await.unwrap().unwrap();
+        let starts = |when: &'static str| {
+            sqlx::query(
+                "UPDATE tournaments SET starts_at = now() + $2::text::interval
+                 WHERE tournament_id = $1",
+            )
+            .bind(id)
+            .bind(when)
+            .execute(&pool)
+        };
+        starts("1 hour").await.unwrap();
+        let set = set_of(&pool, id, p[0]).await;
+        assert_eq!(
+            ready(&pool, id, set.id, p[0], true).await.unwrap(),
+            Err(Refusal::NotYet)
+        );
+        // Taking a READY back is never refused.
+        assert_eq!(
+            ready(&pool, id, set.id, p[0], false).await.unwrap(),
+            Ok(None)
+        );
+        assert_eq!(set_of(&pool, id, p[0]).await.state, "ready");
+        starts("-1 second").await.unwrap();
+        assert!(
+            ready(&pool, id, set.id, p[0], true)
+                .await
+                .unwrap()
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(set_of(&pool, id, p[0]).await.state, "playing");
     }
 
     #[sqlx::test]

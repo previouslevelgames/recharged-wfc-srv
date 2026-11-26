@@ -51,6 +51,7 @@ fn refused(refusal: Refusal) -> Response {
         Refusal::State(state) => json_error(StatusCode::CONFLICT, &format!("it is {state}")),
         Refusal::Full => json_error(StatusCode::CONFLICT, "the tournament is full"),
         Refusal::Closed => json_error(StatusCode::CONFLICT, "its entries are closed"),
+        Refusal::NotYet => json_error(StatusCode::CONFLICT, "its games have not begun yet"),
         Refusal::Joined => json_error(StatusCode::CONFLICT, "you are in it already"),
         Refusal::NotIn => json_error(StatusCode::NOT_FOUND, "you are not in it"),
         Refusal::TooFew => json_error(StatusCode::CONFLICT, "it needs at least two entrants"),
