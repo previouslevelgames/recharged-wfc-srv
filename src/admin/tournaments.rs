@@ -12,6 +12,7 @@ use axum::{
 use axum_extra::extract::cookie::CookieJar;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
+use time::OffsetDateTime;
 use tracing::{info, warn};
 
 use super::{AdminState, error};
@@ -187,6 +188,13 @@ pub struct NewForm {
     finals_best_of: u8,
     #[serde(default)]
     max_entrants: Option<i32>,
+    /// When entries close, in Unix seconds; none: when it starts.
+    #[serde(default)]
+    registration_ends_at: Option<i64>,
+    /// When its sets begin to be played, in Unix seconds; none: as soon as it
+    /// starts.
+    #[serde(default)]
+    starts_at: Option<i64>,
 }
 
 /// `POST /admin/api/tournaments`: a new tournament, open for entries.
@@ -225,6 +233,20 @@ pub async fn create(
             &format!("max_entrants: 2 to {MAX_ENTRANTS}"),
         );
     }
+    let time = |seconds: Option<i64>| seconds.map(OffsetDateTime::from_unix_timestamp).transpose();
+    let (Ok(registration_ends_at), Ok(starts_at)) =
+        (time(form.registration_ends_at), time(form.starts_at))
+    else {
+        return error(StatusCode::BAD_REQUEST, "a time out of range");
+    };
+    if let (Some(closes), Some(starts)) = (registration_ends_at, starts_at)
+        && closes > starts
+    {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "entries must close before its games begin",
+        );
+    }
     let rule_set = match rules::get(&state.pool, form.rule_set).await {
         Ok(Some(rule_set)) => rule_set,
         Ok(None) => return error(StatusCode::NOT_FOUND, "no such rule set"),
@@ -239,8 +261,8 @@ pub async fn create(
         semifinals_best_of: form.semifinals_best_of,
         finals_best_of: form.finals_best_of,
         max_entrants: form.max_entrants,
-        registration_ends_at: None,
-        starts_at: None,
+        registration_ends_at,
+        starts_at,
     };
     match store::create(&state.pool, &new).await {
         Ok(id) => {

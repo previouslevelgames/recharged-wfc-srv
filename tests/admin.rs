@@ -661,6 +661,45 @@ async fn admin_pages_are_locked_down() {
 }
 
 #[sqlx::test]
+async fn an_admin_schedules_a_tournament(pool: PgPool) {
+    let rule_set: i64 =
+        sqlx::query_scalar("SELECT rule_set_id FROM rule_sets WHERE name = 'Competitive'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let (config, google) = fake_google().await;
+    let mut admin = Browser::new(recharged_wfc_srv::App::new(pool).router(Some(config), None));
+    sign_in(&mut admin, &google, "second@example.com").await;
+    let tournament = |closes: i64, starts: i64| {
+        Some(serde_json::json!({
+            "name": "Cup", "format": "double", "rule_set": rule_set,
+            "best_of": 3, "semifinals_best_of": 3, "finals_best_of": 5,
+            "registration_ends_at": closes, "starts_at": starts,
+        }))
+    };
+    // Entries close before the games begin, not after.
+    let (status, answer) = admin
+        .post_json(
+            "/admin/api/tournaments",
+            tournament(1_900_000_000, 1_800_000_000),
+        )
+        .await;
+    assert_eq!(status, 400, "{answer}");
+    let (status, answer) = admin
+        .post_json(
+            "/admin/api/tournaments",
+            tournament(1_800_000_000, 1_800_003_600),
+        )
+        .await;
+    assert_eq!(status, 201, "{answer}");
+    let (_, _, body) = admin.get("/admin/api/tournaments").await;
+    let data: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let made = &data["content"]["tournaments"][0];
+    assert_eq!(made["registration_ends_at"], 1_800_000_000_i64, "{body}");
+    assert_eq!(made["starts_at"], 1_800_003_600_i64, "{body}");
+}
+
+#[sqlx::test]
 async fn a_diagnostics_token_reads_the_pages_but_changes_nothing(pool: PgPool) {
     const TOKEN: &str = "diagnostics-0123456789abcdefghijklmnop";
     let (mut config, _google) = fake_google().await;
