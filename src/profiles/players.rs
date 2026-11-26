@@ -373,6 +373,88 @@ pub async fn link(
     Ok(Ok(()))
 }
 
+/// The player who signs in with the account `provider`/`external_id`.
+pub async fn by_identity(
+    pool: &PgPool,
+    provider: &str,
+    external_id: &str,
+) -> Result<Option<i64>, sqlx::Error> {
+    sqlx::query_scalar!(
+        "SELECT player_id FROM player_identities WHERE provider = $1 AND external_id = $2",
+        provider,
+        external_id,
+    )
+    .fetch_optional(pool)
+    .await
+}
+
+/// Whether `player_id` has played nothing yet: no sets, friends, chats or
+/// tournaments, as a profile made a moment ago on a fresh install.
+pub async fn played_nothing(pool: &PgPool, player_id: i64) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"SELECT NOT (EXISTS (SELECT 1 FROM matches WHERE home = $1 OR away = $1)
+                    OR EXISTS (SELECT 1 FROM friends WHERE player_id = $1 OR friend_id = $1)
+                    OR EXISTS (SELECT 1 FROM friend_profiles WHERE player_id = $1)
+                    OR EXISTS (SELECT 1 FROM chat_messages WHERE sender = $1 OR recipient = $1)
+                    OR EXISTS (SELECT 1 FROM tournament_entrants WHERE player_id = $1)) AS "nothing!""#,
+        player_id,
+    )
+    .fetch_one(pool)
+    .await
+}
+
+/// Puts the profile `from` into `into`, with everything of it (see
+/// [`crate::admin::merge::merge`]): its sets, friends, chats, WFC profiles and
+/// sessions. With `from_wins` the result is `from`'s: its name, its face, and
+/// its friend code first (its WFC profiles bound last). Err: why not (a set
+/// still to play, ...).
+pub async fn take_over(
+    pool: &PgPool,
+    from: i64,
+    into: i64,
+    from_wins: bool,
+) -> Result<Result<(), &'static str>, sqlx::Error> {
+    let Some(old) = sqlx::query!(
+        "SELECT display_name, mii_data FROM players WHERE player_id = $1",
+        from
+    )
+    .fetch_optional(pool)
+    .await?
+    else {
+        return Ok(Err("no such player"));
+    };
+    let profiles = sqlx::query_scalar!(
+        "SELECT profile_id FROM player_wfc_profiles WHERE player_id = $1",
+        from
+    )
+    .fetch_all(pool)
+    .await?;
+    if let Err(refusal) = crate::admin::merge::merge(pool, from, into).await? {
+        return Ok(Err(refusal));
+    }
+    if from_wins {
+        let mut transaction = pool.begin().await?;
+        sqlx::query!(
+            "UPDATE players SET display_name = $2, mii_data = COALESCE($3, mii_data),
+                 mii_stored_at = CASE WHEN $3::bytea IS NULL THEN mii_stored_at ELSE now() END
+             WHERE player_id = $1",
+            into,
+            old.display_name,
+            old.mii_data,
+        )
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query!(
+            "UPDATE player_wfc_profiles SET bound_at = now() WHERE profile_id = ANY($1)",
+            &profiles,
+        )
+        .execute(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+    }
+    Ok(Ok(()))
+}
+
 /// Why Discord can't be disconnected from a player.
 #[derive(Debug, PartialEq, Eq)]
 pub enum UnlinkRefusal {

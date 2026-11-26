@@ -631,49 +631,125 @@ async fn a_mii_player_links_discord_to_its_profile(pool: PgPool) {
     assert_eq!(sign_in["link"], false);
 }
 
-#[sqlx::test]
-async fn a_discord_account_with_a_profile_links_to_no_other(pool: PgPool) {
-    let (config, discord) = fake_discord(false).await;
-    let app = recharged_wfc_srv::App::new(pool).router(None, Some(config));
-    discord_sign_in(&app, &discord, "80351110224678912", "sam").await;
-    let kiki = mii_sign_in(&app, "Kiki").await;
-    let token = kiki["token"].as_str().unwrap();
-
-    let (_, _, body) = send(&app, Request::post("/api/v1/sign-in"), Some(token)).await;
+/// Kiki, signed in, connects the Discord account of `sam`'s profile: the
+/// callback's status and page, and what the launcher's poll learns.
+async fn connect_sams_discord(
+    app: &Router,
+    discord: &FakeDiscord,
+    token: &str,
+) -> (StatusCode, String, (StatusCode, Value)) {
+    let (_, _, body) = send(app, Request::post("/api/v1/sign-in"), Some(token)).await;
     let sign_in: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(sign_in["link"], true);
     let id = sign_in["id"].as_str().unwrap();
-    let params = to_discord(&app, id).await;
+    let params = to_discord(app, id).await;
     discord.approve(&params, "80351110224678912", "sam", None);
     let (status, _, page) = get_page(
-        &app,
+        app,
         &format!(
             "/sign-in/discord/callback?code={CODE}&state={}",
             params["state"]
         ),
     )
     .await;
-    assert_eq!(status, 409);
-    assert!(
-        page.contains("This Discord account already has a Recharged profile"),
-        "{page}"
-    );
-    assert_eq!(
-        poll(&app, id).await,
-        (
-            StatusCode::CONFLICT,
-            json!({"error": "This Discord account already has a Recharged profile"})
-        )
-    );
-    assert_eq!(poll(&app, id).await.0, 404);
+    let polled = poll(app, id).await;
+    assert_eq!(poll(app, id).await.0, 404);
+    (status, page, polled)
+}
 
-    // Nothing changed.
+#[sqlx::test]
+async fn a_new_profile_goes_into_the_one_of_its_discord(pool: PgPool) {
+    let (config, discord) = fake_discord(false).await;
+    let app = recharged_wfc_srv::App::new(pool).router(None, Some(config));
+    let sam = discord_sign_in(&app, &discord, "80351110224678912", "sam").await;
+    let (_, _, body) = send(&app, Request::get("/api/v1/me"), Some(&sam)).await;
+    let sams: Value = serde_json::from_str(&body).unwrap();
+    // A profile made a moment ago on a fresh install, which played nothing.
+    let kiki = mii_sign_in(&app, "Kiki").await;
+    let token = kiki["token"].as_str().unwrap();
+
+    let (status, page, (polled, back)) = connect_sams_discord(&app, &discord, token).await;
+    assert_eq!(status, 200, "{page}");
+    assert_eq!(polled, StatusCode::OK, "{back}");
+    assert_eq!(back["status"], "signed_in");
+    assert_eq!(back["welcome_back"], true);
+    assert_eq!(back["player"]["id"], sams["id"]);
+    assert_eq!(back["player"]["name"], sams["name"]);
+    // Kiki went into it: her session is the Discord profile's, her name free.
+    let (_, _, body) = send(&app, Request::get("/api/v1/me"), Some(token)).await;
+    let me: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(me["id"], sams["id"]);
+    mii_sign_in(&app, "Kiki").await;
+}
+
+#[sqlx::test]
+async fn a_played_profile_asks_before_it_goes_into_its_discords(pool: PgPool) {
+    let (config, discord) = fake_discord(false).await;
+    let app = recharged_wfc_srv::App::new(pool).router(None, Some(config));
+    let sam = discord_sign_in(&app, &discord, "80351110224678912", "sam").await;
+    let (_, _, body) = send(&app, Request::get("/api/v1/me"), Some(&sam)).await;
+    let sams: Value = serde_json::from_str(&body).unwrap();
+    let kiki = mii_sign_in(&app, "Kiki").await;
+    let token = kiki["token"].as_str().unwrap();
+    // Kiki has played: a friend.
+    let mario = mii_sign_in(&app, "Mario").await;
+    let (status, _, _) = send(
+        &app,
+        Request::post("/api/v1/friends")
+            .header(header::CONTENT_TYPE, "application/json")
+            .with_body(&json!({"player_id": mario["player"]["id"]}).to_string()),
+        Some(token),
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    let (status, page, (polled, asked)) = connect_sams_discord(&app, &discord, token).await;
+    assert_eq!(status, 200, "{page}");
+    assert!(page.contains("it asks which profile to keep"), "{page}");
+    assert_eq!(polled, StatusCode::OK, "{asked}");
+    assert_eq!(asked["status"], "discord_has_profile");
+    assert_eq!(asked["player"]["id"], sams["id"]);
+    let takeover = asked["takeover"].as_str().unwrap();
+    // Nothing changed yet.
     let (_, _, body) = send(&app, Request::get("/api/v1/me"), Some(token)).await;
     let me: Value = serde_json::from_str(&body).unwrap();
     assert_eq!(
-        (&me["name"], &me["account"], &me["discord_id"]),
-        (&json!("Kiki"), &json!("mii"), &Value::Null)
+        (&me["name"], &me["account"]),
+        (&json!("Kiki"), &json!("mii"))
     );
+
+    let take_over = |token: &str, takeover: &str| {
+        let app = &app;
+        let (token, takeover) = (token.to_owned(), takeover.to_owned());
+        async move {
+            let (status, _, body) = send(
+                app,
+                Request::post("/api/v1/sign-in/take-over")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .with_body(&json!({ "takeover": takeover }).to_string()),
+                Some(&token),
+            )
+            .await;
+            (
+                status,
+                serde_json::from_str::<Value>(&body).unwrap_or(Value::Null),
+            )
+        }
+    };
+    // Only Kiki's session takes it, with its token.
+    assert_eq!(take_over(&sam, takeover).await.0, 404);
+    assert_eq!(take_over(token, "other").await.0, 404);
+    let (status, kept) = take_over(token, takeover).await;
+    assert_eq!(status, 200, "{kept}");
+    assert_eq!(kept["status"], "signed_in");
+    assert_eq!(kept["player"]["id"], sams["id"]);
+    // Kiki's name wins, and her friend came along; Discord signs in to it.
+    assert_eq!(kept["player"]["name"], "Kiki");
+    assert_eq!(kept["player"]["discord"], "sam");
+    let (_, _, body) = send(&app, Request::get("/api/v1/players"), Some(&sam)).await;
+    let lists: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(lists["friends"][0]["id"], mario["player"]["id"]);
+    assert_eq!(take_over(token, takeover).await.0, 404);
 }
 
 #[tokio::test]

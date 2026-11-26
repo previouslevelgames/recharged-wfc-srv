@@ -26,7 +26,7 @@ mod maintenance;
 mod matches;
 mod matchmaking;
 mod matchup;
-mod merge;
+pub(crate) mod merge;
 mod monitoring;
 mod overview;
 mod page;

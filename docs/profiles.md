@@ -158,12 +158,31 @@ which profile Discord joins and offers Discord only (no test name). When
 Discord returns, the player gets the Discord account and keeps its name; its
 picture is Discord's from then on, it signs in with Discord, and the poll answers
 `signed_in` with a new session for the same player (the old one goes on). A
-Discord account that already has a Recharged profile, or a player that got
-another Discord account meanwhile, ends the sign-in with 409
-`{"error": "This Discord account already has a Recharged profile"}` (or
-`"Your Recharged profile has a Discord account already"`), and nothing
-changes. A session of any other player, an expired one or none starts an
-ordinary sign-in, as before. The `wfc` identity stays: the game's login
+player that got another Discord account meanwhile ends the sign-in with 409
+`{"error": "Your Recharged profile has a Discord account already"}`, and
+nothing changes. A session of any other player, an expired one or none starts
+an ordinary sign-in, as before.
+
+**Discord has a profile already** (from 1.3.1; before, 409 and nothing
+changed). Discord is how a player takes its profile to any computer, so
+connecting it on a fresh install finds the profile it had:
+
+- The profile signed in has played nothing yet (no sets, friends, chats or
+  tournaments: one made a moment ago): it goes into the Discord account's
+  profile at once, and the poll answers `signed_in` for that one with
+  `"welcome_back": true`.
+- It has played (one brought from an old game save): the page sends the
+  player back to the launcher, and the poll answers `{"status":
+  "discord_has_profile", "player": {...}, "takeover": "<token>"}` with the
+  Discord account's profile. Nothing changes unless the player keeps the
+  profile signed in: `POST /api/v1/sign-in/take-over` with `{"takeover":
+  "<token>"}` and that profile's session puts it into the Discord account's
+  profile, which then has its name, its face and its friend code first (its
+  WFC profiles bound last), and everything of both (as an admin's merge, see
+  "One player, two profiles"). The answer is a sign-in that ended, with the
+  Discord Social SDK's tokens of the sign-in. 404 for another session's token,
+  a used or an expired one (10 minutes), 409 when the merge can't be done now
+  (a set still to play). The `wfc` identity stays: the game's login
 still signs the player in too.
 
 **Disconnecting Discord.** `DELETE /api/v1/me/discord` takes the Discord

@@ -153,6 +153,7 @@ pub(crate) fn router(
         .route("/api/v1/sign-in/wfc", post(mii_sign_in::sign_in_wfc))
         .route("/api/v1/sign-in/wfc/known", post(mii_sign_in::known_wfc))
         .route("/api/v1/sign-in/save", post(mii_sign_in::sign_in_save))
+        .route("/api/v1/sign-in/take-over", post(take_over))
         .route("/api/v1/sign-in/{id}", get(poll_sign_in))
         .route("/api/v1/sign-out", post(sign_out))
         .route("/api/v1/me", get(me))
@@ -318,12 +319,52 @@ impl ProfilesState {
             self.sign_ins.finish(id, Outcome::Conflict(BANNED.into()));
             return Ok(Finished::Banned);
         }
+        let mut welcome_back = false;
         let (player_id, token, created) = match link {
             Some(link) => match players::link(&self.pool, link.player_id, identity).await? {
                 Ok(()) => {
                     info!(target: "profiles", player_id = link.player_id, provider = identity.provider, "account linked");
                     let token = players::open_session(&self.pool, link.player_id).await?;
                     (link.player_id, token, false)
+                }
+                Err(LinkRefusal::Taken) => {
+                    // Discord has a profile of its own (docs/profiles.md,
+                    // "Connecting Discord"): the one signed in goes into it
+                    // when it has played nothing yet, else its player chooses.
+                    let Some(owner) =
+                        players::by_identity(&self.pool, identity.provider, identity.external_id)
+                            .await?
+                    else {
+                        let refusal = LinkRefusal::Taken;
+                        self.sign_ins
+                            .finish(id, Outcome::Conflict(link_refusal(&refusal).into()));
+                        return Ok(Finished::Refused(refusal));
+                    };
+                    if !players::played_nothing(&self.pool, link.player_id).await? {
+                        let takeover = self.sign_ins.offer_takeover(link.player_id, owner, discord);
+                        let asked = self.sign_ins.finish(
+                            id,
+                            Outcome::DiscordHasProfile {
+                                player_id: owner,
+                                takeover,
+                            },
+                        );
+                        return Ok(if asked {
+                            Finished::Asked
+                        } else {
+                            Finished::Expired
+                        });
+                    }
+                    if let Err(refusal) =
+                        players::take_over(&self.pool, link.player_id, owner, false).await?
+                    {
+                        self.sign_ins.finish(id, Outcome::Conflict(refusal.into()));
+                        return Ok(Finished::Asked);
+                    }
+                    info!(target: "profiles", from = link.player_id, player_id = owner, "new profile went into Discord's");
+                    welcome_back = true;
+                    let token = players::open_session(&self.pool, owner).await?;
+                    (owner, token, false)
                 }
                 Err(refusal) => {
                     self.sign_ins
@@ -340,6 +381,7 @@ impl ProfilesState {
                 player_id,
                 discord,
                 created,
+                welcome_back,
             },
         ) {
             return Ok(Finished::SignedIn);
@@ -423,6 +465,19 @@ impl ProfilesState {
         self.page(status, "failed", PROBLEM, "Sign-in failed", &content)
     }
 
+    /// Discord has a profile of its own: the launcher asks what to do.
+    fn back_to_launcher_page(&self) -> Response {
+        let content = r#"<p class="lead">This Discord account has a Recharged profile already.</p>
+<p class="hint">Go back to the launcher: it asks which profile to keep.</p>"#;
+        self.page(
+            StatusCode::OK,
+            "done",
+            PROBLEM,
+            "Back to the launcher",
+            content,
+        )
+    }
+
     /// `avatar_url`: the player's picture, else their initial.
     fn signed_in_page(&self, name: &str, avatar_url: Option<&str>) -> Response {
         let picture = match avatar_url {
@@ -462,6 +517,9 @@ impl ProfilesState {
 /// How [`ProfilesState::finish`] ended a sign-in.
 enum Finished {
     SignedIn,
+    /// The launcher asks its player which profile to keep, or says why it
+    /// can't be done.
+    Asked,
     /// It expired before.
     Expired,
     /// The link it was for can't be made.
@@ -558,14 +616,31 @@ async fn poll_sign_in(State(state): State<Arc<ProfilesState>>, Path(id): Path<St
             player_id,
             discord,
             created,
+            welcome_back,
         }) => match players::player(&state.pool, player_id).await {
             Ok(Some(player)) => {
                 let mut answer = signed_in(&token, &player, discord.as_ref());
                 if created {
                     answer["created"] = json!(true);
                 }
+                if welcome_back {
+                    answer["welcome_back"] = json!(true);
+                }
                 Json(answer).into_response()
             }
+            Ok(None) => json_error(StatusCode::NOT_FOUND, "unknown sign-in"),
+            Err(error) => database_error(error),
+        },
+        Poll::Ended(Outcome::DiscordHasProfile {
+            player_id,
+            takeover,
+        }) => match players::player(&state.pool, player_id).await {
+            Ok(Some(player)) => Json(json!({
+                "status": "discord_has_profile",
+                "player": player,
+                "takeover": takeover,
+            }))
+            .into_response(),
             Ok(None) => json_error(StatusCode::NOT_FOUND, "unknown sign-in"),
             Err(error) => database_error(error),
         },
@@ -716,6 +791,49 @@ async fn me(
     }
 }
 
+#[derive(Deserialize)]
+struct TakeOver {
+    takeover: String,
+}
+
+/// `POST /api/v1/sign-in/take-over`: the player chose to keep the profile they
+/// are signed in with: it goes into the Discord account's (docs/profiles.md,
+/// "Connecting Discord"), and the result is theirs (its name, face and friend
+/// code). The answer is a sign-in that ended, as the Discord profile.
+async fn take_over(
+    State(state): State<Arc<ProfilesState>>,
+    headers: HeaderMap,
+    Json(request): Json<TakeOver>,
+) -> Response {
+    let player = match state.signed_in(&headers).await {
+        Ok(player) => player,
+        Err(response) => return response,
+    };
+    let Some(takeover) = state.sign_ins.take_over(&request.takeover, player.id) else {
+        return json_error(
+            StatusCode::NOT_FOUND,
+            "this choice expired: connect Discord again",
+        );
+    };
+    match players::take_over(&state.pool, takeover.from, takeover.into, true).await {
+        Ok(Ok(())) => {}
+        Ok(Err(refusal)) => return json_error(StatusCode::CONFLICT, refusal),
+        Err(error) => return database_error(error),
+    }
+    info!(target: "profiles", from = takeover.from, player_id = takeover.into, "profile went into Discord's");
+    let token = match players::open_session(&state.pool, takeover.into).await {
+        Ok(token) => token,
+        Err(error) => return database_error(error),
+    };
+    match players::player(&state.pool, takeover.into).await {
+        Ok(Some(player)) => {
+            Json(signed_in(&token, &player, takeover.discord.as_ref())).into_response()
+        }
+        Ok(None) => json_error(StatusCode::NOT_FOUND, "the profile went away"),
+        Err(error) => database_error(error),
+    }
+}
+
 /// `DELETE /api/v1/me/discord`: the player goes on without Discord, signed in
 /// here, and signs in again by its Miis. The answer is the player.
 async fn unlink_discord(State(state): State<Arc<ProfilesState>>, headers: HeaderMap) -> Response {
@@ -851,6 +969,7 @@ async fn discord_callback(
             state.notice_page(StatusCode::NOT_FOUND, &SignInError::Expired.message())
         }
         Ok(Finished::Banned) => state.notice_page(StatusCode::FORBIDDEN, &format!("{BANNED}.")),
+        Ok(Finished::Asked) => state.back_to_launcher_page(),
         Ok(Finished::Refused(refusal)) => {
             info!(target: "profiles", ?refusal, "Discord not linked");
             state.notice_page(
@@ -904,6 +1023,7 @@ async fn page_test_sign_in(
     {
         Ok(Finished::SignedIn) => state.signed_in_page(&name, None),
         Ok(Finished::Banned) => state.notice_page(StatusCode::FORBIDDEN, &format!("{BANNED}.")),
+        Ok(Finished::Asked) => state.back_to_launcher_page(),
         Ok(Finished::Expired | Finished::Refused(_)) => {
             state.notice_page(StatusCode::NOT_FOUND, &SignInError::Expired.message())
         }

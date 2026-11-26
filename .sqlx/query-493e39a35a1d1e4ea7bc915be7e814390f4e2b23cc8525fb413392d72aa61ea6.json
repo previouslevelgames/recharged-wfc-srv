@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE players SET display_name = $2, mii_data = COALESCE($3, mii_data),\n                 mii_stored_at = CASE WHEN $3::bytea IS NULL THEN mii_stored_at ELSE now() END\n             WHERE player_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "493e39a35a1d1e4ea7bc915be7e814390f4e2b23cc8525fb413392d72aa61ea6"
+}
