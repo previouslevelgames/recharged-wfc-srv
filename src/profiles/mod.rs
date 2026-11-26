@@ -154,6 +154,10 @@ pub(crate) fn router(
         .route("/api/v1/sign-in/wfc/known", post(mii_sign_in::known_wfc))
         .route("/api/v1/sign-in/save", post(mii_sign_in::sign_in_save))
         .route("/api/v1/sign-in/take-over", post(take_over))
+        .route(
+            "/api/v1/me/take-over-save",
+            post(mii_sign_in::take_over_save),
+        )
         .route("/api/v1/sign-in/{id}", get(poll_sign_in))
         .route("/api/v1/sign-out", post(sign_out))
         .route("/api/v1/me", get(me))

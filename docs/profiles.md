@@ -136,9 +136,20 @@ the slot's player id, which with the game code make `gsbrcd`. That is all the
 game's NAS login sends (WFC has no password), so the launcher, reading the
 slot, proves as much as the game's login does. The answer is a sign-in that
 ended for the player that WFC profile identifies, and the profile is bound to
-it again; 404 `{"error": "no Recharged profile signs in with this Mii"}` when
-there is no such profile or it identifies nobody, 403 for a banned console,
-429 after 10 from one address within a minute. From 1.3.1.
+it again; 404 when the Mii has never been online here or plays for no
+profile, 403 for a banned console, 429 after 10 from one address within a
+minute. From 1.3.1.
+
+**Importing, signed in.** `POST /api/v1/me/take-over-save` with the same
+`{"user_id", "gsbrcd"}` and a session: the launcher imported an old game save
+and the player chose to keep the profile one of its Miis plays for. That
+profile goes into the one signed in, which then has its name, its face and
+its friend code first, and everything of both (as an admin's merge, see "One
+player, two profiles"); a Mii that played for nobody becomes the player's,
+its friend code first. The Discord account stays the signed-in profile's.
+The answer is the player. 404 for a Mii never online here, 409 when the
+merge can't be done (two Discord accounts, a set still to play), and the
+limits of a sign-in from the save. From 1.3.1.
 
 **Before a new profile.** `POST /api/v1/sign-in/wfc/known` with
 `{"profile_ids": [1000000000, 1000000001]}` (at most 32, no session) answers

@@ -2667,3 +2667,82 @@ async fn a_fresh_install_gets_the_players_slots_back(pool: PgPool) {
         StatusCode::UNAUTHORIZED
     );
 }
+
+#[sqlx::test]
+async fn an_imported_profile_goes_into_the_signed_in_one(pool: PgPool) {
+    let world = World::new(pool);
+    let import = |token: String, user_id: i64, gsbrcd: &'static str| {
+        let world = &world;
+        async move {
+            world
+                .send(
+                    "POST",
+                    "/api/v1/me/take-over-save",
+                    &token,
+                    json!({ "user_id": user_id, "gsbrcd": gsbrcd }),
+                )
+                .await
+        }
+    };
+    // Sam is signed in (with Discord, on a fresh install); Nelly is the
+    // profile of an old game save, with a friend.
+    let sam = world.sign_in("Sam").await;
+    let (_, nelly) = world.mii_sign_in("Nelly", "198.51.100.1").await;
+    let nelly = nelly["token"].as_str().unwrap().to_owned();
+    let (_, mario) = world.mii_sign_in("Mario", "198.51.100.1").await;
+    world
+        .send(
+            "POST",
+            "/api/v1/friends",
+            &nelly,
+            json!({ "player_id": mario["player"]["id"] }),
+        )
+        .await;
+    let pid = world.wfc_login(7, "R4QEaaaaaaa").await;
+    world.prove(&nelly, pid).await;
+
+    // A Mii never online here: nothing to import.
+    assert_eq!(
+        import(sam.clone(), 8, "R4QEaaaaaaa").await.0,
+        StatusCode::NOT_FOUND
+    );
+    let (status, player) = import(sam.clone(), 7, "R4QEaaaaaaa").await;
+    assert_eq!(status, StatusCode::OK, "{player}");
+    // The import wins: its name and friend code, and its friend came along.
+    assert_eq!(player["name"], "Nelly");
+    assert_eq!(
+        player["friend_code"],
+        accounts::friend_code(pid, "R4QE").as_str()
+    );
+    let (_, lists) = world
+        .send("GET", "/api/v1/players", &sam, Value::Null)
+        .await;
+    assert_eq!(lists["friends"][0]["id"], mario["player"]["id"]);
+    // The save signs in to it now; again changes nothing.
+    let (_, back) = world
+        .send(
+            "POST",
+            "/api/v1/sign-in/save",
+            "",
+            json!({ "user_id": 7, "gsbrcd": "R4QEaaaaaaa" }),
+        )
+        .await;
+    assert_eq!(back["player"]["id"], player["id"]);
+    assert_eq!(
+        import(sam.clone(), 7, "R4QEaaaaaaa").await.0,
+        StatusCode::OK
+    );
+
+    // A Mii that played for nobody becomes the player's, its friend code first.
+    let other = world.wfc_login(9, "R4QPbbbbbbb").await;
+    let (status, player) = import(sam.clone(), 9, "R4QPbbbbbbb").await;
+    assert_eq!(status, StatusCode::OK, "{player}");
+    assert_eq!(
+        player["friend_code"],
+        accounts::friend_code(other, "R4QP").as_str()
+    );
+    assert_eq!(
+        import(String::new(), 9, "R4QPbbbbbbb").await.0,
+        StatusCode::UNAUTHORIZED
+    );
+}
