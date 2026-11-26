@@ -237,6 +237,7 @@ pub async fn create(
         semifinals_best_of: form.semifinals_best_of,
         finals_best_of: form.finals_best_of,
         max_entrants: form.max_entrants,
+        registration_ends_at: None,
         starts_at: None,
     };
     match store::create(&state.pool, &new).await {

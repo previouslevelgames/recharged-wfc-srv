@@ -99,6 +99,7 @@ fn summary(tournament: &Tournament, people: &HashMap<i64, Player>) -> Value {
         "finals_best_of": tournament.finals_best_of,
         "max_entrants": tournament.max_entrants,
         "entrants": tournament.entrants,
+        "registration_ends_at": tournament.registration_ends_at.map(|time| time.unix_timestamp()),
         "starts_at": tournament.starts_at.map(|time| time.unix_timestamp()),
         "created_at": tournament.created_at.unix_timestamp(),
         "started_at": tournament.started_at.map(|time| time.unix_timestamp()),

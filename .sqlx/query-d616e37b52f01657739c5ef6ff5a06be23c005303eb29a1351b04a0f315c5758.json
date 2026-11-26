@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT tournament_id, name, organizer, format, state, rule_set, rules, best_of,\n                  semifinals_best_of, finals_best_of, max_entrants, starts_at, created_at, started_at, ended_at,\n                  (SELECT count(*) FROM tournament_entrants e\n                   WHERE e.tournament_id = t.tournament_id) AS \"entrants!\"\n           FROM tournaments t\n           WHERE state IN ('registration', 'running')\n              OR tournament_id IN (\n                  SELECT tournament_id FROM tournaments WHERE state IN ('finished', 'cancelled')\n                  ORDER BY coalesce(ended_at, created_at) DESC LIMIT $1)\n           ORDER BY state IN ('registration', 'running') DESC,\n                    coalesce(ended_at, created_at) DESC",
+  "query": "SELECT tournament_id, name, organizer, format, state, rule_set, rules, best_of,\n                  semifinals_best_of, finals_best_of, max_entrants, registration_ends_at, starts_at,\n                  created_at, started_at, ended_at,\n                  (SELECT count(*) FROM tournament_entrants e\n                   WHERE e.tournament_id = t.tournament_id) AS \"entrants!\"\n           FROM tournaments t\n           WHERE state IN ('registration', 'running')\n              OR tournament_id IN (\n                  SELECT tournament_id FROM tournaments WHERE state IN ('finished', 'cancelled')\n                  ORDER BY coalesce(ended_at, created_at) DESC LIMIT $1)\n           ORDER BY state IN ('registration', 'running') DESC,\n                    coalesce(ended_at, created_at) DESC",
   "describe": {
     "columns": [
       {
@@ -126,6 +126,17 @@
       },
       {
         "ordinal": 11,
+        "name": "registration_ends_at",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "tournaments",
+            "name": "registration_ends_at"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
         "name": "starts_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -136,7 +147,7 @@
         }
       },
       {
-        "ordinal": 12,
+        "ordinal": 13,
         "name": "created_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -147,7 +158,7 @@
         }
       },
       {
-        "ordinal": 13,
+        "ordinal": 14,
         "name": "started_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -158,7 +169,7 @@
         }
       },
       {
-        "ordinal": 14,
+        "ordinal": 15,
         "name": "ended_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -169,7 +180,7 @@
         }
       },
       {
-        "ordinal": 15,
+        "ordinal": 16,
         "name": "entrants!",
         "type_info": "Int8",
         "origin": "Expression"
@@ -193,11 +204,12 @@
       false,
       true,
       true,
+      true,
       false,
       true,
       true,
       null
     ]
   },
-  "hash": "a9e1dbde68a539462e2067838f3f68bac9d2162089860665b58cfe71434e8238"
+  "hash": "d616e37b52f01657739c5ef6ff5a06be23c005303eb29a1351b04a0f315c5758"
 }

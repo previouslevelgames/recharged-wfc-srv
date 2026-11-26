@@ -244,6 +244,7 @@ async fn make(pool: &PgPool, sample: &Sample, players: &[i64]) {
         semifinals_best_of: 5,
         finals_best_of: 7,
         max_entrants: None,
+        registration_ends_at: None,
         starts_at: None,
     };
     let id = store::create(pool, &new).await.unwrap();

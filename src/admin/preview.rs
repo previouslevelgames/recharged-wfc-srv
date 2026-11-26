@@ -152,6 +152,7 @@ async fn tournament(pool: &PgPool, name: &str, format: Format, entrants: usize, 
         semifinals_best_of: 3,
         finals_best_of: 5,
         max_entrants: None,
+        registration_ends_at: None,
         starts_at: None,
     };
     let id = store::create(pool, &new).await.unwrap();
