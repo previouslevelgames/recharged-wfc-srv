@@ -1448,6 +1448,42 @@ function watchButton(match) {
   ];
 }
 
+/** The list's buttons, and the match page's: Watch and Ticket while the
+ * match is played and its games stream, then Replay from its first kept game
+ * (Recharged goes on with the match's later kept games). Between the two,
+ * while the players' games send the replay (about a minute after the match),
+ * Replay waits greyed out. */
+function playButton(match) {
+  if (match.state === 'in_progress') return watchButton(match);
+  if (match.replay_game != null) {
+    const play = (event) =>
+      openInRecharged(
+        event.currentTarget,
+        `/admin/api/matches/${match.id}/watch?as=link&game=${match.replay_game}`,
+        'The server keeps no replay of this match.',
+        'Download',
+      );
+    return h(
+      'button',
+      { class: 'button', type: 'button', onclick: play, title: 'Watch the match from its start in Recharged 1.2.' },
+      'Replay',
+    );
+  }
+  if (match.live) {
+    return h(
+      'button',
+      {
+        class: 'button',
+        type: 'button',
+        disabled: true,
+        title: "The players' games send the replay about a minute after the match: reload the page then.",
+      },
+      'Replay',
+    );
+  }
+  return null;
+}
+
 /** A game whose replay the server keeps: Replay opens it in Recharged (a
  * recharged:// link with a ticket, as Watch does), then the match's later kept
  * games; Download gives the replay file itself, for Recharged 1.2 (open it, or
@@ -1542,7 +1578,7 @@ function renderMatches(data, now) {
           { label: 'Away', cell: (m) => matchTeam(m.away, m.winner === 'away') },
           { label: 'State', cell: (m) => onlineState(m, now) },
           { label: 'Connection', cell: connection },
-          { label: '', class: 'actions', cell: (m) => [watchButton(m), h('a', { class: 'button', href: matchPath(m) }, 'Open')] },
+          { label: '', class: 'actions', cell: (m) => [playButton(m), h('a', { class: 'button', href: matchPath(m) }, 'Open')] },
         ],
         matches,
         'No matches yet. A match appears here when a Recharged build reports the first kickoff of a series.',
@@ -1689,7 +1725,7 @@ function renderMatch(data, now) {
         sides,
         'No sides.',
       ),
-      watchButton(match),
+      playButton(match),
     ),
     card(
       'Connection',

@@ -75,6 +75,9 @@ pub struct Listed {
     /// Whether its games stream as they are played (src/streams.rs): the
     /// Watch button is offered.
     live: bool,
+    /// The first game whose replay the server keeps: the list's Replay button
+    /// plays the match from it. None before a game's file came.
+    replay_game: Option<i32>,
 }
 
 #[derive(Serialize)]
@@ -233,7 +236,9 @@ async fn listed(
                           WHERE (r.first_profile IN (home.profile_id, away.profile_id)
                                  OR r.second_profile IN (home.profile_id, away.profile_id))
                             AND r.started_at <= m.last_report_at
-                            AND (r.ended_at IS NULL OR r.ended_at >= m.started_at)) AS "relayed!"
+                            AND (r.ended_at IS NULL OR r.ended_at >= m.started_at)) AS "relayed!",
+                  (SELECT min(kept.game) FROM replays kept
+                   WHERE kept.match_id = m.match_id AND kept.file IS NOT NULL) AS replay_game
            FROM online_matches m
            LEFT JOIN online_match_sides home ON home.match_id = m.match_id AND home.side = 'home'
            LEFT JOIN online_match_sides away ON away.match_id = m.match_id AND away.side = 'away'
@@ -284,6 +289,7 @@ async fn listed(
             ended_at: row.ended_at,
             relayed: row.relayed,
             live: false,
+            replay_game: row.replay_game,
         })
         .collect())
 }
@@ -605,6 +611,7 @@ pub(crate) mod tests {
 
         // The games whose replay the server keeps: not one only asked for.
         assert!(detail.replays.is_empty());
+        assert_eq!(detail.summary.replay_game, None);
         sqlx::query(
             "INSERT INTO replays (match_id, game, side, file, bytes, steps, received_at)
              VALUES ($1, 1, 'away', '2026/11/x-1.msc', 300, 9150, now())",
@@ -628,6 +635,7 @@ pub(crate) mod tests {
             .map(|kept| (kept.game, kept.side.as_str(), kept.bytes, kept.steps))
             .collect();
         assert_eq!(kept, [(1, "away", 300, 9150)]);
+        assert_eq!(detail.summary.replay_game, Some(1));
 
         assert!(
             super::detail(&games.pool, match_id + 1, |_| false)
