@@ -20,7 +20,7 @@ use crate::profiles::{
     rules::{self, RuleSet},
     tournaments::{
         bracket::{Format, MAX_ENTRANTS},
-        store::{self, Entrant, NewTournament, Refusal, Seeding, Set, Tournament},
+        store::{self, Entrant, NewTournament, PlayedGame, Refusal, Seeding, Set, Tournament},
     },
 };
 
@@ -36,7 +36,18 @@ struct Shown {
     #[serde(flatten)]
     tournament: Tournament,
     entrants: Vec<NamedEntrant>,
-    sets: Vec<Set>,
+    sets: Vec<ShownSet>,
+}
+
+/// A set, where its players come from and the games it played, as the
+/// tournament's page has them (docs/tournaments.md, "Routes"): the page
+/// draws the bracket from them.
+#[derive(Serialize)]
+struct ShownSet {
+    #[serde(flatten)]
+    set: Set,
+    from: Option<serde_json::Value>,
+    played: Vec<PlayedGame>,
 }
 
 /// An entrant and the player's name.
@@ -56,7 +67,7 @@ pub async fn read(pool: &PgPool) -> Result<Tournaments, sqlx::Error> {
             .filter_map(|entrant| entrant.player_id)
             .collect();
         let mut names = player_names(pool, &ids).await?;
-        let entrants = listed
+        let entrants: Vec<NamedEntrant> = listed
             .into_iter()
             .map(|entrant| NamedEntrant {
                 name: entrant
@@ -66,7 +77,23 @@ pub async fn read(pool: &PgPool) -> Result<Tournaments, sqlx::Error> {
                 entrant,
             })
             .collect();
-        let sets = store::sets(pool, tournament.id).await?;
+        let (sets, mut played) = tokio::try_join!(
+            store::sets(pool, tournament.id),
+            store::played_games(pool, tournament.id),
+        )?;
+        let seeded = entrants
+            .iter()
+            .filter(|entrant| entrant.entrant.seed.is_some())
+            .count();
+        let mut from = store::sources(&tournament, seeded, &sets).into_iter();
+        let sets = sets
+            .into_iter()
+            .map(|set| ShownSet {
+                from: from.next(),
+                played: played.remove(&set.id).unwrap_or_default(),
+                set,
+            })
+            .collect();
         tournaments.push(Shown {
             tournament,
             entrants,
