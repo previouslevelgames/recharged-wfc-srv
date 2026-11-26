@@ -3122,9 +3122,18 @@ function renderTournament(tournament) {
   ];
   const format = FORMAT_NAMES[tournament.format] || tournament.format;
   const limit = tournament.max_entrants ? ` of ${integer.format(tournament.max_entrants)}` : '';
+  // Its schedule while it matters: when entries close, when games begin.
+  const at = (seconds) => dateTime.format(new Date(seconds * 1000));
+  const past = (seconds) => seconds * 1000 <= Date.now();
+  const closes = tournament.state === 'registration' && tournament.registration_ends_at;
+  const starts = ['registration', 'running'].includes(tournament.state) && tournament.starts_at && !past(tournament.starts_at);
+  const schedule = [
+    closes && ` · Entries ${past(closes) ? 'closed' : 'close'} ${at(closes)}`,
+    starts && ` · Games from ${at(tournament.starts_at)}`,
+  ].filter(Boolean).join('');
   const node = card(
     [tournament.name, ' ', badge(stateTone, stateText)],
-    `${format} · ${tournament.rule_set}, best of ${tournament.best_of} (semifinals ${tournament.semifinals_best_of}, finals ${tournament.finals_best_of}) · ${integer.format(tournament.entrants.length)}${limit} entrants`,
+    `${format} · ${tournament.rule_set}, best of ${tournament.best_of} (semifinals ${tournament.semifinals_best_of}, finals ${tournament.finals_best_of}) · ${integer.format(tournament.entrants.length)}${limit} entrants${schedule}`,
     entrants,
     tools,
   );
@@ -3484,6 +3493,13 @@ const tournamentForm = {
         field('Finals', select('tournament-finals', series, bestOf, 5)),
         field('Most entrants', h('input', { id: 'tournament-max', type: 'number', min: '2', max: '256', placeholder: 'no limit' })),
       ),
+      h(
+        'div',
+        { class: 'editor-row' },
+        // In this browser's time zone; empty: when it starts, and at once.
+        field('Entries close', h('input', { id: 'tournament-closes', type: 'datetime-local' })),
+        field('Games from', h('input', { id: 'tournament-starts', type: 'datetime-local' })),
+      ),
       note,
       h(
         'div',
@@ -3507,6 +3523,8 @@ const tournamentForm = {
     const value = (id) => document.getElementById(id).value;
     const status = document.getElementById('tournament-form-status');
     const max = value('tournament-max');
+    // A local date and time as Unix seconds; empty: none.
+    const seconds = (id) => (value(id) ? Math.floor(new Date(value(id)).getTime() / 1000) : null);
     try {
       await send('POST', '/admin/api/tournaments', {
         name: value('tournament-name'),
@@ -3516,8 +3534,12 @@ const tournamentForm = {
         semifinals_best_of: Number(value('tournament-semifinals')),
         finals_best_of: Number(value('tournament-finals')),
         max_entrants: max ? Number(max) : null,
+        registration_ends_at: seconds('tournament-closes'),
+        starts_at: seconds('tournament-starts'),
       });
       document.getElementById('tournament-name').value = '';
+      document.getElementById('tournament-closes').value = '';
+      document.getElementById('tournament-starts').value = '';
       setStatus(status, 'Made', 'good');
       poll();
     } catch (error) {
