@@ -408,6 +408,36 @@ pub async fn sets(pool: &PgPool, id: i64) -> Result<Vec<Set>, sqlx::Error> {
         .collect())
 }
 
+/// Where each set's two players come from, by the bracket, in the sets'
+/// order: `{"seed": n}` (from 0; a bye past the entrants), or `{"winner":
+/// <set id>}` / `{"loser": …}`. Empty when the sets don't follow the plan
+/// for `entrants` (the seeded ones).
+pub fn sources(tournament: &Tournament, entrants: usize, sets: &[Set]) -> Vec<serde_json::Value> {
+    use serde_json::json;
+    if sets.is_empty() || !(2..=bracket::MAX_ENTRANTS).contains(&entrants) {
+        return Vec::new();
+    }
+    let plan = bracket::plan(tournament.format, entrants);
+    if plan.len() != sets.len() {
+        return Vec::new();
+    }
+    let id = |index: usize| sets[index].id;
+    plan.iter()
+        .map(|set| {
+            serde_json::Value::Array(
+                set.from
+                    .iter()
+                    .map(|from| match *from {
+                        bracket::From::Seed(seed) => json!({ "seed": seed }),
+                        bracket::From::Winner(at) => json!({ "winner": id(at) }),
+                        bracket::From::Loser(at) => json!({ "loser": id(at) }),
+                    })
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
 /// A game a set played, as its players reported it: each team's captain
 /// and goals, home and away as the set has them.
 #[derive(Clone, Debug, PartialEq, Serialize)]

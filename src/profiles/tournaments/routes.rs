@@ -15,10 +15,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tracing::info;
 
-use super::{
-    bracket,
-    store::{self, Refusal, Set, Tournament},
-};
+use super::store::{self, Refusal, Set, Tournament};
 use crate::profiles::{
     ProfilesState, bearer, database_error, json_error,
     players::{self, Player},
@@ -166,33 +163,6 @@ pub(in crate::profiles) async fn get(
     respond_page(&state, id, player.as_ref()).await
 }
 
-/// Where a set's two players come from, by the bracket: `{"seed": n}` (from
-/// 0; a bye past the entrants), or `{"winner": <set id>}` / `{"loser": …}`.
-fn sources(tournament: &Tournament, entrants: usize, sets: &[Set]) -> Vec<Value> {
-    if sets.is_empty() || !(2..=bracket::MAX_ENTRANTS).contains(&entrants) {
-        return Vec::new();
-    }
-    let plan = bracket::plan(tournament.format, entrants);
-    if plan.len() != sets.len() {
-        return Vec::new();
-    }
-    let id = |index: usize| sets[index].id;
-    plan.iter()
-        .map(|set| {
-            Value::Array(
-                set.from
-                    .iter()
-                    .map(|from| match *from {
-                        bracket::From::Seed(seed) => json!({ "seed": seed }),
-                        bracket::From::Winner(at) => json!({ "winner": id(at) }),
-                        bracket::From::Loser(at) => json!({ "loser": id(at) }),
-                    })
-                    .collect(),
-            )
-        })
-        .collect()
-}
-
 fn set_view(
     set: &Set,
     from: Option<&Value>,
@@ -262,7 +232,7 @@ async fn page(
         })
         .collect();
     let seeded = entrants.iter().filter(|e| e.seed.is_some()).count();
-    let from = sources(&tournament, seeded, &sets);
+    let from = store::sources(&tournament, seeded, &sets);
     let me = match player {
         Some(player) => {
             let entrant = entrants.iter().find(|e| e.player_id == Some(player.id));
