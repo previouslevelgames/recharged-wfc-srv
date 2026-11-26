@@ -790,8 +790,14 @@ async fn api_tournaments(
     jar: CookieJar,
     headers: HeaderMap,
 ) -> Response {
+    let streams = state.streams.clone();
+    let live = move |match_id| {
+        streams
+            .as_ref()
+            .is_some_and(|streams| streams.live(match_id))
+    };
     state
-        .page_data(&jar, &headers, tournaments::read(&state.pool))
+        .page_data(&jar, &headers, tournaments::read(&state.pool, live))
         .await
 }
 

@@ -48,6 +48,8 @@ struct ShownSet {
     set: Set,
     from: Option<serde_json::Value>,
     played: Vec<PlayedGame>,
+    /// Its match's games stream: the Watch button is offered.
+    live: bool,
 }
 
 /// An entrant and the player's name.
@@ -58,7 +60,8 @@ struct NamedEntrant {
     name: String,
 }
 
-pub async fn read(pool: &PgPool) -> Result<Tournaments, sqlx::Error> {
+/// The tournaments; `live` tells the matches whose games stream.
+pub async fn read(pool: &PgPool, live: impl Fn(i64) -> bool) -> Result<Tournaments, sqlx::Error> {
     let mut tournaments = Vec::new();
     for tournament in store::list(pool).await? {
         let listed = store::entrants(pool, tournament.id).await?;
@@ -91,6 +94,7 @@ pub async fn read(pool: &PgPool) -> Result<Tournaments, sqlx::Error> {
             .map(|set| ShownSet {
                 from: from.next(),
                 played: played.remove(&set.id).unwrap_or_default(),
+                live: set.match_id.is_some_and(&live),
                 set,
             })
             .collect();
