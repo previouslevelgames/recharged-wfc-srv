@@ -22,6 +22,13 @@ use sha2::{Digest, Sha256};
 use sqlx::PgPool;
 
 use super::{Config, matches::tests::Games};
+use crate::profiles::{
+    rules,
+    tournaments::{
+        bracket::Format,
+        store::{self, NewTournament, Seeding},
+    },
+};
 use crate::reports::{
     dossiers::{
         self, Dossier,
@@ -120,6 +127,58 @@ async fn seed(pool: &PgPool) {
     // One side's alone: the other's dossier did not come (yet).
     let (home, _) = series(&games, 1_792_400_000, [LINUX, WINDOWS]).await;
     send(pool, &[home]).await;
+
+    // Tournaments halfway, for the bracket: a double elimination of 8 and
+    // a single one of 12 with its ash bracket.
+    tournament(pool, "Winter Cup", Format::Double, 8, 9).await;
+    tournament(pool, "Ash Open", Format::SingleAsh, 12, 7).await;
+}
+
+/// A running tournament of `entrants` made-up players, its first `decided`
+/// sets to play decided by the organizer, the home player winning.
+async fn tournament(pool: &PgPool, name: &str, format: Format, entrants: usize, decided: usize) {
+    let rule_set = rules::list(pool)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|set| set.name == "Competitive")
+        .unwrap();
+    let new = NewTournament {
+        name: name.to_owned(),
+        organizer: None,
+        format,
+        rule_set,
+        best_of: 3,
+        semifinals_best_of: 3,
+        finals_best_of: 5,
+        max_entrants: None,
+        starts_at: None,
+    };
+    let id = store::create(pool, &new).await.unwrap();
+    for n in 0..entrants {
+        let player_id: i64 = sqlx::query_scalar(
+            "INSERT INTO players (display_name) VALUES ($1) RETURNING player_id",
+        )
+        .bind(format!("{name} player {}", n + 1))
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        store::join(pool, id, player_id).await.unwrap().unwrap();
+    }
+    store::start(pool, id, Seeding::Joined)
+        .await
+        .unwrap()
+        .unwrap();
+    for _ in 0..decided {
+        let sets = store::sets(pool, id).await.unwrap();
+        let Some(set) = sets.iter().find(|set| set.state == "ready") else {
+            break;
+        };
+        store::decide(pool, id, set.id, set.home)
+            .await
+            .unwrap()
+            .unwrap();
+    }
 }
 
 /// A new series between Anosch (home, on `systems[0]`) and Sam (away, on
