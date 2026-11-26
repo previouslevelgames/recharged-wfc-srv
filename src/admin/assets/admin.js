@@ -3284,7 +3284,7 @@ function renderBracket(tournament) {
         h('span', { class: 'bracket-score' }, wins == null ? '' : integer.format(wins)),
       );
     };
-    const label = `${cell.caption}: ${names.get(set.home) || 'to be decided'} against ${names.get(set.away) || 'to be decided'}, ${stateText}`;
+    const label = `${cell.caption}: ${names.get(set.home) || 'to be decided'} against ${names.get(set.away) || 'to be decided'}, ${stateText}${set.live ? ', streaming' : ''}`;
     canvas.append(
       h(
         'button',
@@ -3292,6 +3292,7 @@ function renderBracket(tournament) {
           class: 'bracket-set',
           type: 'button',
           'data-state': set.state,
+          'data-live': set.live ? 'true' : null,
           'aria-label': label,
           title: `${stateText}${set.decided_by && set.decided_by !== 'match' ? ` · by ${set.decided_by}` : ''}`,
           style: { left: `${cell.x}px`, top: `${cell.y}px`, width: `${BRACKET.width}px`, height: `${BRACKET.height}px` },
@@ -3397,13 +3398,18 @@ const tournamentSet = {
         )
       : h('p', { class: 'sub' }, 'No games reported yet.');
     const how = set.decided_by && set.decided_by !== 'match' ? ` · decided by ${set.decided_by}` : '';
-    const match = set.match != null ? ` · match #${set.match}` : '';
+    // Its match while it has one (each game is a match of its own): its page,
+    // and Watch while its games stream.
+    const match =
+      set.match != null &&
+      h('div', { class: 'editor-actions' }, h('a', { class: 'button', href: matchPath({ id: set.match }) }, `Match #${set.match}`), watchButton({ id: set.match, live: set.live }));
     this.dialog.replaceChildren(
       h(
         'form',
         { method: 'dialog' },
         h('h2', { id: 'set-title' }, `${roundText(tournament, set, last)} · Best of ${set.games}`),
-        h('p', null, badge(stateTone, stateText), h('span', { class: 'sub' }, `${how}${match}`)),
+        h('p', null, badge(stateTone, stateText), h('span', { class: 'sub' }, how)),
+        match,
         h(
           'table',
           { class: 'set-players' },

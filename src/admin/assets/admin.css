@@ -2027,3 +2027,8 @@ dialog.set-dialog {
 .set-dialog .editor-status {
   margin-right: auto;
 }
+
+/* A set whose match streams: ringed, to open and watch. */
+.bracket-set[data-live="true"] {
+  box-shadow: 0 0 0 2px var(--critical);
+}
