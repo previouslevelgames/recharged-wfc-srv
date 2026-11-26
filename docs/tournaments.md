@@ -26,6 +26,8 @@ READY, and the tournament's page says `"eligible": false, "reason":
 | `rule_set`, `rules` | The rules its matches are played by, copied from a rule set when it was made |
 | `best_of`, `semifinals_best_of`, `finals_best_of` | Games of a set, of a semifinal and of a final (1, 3, 5 or 7: first to 1, 2, 3 or 4). Finals: in single elimination the last round (and the ash bracket's); in double the winners' final, the losers' final, the grand final and its reset. Semifinals: the round before the final on the winners', the losers' and the ash bracket's side (none on a side of one round) |
 | `max_entrants` | The most who can join (2 to 256), or `null` |
+| `registration_ends_at` | When entries close (Unix seconds), or `null`: when it starts. Nobody joins after it; the admin still starts it with whoever is in |
+| `starts_at` | When its games begin (Unix seconds), or `null`: as soon as it starts. Before it no READY is taken, though the admin may start it and decide sets; never before `registration_ends_at` |
 
 When it starts, the entrants get their seeds (in the order they joined, at
 random, or as the admin gives them) and the bracket its sets. Byes fill the
@@ -100,9 +102,9 @@ then has a `place` (players out in the same round share one).
 |---|---|
 | `GET /api/v1/tournaments` | `{"tournaments": [...]}`: open for entries or running, the newest first, then the last 10 that ended. With a session, each says whether the player `joined`, and their `place` once it ended (`null` before). |
 | `GET /api/v1/tournaments/<id>` | `{"tournament", "entrants", "sets", "me", "poll_interval"}`: the tournament, its entrants (`player`, `seed`, `dropped`, `place`), its sets in the bracket's order (`id`, `index`, `side`, `round`, `position`, `games`, `state`, `home`, `away`, `winner`, `decided_by`, `home_wins`, `away_wins`, `match`, `game_home` (who plays at home in its next game while it is `ready` or `playing`), `played` (the games it played, in their order: `home_captain`, `away_captain`, `home_score`, `away_score`, `stadium`, `interrupted`, from its home player's report of each finished match, else its away player's), and `from`, where its two players come from: `{"seed": n}` (from 0; past the entrants, a bye), `{"winner": <set id>}` or `{"loser": <set id>}`; players by id), and with a session `me`: `{"player", "entrant", "eligible", "reason", "dropped", "place", "set"}`, `set` being the player's set to play now (else the next one waiting). Ask again after `poll_interval` seconds while the page is open. |
-| `POST /api/v1/tournaments/<id>/join` | Join one open for entries: its page as above. 409 when it is full, running or the player is in it. |
+| `POST /api/v1/tournaments/<id>/join` | Join one open for entries: its page as above. 409 when it is full, its entries closed (`registration_ends_at`), it is running or the player is in it. |
 | `DELETE /api/v1/tournaments/<id>/join` | Leave: before the start, out of it; once it runs, the player gives up (see "Sets"). |
-| `POST /api/v1/tournaments/<id>/sets/<set>/ready` | `{"ready": true}` or `false`: READY for the player's set, or taken back. `{"match": …}`, the set's match as `GET /api/v1/matches/current` shows it, or `null` for a READY taken back before there was one. 404 for a set not the player's, 409 for a set not to be played or a player with another match. |
+| `POST /api/v1/tournaments/<id>/sets/<set>/ready` | `{"ready": true}` or `false`: READY for the player's set, or taken back. `{"match": …}`, the set's match as `GET /api/v1/matches/current` shows it, or `null` for a READY taken back before there was one. 404 for a set not the player's, 409 for a set not to be played, a READY before the tournament's `starts_at`, or a player with another match. |
 
 A match's view has `tournament`, `{"id", "name", "set", "side", "round",
 "games", "home_wins", "away_wins", "won", "lost", "state", "winner",
@@ -121,9 +123,9 @@ one's entrants and sets (each with its `from` and `played`, as on the
 tournament's page). The sets are drawn as the bracket, laid out as the
 game's own: the rounds in columns, the losers' or the ash bracket below, a
 line from each set to the one its winner goes to. A set opened shows its
-players, its games and the organizer's decisions. An admin makes one (`POST /admin/api/tournaments`
+players, its games and the organizer's decisions; while its match's games stream (the card is ringed) it has the Matches page's **Watch** and **Ticket**, for the game being played. An admin makes one (`POST /admin/api/tournaments`
 with `name`, `format`, `rule_set` (an id), `best_of`, `semifinals_best_of`,
-`finals_best_of`, `max_entrants`), starts it (`POST …/<id>/start` with `{"seeding":
+`finals_best_of`, `max_entrants`, `registration_ends_at`, `starts_at`), starts it (`POST …/<id>/start` with `{"seeding":
 "joined"}`, `"shuffled"` or the players' ids in seed order), calls it off
 (`POST …/<id>/cancel`), disqualifies an entrant (`POST
 …/<id>/entrants/<player>/drop`), and decides a set (`POST
