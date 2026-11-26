@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tournament_sets SET state = 'playing', match_id = $2, updated_at = now()\n                 WHERE tournament_set_id = $1\n                   AND (state = 'ready' OR state = 'playing' AND match_id = $2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "98a92a6a3fb47c44be72e841e383e4f5cbcf99bf87078637ab36d82d8c2a269b"
+}

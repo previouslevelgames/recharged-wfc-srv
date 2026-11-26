@@ -1,0 +1,196 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT tournament_set_id, index, side, round, position, games, state, home, away,\n                winner, decided_by, home_wins, away_wins, match_id, resume\n         FROM tournament_sets WHERE tournament_id = $1 ORDER BY index",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tournament_set_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "tournament_set_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "index",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "index"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "side",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "side"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "round",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "round"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "position",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "position"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "games",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "games"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "state",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "ordinal": 7,
+        "name": "home",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "home"
+          }
+        }
+      },
+      {
+        "ordinal": 8,
+        "name": "away",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "away"
+          }
+        }
+      },
+      {
+        "ordinal": 9,
+        "name": "winner",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "winner"
+          }
+        }
+      },
+      {
+        "ordinal": 10,
+        "name": "decided_by",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "decided_by"
+          }
+        }
+      },
+      {
+        "ordinal": 11,
+        "name": "home_wins",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "home_wins"
+          }
+        }
+      },
+      {
+        "ordinal": 12,
+        "name": "away_wins",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "away_wins"
+          }
+        }
+      },
+      {
+        "ordinal": 13,
+        "name": "match_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "match_id"
+          }
+        }
+      },
+      {
+        "ordinal": 14,
+        "name": "resume",
+        "type_info": "Jsonb",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "resume"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "2e4d9201fe1dd670d53432816fa5c81cfeaa2d70bd28cdf624747782fe04e718"
+}

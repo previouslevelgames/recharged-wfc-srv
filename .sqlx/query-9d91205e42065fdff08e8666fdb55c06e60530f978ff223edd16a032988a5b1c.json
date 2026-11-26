@@ -1,0 +1,50 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT s.tournament_id, s.tournament_set_id, m.match_id\n         FROM tournament_sets s JOIN matches m ON m.match_id = s.match_id\n         JOIN tournaments t ON t.tournament_id = s.tournament_id\n         WHERE s.state = 'playing' AND t.state = 'running'\n           AND m.state NOT IN ('challenged', 'accepted')",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tournament_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "tournament_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "tournament_set_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "tournament_set_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "match_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "match_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "9d91205e42065fdff08e8666fdb55c06e60530f978ff223edd16a032988a5b1c"
+}

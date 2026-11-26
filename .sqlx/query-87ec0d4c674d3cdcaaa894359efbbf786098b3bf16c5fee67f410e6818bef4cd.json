@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT coalesce(registration_ends_at <= now(), false) AS \"closed!\"\n           FROM tournaments WHERE tournament_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "closed!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "87ec0d4c674d3cdcaaa894359efbbf786098b3bf16c5fee67f410e6818bef4cd"
+}

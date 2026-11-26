@@ -1,0 +1,38 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO tournaments (name, organizer, format, rule_set, rules, best_of,\n                                  semifinals_best_of, finals_best_of, max_entrants,\n                                  registration_ends_at, starts_at)\n         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)\n         RETURNING tournament_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "tournament_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tournaments",
+            "name": "tournament_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Text",
+        "Text",
+        "Text",
+        "Int2",
+        "Int2",
+        "Int2",
+        "Int4",
+        "Timestamptz",
+        "Timestamptz"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "22e1089181ab60d994ec99b9f9cb07e31cb5334f1cc74bc9c4d41c6d380cb197"
+}

@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT player_id AS \"player_id!\" FROM tournament_entrants\n           WHERE tournament_id = $1 AND player_id IS NOT NULL\n           ORDER BY joined_at, player_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "player_id!",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "tournament_entrants",
+            "name": "player_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "861491a35e195d8b093142ec779a4f3f27835adaeec110e27bc2cc7013508f6f"
+}

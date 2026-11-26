@@ -33,6 +33,9 @@ use super::{
 /// name the launcher shows. (The Mii's own name in its record is the
 /// client's to fit.)
 pub const MAX_NAME: usize = 32;
+/// What the launcher shows for a name another player has (docs/profiles.md,
+/// "Names").
+pub const NAME_TAKEN: &str = "that name is taken: choose another one";
 /// New Mii players one address can make in [`WINDOW`].
 pub const NEW_PLAYERS_PER_WINDOW: u32 = 5;
 const WINDOW: Duration = Duration::from_secs(60 * 60);
@@ -184,7 +187,8 @@ pub(super) async fn sign_in_mii(
         );
     }
     let player_id = match players::create_mii(&state.pool, &name).await {
-        Ok(player_id) => player_id,
+        Ok(Some(player_id)) => player_id,
+        Ok(None) => return json_error(StatusCode::CONFLICT, NAME_TAKEN),
         Err(error) => return database_error(error),
     };
     info!(target: "profiles", player_id, "Mii player made");
@@ -236,6 +240,154 @@ pub(super) async fn sign_in_wfc(
     session(&state, player_id).await
 }
 
+/// Sign-ins from game saves one address can make in [`SAVE_WINDOW`]: a
+/// player picks one Mii, maybe a second.
+pub const SAVE_SIGN_INS_PER_WINDOW: u32 = 10;
+const SAVE_WINDOW: Duration = Duration::from_secs(60);
+
+impl PerAddress {
+    /// [`sign_in_save`]'s: [`SAVE_SIGN_INS_PER_WINDOW`] a minute.
+    pub fn save_sign_ins() -> Self {
+        Self::new(SAVE_SIGN_INS_PER_WINDOW, SAVE_WINDOW)
+    }
+}
+
+#[derive(Deserialize)]
+pub(super) struct SaveSignIn {
+    /// The console's userid, from the Mii slot's WFC login id.
+    user_id: i64,
+    /// The game code and the slot's player id, as DWC sends them to NAS.
+    gsbrcd: String,
+}
+
+/// **Continue** from a game save: the launcher reads a Mii's slot (the
+/// console's userid and its `gsbrcd`, exactly what the game's NAS login
+/// sends, and all WFC asks of it) and signs in the player that slot's WFC
+/// profile identifies, without starting the game (docs/profiles.md,
+/// "Coming back").
+pub(super) async fn sign_in_save(
+    State(state): State<Arc<ProfilesState>>,
+    headers: HeaderMap,
+    ClientAddress(address): ClientAddress,
+    Json(save): Json<SaveSignIn>,
+) -> Response {
+    let profile_id = match save_profile(&state, address, &save).await {
+        Ok(profile_id) => profile_id,
+        Err(response) => return response,
+    };
+    let not_found = || {
+        json_error(
+            StatusCode::NOT_FOUND,
+            "no Recharged profile signs in with this Mii",
+        )
+    };
+    let player_id = match players::by_wfc_identity(&state.pool, profile_id).await {
+        Ok(Some(player_id)) => player_id,
+        Ok(None) => return not_found(),
+        Err(error) => return database_error(error),
+    };
+    if let Err(error) = players::bind_wfc(&state.pool, player_id, profile_id).await {
+        return database_error(error);
+    }
+    if let Err(error) = players::heartbeat(
+        &state.pool,
+        player_id,
+        Doing::from_headers(&headers),
+        players::game_from_headers(&headers).as_deref(),
+    )
+    .await
+    {
+        return database_error(error);
+    }
+    info!(target: "profiles", player_id, profile_id, "signed in from a game save");
+    session(&state, player_id).await
+}
+
+/// The WFC profile of a game save's Mii slot, after the checks a sign-in from
+/// it makes: rate, banned console. Err: the answer to give.
+async fn save_profile(
+    state: &ProfilesState,
+    address: std::net::IpAddr,
+    save: &SaveSignIn,
+) -> Result<i32, Response> {
+    if !state.save_sign_ins.allow(address) {
+        return Err(json_error(
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many sign-ins from this address; try again in a minute",
+        ));
+    }
+    let profile_id = sqlx::query_scalar!(
+        "SELECT profile_id FROM profiles WHERE user_id = $1 AND gsbrcd = $2",
+        save.user_id,
+        save.gsbrcd,
+    )
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(database_error)?
+    .ok_or_else(|| json_error(StatusCode::NOT_FOUND, "this Mii has never been online"))?;
+    if crate::bans::console_banned(&state.pool, save.user_id)
+        .await
+        .map_err(database_error)?
+    {
+        return Err(json_error(StatusCode::FORBIDDEN, super::BANNED));
+    }
+    Ok(profile_id)
+}
+
+/// **Import**, signed in: the profile of a Mii from an old game save goes into
+/// the player's (docs/profiles.md, "From the game save"), which then has its
+/// name, face and friend code first. A Mii that played for nobody becomes
+/// the player's, its friend code first. The answer is the player.
+pub(super) async fn take_over_save(
+    State(state): State<Arc<ProfilesState>>,
+    headers: HeaderMap,
+    ClientAddress(address): ClientAddress,
+    Json(save): Json<SaveSignIn>,
+) -> Response {
+    let player = match state.signed_in(&headers).await {
+        Ok(player) => player,
+        Err(response) => return response,
+    };
+    let profile_id = match save_profile(&state, address, &save).await {
+        Ok(profile_id) => profile_id,
+        Err(response) => return response,
+    };
+    match players::by_wfc_identity(&state.pool, profile_id).await {
+        Ok(Some(owner)) if owner == player.id => {}
+        Ok(Some(owner)) => match players::take_over(&state.pool, owner, player.id, true).await {
+            Ok(Ok(())) => {
+                info!(target: "profiles", from = owner, player_id = player.id, profile_id, "imported profile went into the player's");
+            }
+            Ok(Err(refusal)) => return json_error(StatusCode::CONFLICT, refusal),
+            Err(error) => return database_error(error),
+        },
+        Ok(None) => {
+            let friend_code = match crate::accounts::profile(&state.pool, profile_id).await {
+                Ok(Some(profile)) => crate::accounts::friend_code(profile_id, &profile.gsbrcd[..4]),
+                Ok(None) => {
+                    return json_error(StatusCode::NOT_FOUND, "this Mii has never been online");
+                }
+                Err(error) => return database_error(error),
+            };
+            if let Err(error) = players::bind_wfc(&state.pool, player.id, profile_id).await {
+                return database_error(error);
+            }
+            if let Err(error) =
+                players::bind_identity(&state.pool, player.id, profile_id, &friend_code).await
+            {
+                return database_error(error);
+            }
+            info!(target: "profiles", player_id = player.id, profile_id, "imported Mii became the player's");
+        }
+        Err(error) => return database_error(error),
+    }
+    match players::player(&state.pool, player.id).await {
+        Ok(Some(player)) => Json(player).into_response(),
+        Ok(None) => json_error(StatusCode::UNAUTHORIZED, "signed out"),
+        Err(error) => database_error(error),
+    }
+}
+
 /// The most WFC profiles one [`known_wfc`] asks about.
 pub const MAX_KNOWN: usize = 32;
 
@@ -284,7 +436,7 @@ async fn session(state: &ProfilesState, player_id: i64) -> Response {
         Err(error) => return database_error(error),
     };
     match players::player(&state.pool, player_id).await {
-        Ok(Some(player)) => signed_in(&token, &player, None),
+        Ok(Some(player)) => Json(signed_in(&token, &player, None)).into_response(),
         Ok(None) => json_error(StatusCode::INTERNAL_SERVER_ERROR, "the player went away"),
         Err(error) => database_error(error),
     }

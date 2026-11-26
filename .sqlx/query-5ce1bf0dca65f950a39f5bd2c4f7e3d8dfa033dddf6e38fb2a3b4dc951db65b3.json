@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tournaments SET max_entrants = 2 WHERE tournament_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "5ce1bf0dca65f950a39f5bd2c4f7e3d8dfa033dddf6e38fb2a3b4dc951db65b3"
+}

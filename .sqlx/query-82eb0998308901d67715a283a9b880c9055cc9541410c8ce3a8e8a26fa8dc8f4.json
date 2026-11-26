@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tournament_sets SET state = 'ready', resume = NULL, updated_at = now()\n                     WHERE tournament_set_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "82eb0998308901d67715a283a9b880c9055cc9541410c8ce3a8e8a26fa8dc8f4"
+}

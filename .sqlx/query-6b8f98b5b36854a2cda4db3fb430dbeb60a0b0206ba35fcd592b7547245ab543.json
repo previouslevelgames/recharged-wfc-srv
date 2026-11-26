@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS (SELECT 1 FROM tournament_entrants e JOIN tournaments t USING (tournament_id)\n                          WHERE e.player_id = $1 AND e.dropped_at IS NULL\n                            AND t.state IN ('registration', 'running')) AS \"in!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "in!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "6b8f98b5b36854a2cda4db3fb430dbeb60a0b0206ba35fcd592b7547245ab543"
+}

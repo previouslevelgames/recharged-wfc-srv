@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tournaments SET organizer = $2 WHERE organizer = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7700753fc417ad07afd061620d886e748ec6da03edd84f1b5558e7517a0d056d"
+}

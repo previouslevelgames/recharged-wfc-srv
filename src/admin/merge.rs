@@ -43,7 +43,7 @@ async fn side(pool: &PgPool, player_id: i64) -> Result<Option<Side>, sqlx::Error
         return Ok(None);
     };
     let signs_in_with = sqlx::query_scalar!(
-        "SELECT provider FROM player_identities WHERE player_id = $1 ORDER BY provider",
+        "SELECT DISTINCT provider FROM player_identities WHERE player_id = $1 ORDER BY provider",
         player_id
     )
     .fetch_all(pool)
@@ -141,18 +141,12 @@ pub async fn pair(
         }
         (Some(player_id), _) | (None, Some(player_id)) => (player_id, false),
         (None, None) => {
-            let name = [&mine.ingamesn, &theirs.ingamesn]
+            let names: Vec<&str> = [&mine.ingamesn, &theirs.ingamesn]
                 .into_iter()
                 .flatten()
-                .map(|name| name.trim().chars().take(64).collect::<String>())
-                .find(|name| !name.is_empty())
-                .unwrap_or_else(|| "Player".to_owned());
-            let player_id = sqlx::query_scalar!(
-                "INSERT INTO players (display_name) VALUES ($1) RETURNING player_id",
-                name,
-            )
-            .fetch_one(&mut *tx)
-            .await?;
+                .map(String::as_str)
+                .collect();
+            let player_id = crate::profiles::players::create_named(&mut tx, &names).await?;
             (player_id, true)
         }
     };
@@ -212,6 +206,22 @@ pub async fn plan(
     if open {
         return Ok(Err("one of them has a set to play: wait until it is over"));
     }
+    // Their places in it can't be one.
+    let together = sqlx::query_scalar!(
+        r#"SELECT EXISTS (SELECT 1 FROM tournament_entrants a JOIN tournament_entrants b USING (tournament_id)
+                          JOIN tournaments t USING (tournament_id)
+                          WHERE a.player_id = $1 AND b.player_id = $2
+                            AND t.state IN ('registration', 'running')) AS "together!""#,
+        from,
+        into,
+    )
+    .fetch_one(pool)
+    .await?;
+    if together {
+        return Ok(Err(
+            "both are in a tournament open or running: take one out of it first (Tournaments)",
+        ));
+    }
     let counts = sqlx::query!(
         r#"SELECT
              (SELECT count(*) FROM player_wfc_profiles WHERE player_id = $1) AS "profiles!",
@@ -230,7 +240,7 @@ pub async fn plan(
     let identities = from_side
         .signs_in_with
         .iter()
-        .filter(|kind| !into_side.signs_in_with.contains(kind))
+        .filter(|kind| *kind == "wfc" || !into_side.signs_in_with.contains(kind))
         .cloned()
         .collect();
     Ok(Ok(Merge {
@@ -245,7 +255,8 @@ pub async fn plan(
 }
 
 /// Merges `from` into `into`, all at once: their WFC profiles, sets and
-/// reports, chats, friends and Mii friends, sessions (their launchers stay
+/// reports, tournaments (but one both were in, where `from` is a deleted
+/// player's place), chats, friends and Mii friends, sessions (their launchers stay
 /// signed in, as `into`), and the accounts `into` has none of; the sets
 /// between the two go, `from`'s search ends, and `from` is gone. Err: why not
 /// (as [`plan`]).
@@ -295,6 +306,37 @@ pub async fn merge(
     .await?;
     sqlx::query!(
         "UPDATE match_reports SET player_id = $2 WHERE player_id = $1",
+        from,
+        into
+    )
+    .execute(&mut *tx)
+    .await?;
+    let moved = sqlx::query_scalar!(
+        "UPDATE tournament_entrants SET player_id = $2
+         WHERE player_id = $1 AND tournament_id NOT IN (
+             SELECT tournament_id FROM tournament_entrants WHERE player_id = $2)
+         RETURNING tournament_id",
+        from,
+        into
+    )
+    .fetch_all(&mut *tx)
+    .await?;
+    // (A game to go on from names its players: played again from its draft.)
+    sqlx::query!(
+        "UPDATE tournament_sets SET
+             home = CASE WHEN home = $1 THEN $2 ELSE home END,
+             away = CASE WHEN away = $1 THEN $2 ELSE away END,
+             winner = CASE WHEN winner = $1 THEN $2 ELSE winner END,
+             resume = CASE WHEN $1 IN (home, away) THEN NULL ELSE resume END
+         WHERE tournament_id = ANY($3) AND $1 IN (home, away, winner)",
+        from,
+        into,
+        &moved,
+    )
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query!(
+        "UPDATE tournaments SET organizer = $2 WHERE organizer = $1",
         from,
         into
     )
@@ -351,7 +393,8 @@ pub async fn merge(
     sqlx::query!(
         "UPDATE player_identities SET player_id = $2
          WHERE player_id = $1
-           AND provider NOT IN (SELECT provider FROM player_identities WHERE player_id = $2)",
+           AND (provider = 'wfc'
+                OR provider NOT IN (SELECT provider FROM player_identities WHERE player_id = $2))",
         from,
         into
     )
@@ -530,6 +573,49 @@ mod tests {
         assert_eq!(
             plan(&pool, 3, 1).await.unwrap(),
             Err("both sign in with Discord: two accounts, likely two people")
+        );
+    }
+
+    #[sqlx::test]
+    async fn a_merge_moves_the_tournaments_but_not_one_both_play(pool: PgPool) {
+        // Birnen (1) and Birnen's Mii player (2), who runs Cup, and Kiki (3).
+        run(
+            &pool,
+            "INSERT INTO players (display_name) VALUES ('Birnen'), ('Birnen Mii'), ('Kiki');
+             INSERT INTO tournaments (name, organizer, format, rule_set, rules, best_of,
+                                      semifinals_best_of, finals_best_of, state)
+             VALUES ('Cup', 2, 'single', 'Competitive', '{}', 3, 3, 3, 'registration'),
+                    ('Old', NULL, 'single', 'Competitive', '{}', 3, 3, 3, 'finished');
+             INSERT INTO tournament_entrants (tournament_id, player_id)
+             VALUES (1, 2), (1, 1), (2, 2), (2, 3);",
+        )
+        .await;
+        assert_eq!(
+            merge(&pool, 2, 1).await.unwrap(),
+            Err("both are in a tournament open or running: take one out of it first (Tournaments)")
+        );
+        run(
+            &pool,
+            "DELETE FROM tournament_entrants WHERE tournament_id = 1 AND player_id = 1",
+        )
+        .await;
+        merge(&pool, 2, 1).await.unwrap().unwrap();
+        assert_eq!(
+            pairs(
+                &pool,
+                "SELECT tournament_id, player_id FROM tournament_entrants
+                 ORDER BY tournament_id, player_id"
+            )
+            .await,
+            [(1, 1), (2, 1), (2, 3)]
+        );
+        assert_eq!(
+            pairs(
+                &pool,
+                "SELECT tournament_id, organizer FROM tournaments WHERE organizer IS NOT NULL"
+            )
+            .await,
+            [(1, 1)]
         );
     }
 

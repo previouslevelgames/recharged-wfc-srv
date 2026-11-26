@@ -91,9 +91,9 @@ signs in at once, answering like a sign-in that ended:
 as long as a Discord display name may be: 1 to 32 characters (counted as
 characters, not bytes), without spaces around it and without control
 characters or invisible formatting ones. (The Mii's own name in its record
-has 10 at most; the launcher fits it.) Mii players' names need not be unique,
-so the launcher shows them with their friend code. 400 for a name that isn't
-one; 429 `{"error": "too many new players from here: try again in an hour"}`
+has 10 at most; the launcher fits it.) A name belongs to one player (see
+"Names"): 409 `{"error": "that name is taken: choose another one"}` when
+another player has it. 400 for a name that isn't one; 429 `{"error": "too many new players from here: try again in an hour"}`
 after 5 new players from one address within an hour (an IPv6 address counts
 with its /64). The address is the caller's, or, from a proxy on the server's
 own network (loopback, private or link-local, such as a Cloudflare Tunnel's
@@ -106,25 +106,50 @@ add it by its player id; a name looks up Discord usernames (and test names)
 only.
 
 **What identifies it.** A Mii player has nothing to sign in with until its
-game logs in to WFC: the first WFC profile its port proves (`POST
-/api/v1/wfc`, see "Friend codes") becomes its identity, kept in
-`player_identities` as provider `wfc` with the profile id. A WFC profile
-identifies one player at most, and a player keeps its first: a profile that
-identifies another player, proven by a second Mii player (the same Mii on
-another computer that made a new player), is only bound to that one, as any
-profile is, and still identifies the first. Players with Discord or a test
-name get no `wfc` identity.
+game logs in to WFC. Every WFC profile a player's port proves first (`POST
+/api/v1/wfc`, see "Friend codes") identifies that player from then on, kept
+in `player_identities` as provider `wfc` with the profile id: Discord and test
+players' too, and a player with a Mii of each game version has one for each.
+A WFC profile identifies one player at most, the first that proved it: a
+profile proven later by another player (the same Mii on another computer that
+made a new player) is only bound to that one, as any profile is, and still
+identifies the first. The player's `friend_code` is the identifying profile
+it played with last. (Up to 1.3.0 only a Mii player's first proven profile
+identified it; the others were added when 1.3.1 started.)
 
 **Coming back.** `POST /api/v1/sign-in/wfc` with
 `{"profile_id": 1000000000, "login_ticket": "<lt>"}` (the proof of `POST
 /api/v1/wfc`, sent by the game after its WFC login, without a session)
 answers a new session for the player that profile identifies, as a sign-in
-that ended, and binds the profile to it again. So a Mii player gets its
-profile back on another computer, or after signing out or losing its session,
-by logging in to WFC with the same Mii. 403 for a profile not logged in with
+that ended, and binds the profile to it again. So a player gets its profile
+back on another computer, or after signing out or losing its session, by
+logging in to WFC with the same Mii. 403 for a profile not logged in with
 that ticket, 404 `{"error": "no Recharged profile signs in with this WFC
 profile"}` when it identifies nobody (no player is made). A Mii player that
 signs out before its game ever logged in to WFC can't come back.
+
+**From the game save.** `POST /api/v1/sign-in/save` with
+`{"user_id": 1234567890123, "gsbrcd": "R4QEabcdefg"}`, without a session, signs
+in the same player without starting the game. A Mii's slot in the game's
+online save keeps its WFC login id once it logged in: the console's userid and
+the slot's player id, which with the game code make `gsbrcd`. That is all the
+game's NAS login sends (WFC has no password), so the launcher, reading the
+slot, proves as much as the game's login does. The answer is a sign-in that
+ended for the player that WFC profile identifies, and the profile is bound to
+it again; 404 when the Mii has never been online here or plays for no
+profile, 403 for a banned console, 429 after 10 from one address within a
+minute. From 1.3.1.
+
+**Importing, signed in.** `POST /api/v1/me/take-over-save` with the same
+`{"user_id", "gsbrcd"}` and a session: the launcher imported an old game save
+and the player chose to keep the profile one of its Miis plays for. That
+profile goes into the one signed in, which then has its name, its face and
+its friend code first, and everything of both (as an admin's merge, see "One
+player, two profiles"); a Mii that played for nobody becomes the player's,
+its friend code first. The Discord account stays the signed-in profile's.
+The answer is the player. 404 for a Mii never online here, 409 when the
+merge can't be done (two Discord accounts, a set still to play), and the
+limits of a sign-in from the save. From 1.3.1.
 
 **Before a new profile.** `POST /api/v1/sign-in/wfc/known` with
 `{"profile_ids": [1000000000, 1000000001]}` (at most 32, no session) answers
@@ -141,16 +166,42 @@ keeping its friends, chat, sets and WFC profiles: the launcher starts the
 sign-in above with the player's session (`Authorization: Bearer <token>` on
 `POST /api/v1/sign-in`), whose answer then has `"link": true`. The page says
 which profile Discord joins and offers Discord only (no test name). When
-Discord returns, the player gets the Discord account; its name and picture
-are Discord's from then on, it signs in with Discord, and the poll answers
+Discord returns, the player gets the Discord account and keeps its name; its
+picture is Discord's from then on, it signs in with Discord, and the poll answers
 `signed_in` with a new session for the same player (the old one goes on). A
-Discord account that already has a Recharged profile, or a player that got
-another Discord account meanwhile, ends the sign-in with 409
-`{"error": "This Discord account already has a Recharged profile"}` (or
-`"Your Recharged profile has a Discord account already"`), and nothing
-changes. A session of any other player, an expired one or none starts an
-ordinary sign-in, as before. The `wfc` identity stays: the game's login
+player that got another Discord account meanwhile ends the sign-in with 409
+`{"error": "Your Recharged profile has a Discord account already"}`, and
+nothing changes. A session of any other player, an expired one or none starts
+an ordinary sign-in, as before.
+
+**Discord has a profile already** (from 1.3.1; before, 409 and nothing
+changed). Discord is how a player takes its profile to any computer, so
+connecting it on a fresh install finds the profile it had:
+
+- The profile signed in has played nothing yet (no sets, friends, chats or
+  tournaments: one made a moment ago): it goes into the Discord account's
+  profile at once, and the poll answers `signed_in` for that one with
+  `"welcome_back": true`.
+- It has played (one brought from an old game save): the page sends the
+  player back to the launcher, and the poll answers `{"status":
+  "discord_has_profile", "player": {...}, "takeover": "<token>"}` with the
+  Discord account's profile. Nothing changes unless the player keeps the
+  profile signed in: `POST /api/v1/sign-in/take-over` with `{"takeover":
+  "<token>"}` and that profile's session puts it into the Discord account's
+  profile, which then has its name, its face and its friend code first (its
+  WFC profiles bound last), and everything of both (as an admin's merge, see
+  "One player, two profiles"). The answer is a sign-in that ended, with the
+  Discord Social SDK's tokens of the sign-in. 404 for another session's token,
+  a used or an expired one (10 minutes), 409 when the merge can't be done now
+  (a set still to play). The `wfc` identity stays: the game's login
 still signs the player in too.
+
+**Disconnecting Discord.** `DELETE /api/v1/me/discord` takes the Discord
+account off the player, who keeps everything else (name, face, friends, sets,
+WFC profiles), stays signed in and signs in again by its Miis; the answer is
+the player. 409 `{"error": "play online once first: then your Mii signs you in
+again without Discord"}` while no WFC profile identifies it yet, and for a
+player without Discord. Discord can be connected again as above. From 1.3.1.
 
 ### Test sign-in
 
@@ -160,6 +211,23 @@ signs in at once and answers like a sign-in that ended. A test name has 1 to
 player. 403 while test sign-in is off. The sign-in page shows it in a box of
 its own, marked as a test server's, below Discord: a test player has no
 Discord account, so no Discord friends, and nobody finds it by Discord name.
+
+## Names
+
+A name belongs to one player, in any letter case ("Nelly" and "NELLY" are
+one name), so nobody can pose as another player. The name is the player's
+own: a Discord sign-in never changes it. A player made by a Discord (or test)
+sign-in gets the first free of the account's display name and username, else
+the display name with a number after it ("Nelly 2"), and the sign-in's answer
+has `"created": true`, so the launcher can offer to choose another name.
+
+| Route | |
+|---|---|
+| `GET /api/v1/names?name=<name>` | `{"name": "Nelly", "free": false}`, without a session: whether a player could take the name now (trimmed), as the launcher shows it while it is typed. Only a hint: making or renaming a player takes the name. 400 for a name that isn't one, 429 after 60 asks a minute from one address. |
+| `PUT /api/v1/me/name` | `{"name": "<name>"}`: the player is called that from now on, and the answer is the player. 409 `{"error": "that name is taken: choose another one"}` when another player is. The old name is free at once. |
+
+Up to 1.3.0 names needn't be unique; the players that shared one kept it in
+the oldest, the later ones got a number after it.
 
 ## Sessions
 
@@ -261,9 +329,8 @@ of `GET /api/v1/players` and a match's opponent:
 
 `account` is what the player signs in with: `discord`, `test` (a test name),
 or `mii` (neither, see "Playing without Discord"). `friend_code` is the
-friend code of the WFC profile that identifies the player (a Mii player's
-first proven profile; it stays after Discord is connected), `null` without
-one. Both from 1.2.3. `country` is the flag beside the name (see
+friend code of the WFC profile that identifies the player and that it played
+with last (see "Playing without Discord"), `null` without one. Both from 1.2.3. `country` is the flag beside the name (see
 "Countries"), `null` for none; from 1.2.11. `mii_data` is the player's Mii
 (see "Miis"), `null` for none; from 1.2.22.
 `player_sessions` holds the sessions, `player_wfc_profiles` the friend codes
@@ -422,8 +489,8 @@ reach the server through a proxy or over IPv6 while the game uses IPv4. The
 profile is then the player's, until another player proves it, and the answer
 is `{"profile_id", "game": "R4QE", "friend_code": "0868-9934-5920", "mii"}`.
 403 for a profile not logged in with that ticket. `GET /api/v1/me` lists the
-player's profiles as `wfc`, the latest first. A Mii player's first proven
-profile also identifies it from then on (see "Playing without Discord").
+player's profiles as `wfc`, the latest first. A profile the player proves
+first also identifies it from then on (see "Playing without Discord").
 
 ## Miis
 
@@ -440,9 +507,28 @@ with `mii_stored_at`, when it last came. A player can never send the Mii of a
 profile that isn't theirs. A Wii sends none, and neither do launchers before
 1.2.22: their players and profiles show without one.
 
+### Restoring
+
+Each item of `POST /api/v1/me/miis` can also carry `slot`: the Mii's slot of
+the game's online save (GameInfoSaveSlot, 2832 bytes, standard Base64, as the
+port writes it), its whole online self: its WFC login id, the game's own
+friend roster and its records. It is stored as `profiles.slot_data` for a
+profile bound to the player only, like the Mii; the answer counts them as
+`slots`. `GET /api/v1/me/restore` answers what a fresh install needs to be
+that player again: `{"mii": "<Base64>" | null, "slots": [{"profile_id",
+"game", "friend_code", "data"}]}`, the profile's own face and the slots of the
+player's bound profiles, the latest bound first. The launcher writes those
+into the game save, so after a reinstall, or on another computer, a Discord
+sign-in brings back the same friend codes. Both from 1.3.1.
+
+`PUT /api/v1/me/mii` with `{"data": "<Base64>"}` (the same 74 bytes) sets the
+profile's own face: the Mii the player made or chose in the launcher, the same
+on every computer and in every game version (`players.mii_data`). The answer
+is the player; 400 for data that isn't a Mii. From 1.3.1.
+
 A player's Mii is `mii_data` wherever the launcher sees a player (see
-"Players"): the Mii of their bound profile that logged in to WFC last, of
-those with one; `null` for none. It goes with its profile to the player who
+"Players"): their profile's own face, else the Mii of their bound profile that
+logged in to WFC last, of those with one; `null` for none. It goes with its profile to the player who
 proves that profile next. A Mii profile (see "Mii profiles") has its own Mii
 as `mii_data`.
 
@@ -574,7 +660,7 @@ session, lists the rule sets: `{"rule_sets": [{"id", "name", "rules", "hash"}]}`
 
 | Rule | Values |
 |---|---|
-| `tweaks` | The port's gameplay tweaks for both teams: `fast_terrain`, `no_mega_strikes`, `thunder_island_walls`, and `mirror_match` (both players may draft the same captain). The others stay off; fair ball contests are always on online. |
+| `tweaks` | The port's gameplay tweaks for both teams: `fair_ball_contests` (Defender's priority: when both teams reach a loose ball at once, the defending team gets it; without it the home team does, and in a tournament the player away drafts first), `fast_terrain`, `no_mega_strikes`, `thunder_island_walls`, and `mirror_match` (both players may draft the same captain). The others stay off. Every other online game plays with fair ball contests; a set only when its rules have them (a game too old to know them as a rule refuses such a set). |
 | `skill` | `training`, `rookie`, `professional`, `superstar`, `legend`; `rookie` when left out. The CPU's skill: no effect on a match between two games (the game gives both teams the human level) |
 | `limit` | `time` or `goals`: what ends a game |
 | `time` | A game's length in seconds, 60 to 900 in steps of 30 |
@@ -624,8 +710,12 @@ A match as the player sees it:
  "paired": false, "reported": false, "winner": null, "games": [], "created_at": 1792771200,
  "stage": "open", "reason": null, "you_ready": true, "opponent_ready": false,
  "opponent_online": true, "go_at": null, "playing_at": null, "rematch_of": null, "random": false,
- "forfeited_by": null, "forfeited_at": null}
+ "forfeited_by": null, "forfeited_at": null, "tournament": null}
 ```
+
+`tournament` is `{"id", "name", "set", "side", "round", "games", "home_wins",
+"away_wins"}` for the match of a
+tournament's set ([tournaments.md](tournaments.md)), `null` otherwise.
 
 `forfeited_by` is `you` or `opponent` for a set one of them gave up (see
 "Forfeit"), with `forfeited_at` in Unix seconds; `null` otherwise.

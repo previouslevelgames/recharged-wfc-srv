@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT mii_data FROM players WHERE player_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "mii_data",
+        "type_info": "Bytea",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "mii_data"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "a4203047585d18a6643e9b59ed851ac5a262706363e550cdaa2c81175f7393aa"
+}

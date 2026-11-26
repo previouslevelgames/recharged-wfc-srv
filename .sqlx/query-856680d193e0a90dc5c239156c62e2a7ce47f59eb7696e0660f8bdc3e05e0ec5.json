@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO players (display_name, heartbeat_at) VALUES ($1, now())\n         ON CONFLICT ((lower(display_name))) DO NOTHING\n         RETURNING player_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "player_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "player_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "856680d193e0a90dc5c239156c62e2a7ce47f59eb7696e0660f8bdc3e05e0ec5"
+}

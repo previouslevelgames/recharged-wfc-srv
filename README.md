@@ -112,4 +112,5 @@ settings, the dashboard's Google sign-in and updates.
   game sends and the server answers, for going online and the leaderboards
 - [reports.md](docs/reports.md): match reports, and how they pair into matches
 - [profiles.md](docs/profiles.md): Recharged profiles for competitive play
+- [tournaments.md](docs/tournaments.md): tournaments the server runs, played by those profiles
 - [CONTRIBUTING.md](CONTRIBUTING.md): reporting problems, ideas and pull requests

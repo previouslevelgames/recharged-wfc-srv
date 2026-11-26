@@ -34,6 +34,21 @@ const CODE_LEN: usize = 8;
 #[derive(Default)]
 pub struct SignIns {
     pending: Mutex<HashMap<String, Pending>>,
+    /// The takeovers offered, by token (see [`Outcome::DiscordHasProfile`]).
+    takeovers: Mutex<HashMap<String, Takeover>>,
+}
+
+/// A profile that may go into the Discord account's profile, once its player
+/// says so in the launcher.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Takeover {
+    /// The profile signed in, which Discord was to be connected to.
+    pub from: i64,
+    /// The Discord account's profile.
+    pub into: i64,
+    /// The Discord Social SDK's tokens of the sign-in.
+    pub discord: Option<SdkTokens>,
+    started: Instant,
 }
 
 struct Pending {
@@ -58,12 +73,21 @@ pub struct Link {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Outcome {
     /// The launcher's session, and the Discord Social SDK's tokens of a
-    /// Discord sign-in that granted its scopes.
+    /// Discord sign-in that granted its scopes. `created`: the sign-in made
+    /// the player.
     SignedIn {
         token: String,
         player_id: i64,
         discord: Option<SdkTokens>,
+        created: bool,
+        /// Discord had a profile already, which the sign-in switched to: the
+        /// one signed in had played nothing yet, and went into it.
+        welcome_back: bool,
     },
+    /// Discord had a profile already (`player_id`), and the one signed in has
+    /// played: its player chooses in the launcher whether it goes into the
+    /// Discord one (`takeover`, the token for that).
+    DiscordHasProfile { player_id: i64, takeover: String },
     /// Why not, for the launcher to show.
     Refused(String),
     /// The link the sign-in was for can't be made: why, for the launcher to
@@ -165,6 +189,34 @@ impl SignIns {
         }
     }
 
+    /// Offers to put `from` into `into` (the Discord account's profile): the
+    /// token that does it, for [`Self::take_over`].
+    pub fn offer_takeover(&self, from: i64, into: i64, discord: Option<SdkTokens>) -> String {
+        let mut takeovers = self.takeovers.lock().unwrap();
+        takeovers.retain(|_, takeover| takeover.started.elapsed() < SIGN_IN_TTL);
+        let token = Alphanumeric.sample_string(&mut rand::rng(), ID_LEN);
+        takeovers.insert(
+            token.clone(),
+            Takeover {
+                from,
+                into,
+                discord,
+                started: Instant::now(),
+            },
+        );
+        token
+    }
+
+    /// The takeover `token` offered to the profile `from`, once.
+    pub fn take_over(&self, token: &str, from: i64) -> Option<Takeover> {
+        let mut takeovers = self.takeovers.lock().unwrap();
+        let takeover = takeovers.get(token)?;
+        if takeover.from != from || takeover.started.elapsed() >= SIGN_IN_TTL {
+            return None;
+        }
+        takeovers.remove(token)
+    }
+
     /// `apply` on the sign-in `id` if it has neither expired nor ended.
     fn waiting<T>(&self, id: &str, apply: impl FnOnce(&mut Pending) -> T) -> Option<T> {
         let mut pending = self.pending.lock().unwrap();
@@ -200,6 +252,8 @@ mod tests {
             token: "token".into(),
             player_id: 7,
             discord: None,
+            created: false,
+            welcome_back: false,
         };
         assert!(sign_ins.finish(&id, outcome.clone()));
         assert!(!sign_ins.finish(&id, Outcome::Refused("again".into())));
@@ -207,6 +261,17 @@ mod tests {
         assert_eq!(sign_ins.poll(&id), Poll::Ended(outcome));
         assert_eq!(sign_ins.poll(&id), Poll::Unknown);
         assert_eq!(sign_ins.poll("never started"), Poll::Unknown);
+    }
+
+    #[test]
+    fn a_takeover_is_its_profiles_and_goes_once() {
+        let sign_ins = SignIns::default();
+        let token = sign_ins.offer_takeover(1, 2, None);
+        assert_eq!(sign_ins.take_over(&token, 3), None);
+        assert_eq!(sign_ins.take_over("other", 1), None);
+        let takeover = sign_ins.take_over(&token, 1).unwrap();
+        assert_eq!((takeover.from, takeover.into), (1, 2));
+        assert_eq!(sign_ins.take_over(&token, 1), None);
     }
 
     #[test]

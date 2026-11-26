@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT NOT (EXISTS (SELECT 1 FROM matches WHERE home = $1 OR away = $1)\n                    OR EXISTS (SELECT 1 FROM friends WHERE player_id = $1 OR friend_id = $1)\n                    OR EXISTS (SELECT 1 FROM friend_profiles WHERE player_id = $1)\n                    OR EXISTS (SELECT 1 FROM chat_messages WHERE sender = $1 OR recipient = $1)\n                    OR EXISTS (SELECT 1 FROM tournament_entrants WHERE player_id = $1)) AS \"nothing!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "nothing!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "972b6b54d6eb35e5938c61626d76c572071cabef7e8faaaeaacec56168ff62b4"
+}

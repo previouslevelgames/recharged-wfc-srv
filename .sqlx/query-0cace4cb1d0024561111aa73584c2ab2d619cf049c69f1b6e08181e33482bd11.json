@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM player_identities WHERE player_id = $1 AND provider = 'discord'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0cace4cb1d0024561111aa73584c2ab2d619cf049c69f1b6e08181e33482bd11"
+}

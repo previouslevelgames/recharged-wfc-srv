@@ -1616,11 +1616,11 @@ async fn a_player_without_discord_plays_by_its_mii(pool: PgPool) {
         (&json!("mii"), &Value::Null, &json!([]))
     );
 
-    // Nelly's game logs in to WFC: its first profile is what identifies her
-    // from now on, a second one is only hers.
+    // Nelly's game logs in to WFC: both profiles identify her from now on,
+    // her friend code is the one she played with last.
     let first = world.wfc_login(1, "R4QEaaaaaaa").await;
     let second = world.wfc_login(2, "R4QPaaaaaaa").await;
-    for pid in [first, second] {
+    for pid in [second, first] {
         let (status, body) = world.prove(&nelly, pid).await;
         assert_eq!(status, StatusCode::OK, "{body}");
     }
@@ -1637,7 +1637,10 @@ async fn a_player_without_discord_plays_by_its_mii(pool: PgPool) {
     let (_, me) = world.send("GET", "/api/v1/me", &mario, Value::Null).await;
     assert_eq!(
         (&me["account"], &me["friend_code"]),
-        (&json!("test"), &Value::Null)
+        (
+            &json!("test"),
+            &json!(accounts::friend_code(mario_pid, "R4QE"))
+        )
     );
     let (_, lists) = world
         .send("GET", "/api/v1/players", &mario, Value::Null)
@@ -1706,13 +1709,13 @@ async fn a_mii_player_comes_back_by_its_wfc_login(pool: PgPool) {
         recover(1_999_999, "ticket-1999999".into()).await.0,
         StatusCode::FORBIDDEN
     );
-    // A profile that identifies nobody signs nobody in: proving it is not
-    // enough for a player with an account of its own.
+    // A proven profile signs in any player, one with an account of its own too.
     let mario = world.sign_in("Mario").await;
     let mario_pid = world.wfc_login(2, "R4QEbbbbbbb").await;
     world.prove(&mario, mario_pid).await;
     let (status, body) = recover(mario_pid, format!("ticket-{mario_pid}")).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["player"]["name"], "Mario");
 
     let (status, back) = recover(pid, format!("ticket-{pid}")).await;
     assert_eq!(status, StatusCode::OK, "{back}");
@@ -1727,7 +1730,9 @@ async fn a_mii_player_comes_back_by_its_wfc_login(pool: PgPool) {
 
     // A second Mii player with the same Mii takes the profile, not what it
     // identifies: the login still signs Nelly in.
-    let (_, other) = world.mii_sign_in("Nelly", "198.51.100.2").await;
+    let (status, taken) = world.mii_sign_in("nelly", "198.51.100.2").await;
+    assert_eq!(status, StatusCode::CONFLICT, "{taken}");
+    let (_, other) = world.mii_sign_in("Nelly 2", "198.51.100.2").await;
     let other_token = other["token"].as_str().unwrap().to_owned();
     assert_eq!(world.prove(&other_token, pid).await.0, StatusCode::OK);
     let (_, other_me) = world
@@ -1773,8 +1778,8 @@ async fn a_signed_out_launcher_learns_which_miis_have_a_profile(pool: PgPool) {
                 .await
         }
     };
-    // Nelly's Mii signs her in again through the game; Mario's plays for a
-    // player with an account; nobody's is left out. No names.
+    // Nelly's and Mario's Miis sign them in again through the game; nobody's
+    // is left out. No names.
     let (status, body) = known(json!([nelly_pid, mario_pid, nobody_pid, 1_999_999])).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let mut profiles = body["profiles"].as_array().unwrap().clone();
@@ -1783,7 +1788,7 @@ async fn a_signed_out_launcher_learns_which_miis_have_a_profile(pool: PgPool) {
         Value::Array(profiles),
         json!([
             {"profile_id": nelly_pid, "sign_in": "game"},
-            {"profile_id": mario_pid, "sign_in": "test"},
+            {"profile_id": mario_pid, "sign_in": "game"},
         ])
     );
     let too_many: Vec<i32> = (0..=super::mii_sign_in::MAX_KNOWN as i32).collect();
@@ -2105,7 +2110,10 @@ async fn players_send_their_miis_and_are_shown_by_them(pool: PgPool) {
             ]}),
         )
         .await;
-    assert_eq!((status, body), (StatusCode::OK, json!({"stored": 1})));
+    assert_eq!(
+        (status, body),
+        (StatusCode::OK, json!({"stored": 1, "slots": 0}))
+    );
     assert_eq!(stored(mario_us).await, Some(mii(1)));
     assert_eq!(stored(mario_eu).await, None);
     assert_eq!(stored(bowser_pid).await, None);
@@ -2161,7 +2169,7 @@ async fn players_send_their_miis_and_are_shown_by_them(pool: PgPool) {
             ]}),
         )
         .await;
-    assert_eq!(body, json!({"stored": 2}));
+    assert_eq!(body, json!({"stored": 2, "slots": 0}));
     for (pid, ago) in [(mario_us, 1), (mario_eu, 2)] {
         sqlx::query!(
             "UPDATE profiles SET last_login_at = now() - make_interval(hours => $2)
@@ -2300,4 +2308,441 @@ async fn the_launcher_shows_the_newest_message_until_it_ends_or_goes(pool: PgPoo
         .unwrap()
         .unwrap();
     assert_eq!(shown().await, json!({ "message": null }));
+}
+
+#[sqlx::test]
+async fn a_tournament_set_from_join_to_ready(pool: PgPool) {
+    use super::tournaments::{bracket::Format, store};
+
+    let world = World::new(pool);
+    let rule_set = super::rules::list(&world.pool)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|set| set.name == "Competitive")
+        .unwrap();
+    let id = store::create(
+        &world.pool,
+        &store::NewTournament {
+            name: "Recharged Cup".into(),
+            organizer: None,
+            format: Format::Single,
+            rule_set,
+            best_of: 3,
+            semifinals_best_of: 3,
+            finals_best_of: 5,
+            max_entrants: None,
+            registration_ends_at: None,
+            starts_at: None,
+        },
+    )
+    .await
+    .unwrap();
+    let mario = world.sign_in("Mario").await;
+    let bowser = world.sign_in("Bowser").await;
+    let uri = format!("/api/v1/tournaments/{id}");
+
+    // Anybody sees the list and the page; a session adds the player's own.
+    let (status, listed) = world
+        .send("GET", "/api/v1/tournaments", "", Value::Null)
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(listed["tournaments"][0]["name"], "Recharged Cup");
+    assert_eq!(listed["tournaments"][0]["joined"], Value::Null);
+    let (_, page) = world.send("GET", &uri, "", Value::Null).await;
+    assert_eq!(page["me"], Value::Null);
+
+    // A Mii player needs Discord; test players play on a test server.
+    let (_, toad) = world.mii_sign_in("Toad", "198.51.100.1").await;
+    let toad = toad["token"].as_str().unwrap().to_owned();
+    let (_, page) = world.send("GET", &uri, &toad, Value::Null).await;
+    assert_eq!(
+        (&page["me"]["eligible"], &page["me"]["reason"]),
+        (&json!(false), &json!("discord_required"))
+    );
+    let (status, refused) = world
+        .send("POST", &format!("{uri}/join"), &toad, Value::Null)
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(refused["error"], "discord_required");
+    for token in [&mario, &bowser] {
+        let (status, page) = world
+            .send("POST", &format!("{uri}/join"), token, Value::Null)
+            .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(page["me"]["entrant"], true);
+    }
+    let (status, _) = world
+        .send("POST", &format!("{uri}/join"), &mario, Value::Null)
+        .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let (_, listed) = world
+        .send("GET", "/api/v1/tournaments", &mario, Value::Null)
+        .await;
+    assert_eq!(
+        (
+            &listed["tournaments"][0]["joined"],
+            &listed["tournaments"][0]["entrants"],
+            &listed["tournaments"][0]["place"]
+        ),
+        (&json!(true), &json!(2), &Value::Null)
+    );
+
+    // It starts: the one set is Mario's and Bowser's, best of 5 (a final).
+    store::start(&world.pool, id, store::Seeding::Joined)
+        .await
+        .unwrap()
+        .unwrap();
+    let (_, page) = world.send("GET", &uri, &mario, Value::Null).await;
+    let set = page["me"]["set"].as_i64().unwrap();
+    assert_eq!(page["sets"][0]["state"], "ready");
+    assert_eq!(page["sets"][0]["games"], 5);
+    assert_eq!(page["entrants"][0]["player"]["name"], "Mario");
+    assert_eq!(
+        page["sets"][0]["from"],
+        json!([{ "seed": 0 }, { "seed": 1 }])
+    );
+    let ready_uri = format!("{uri}/sets/{set}/ready");
+    let (status, _) = world
+        .send("POST", &ready_uri, &toad, json!({ "ready": true }))
+        .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // Mario's READY makes the match; it is his current one, with the
+    // tournament's rules; Bowser's makes it go.
+    let (status, made) = world
+        .send("POST", &ready_uri, &mario, json!({ "ready": true }))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(made["match"]["stage"], "open");
+    // One game at a time, each drafted again: the set's best of 5 is the
+    // tournament's to count.
+    assert_eq!(made["match"]["rules"]["games"], 1);
+    assert_eq!(made["match"]["tournament"]["games"], 5);
+    assert_eq!(made["match"]["tournament"]["home_wins"], 0);
+    assert_eq!(made["match"]["tournament"]["name"], "Recharged Cup");
+    assert_eq!(made["match"]["tournament"]["set"], set);
+    let (_, current) = world
+        .send("GET", "/api/v1/matches/current", &bowser, Value::Null)
+        .await;
+    assert_eq!(current["match"]["id"], made["match"]["id"]);
+    assert_eq!(current["match"]["opponent_ready"], true);
+    let (_, going) = world
+        .send("POST", &ready_uri, &bowser, json!({ "ready": true }))
+        .await;
+    assert_eq!(going["match"]["stage"], "go");
+    let (_, page) = world.send("GET", &uri, &bowser, Value::Null).await;
+    assert_eq!(page["sets"][0]["state"], "playing");
+    assert_eq!(page["sets"][0]["match"], made["match"]["id"]);
+}
+
+#[sqlx::test]
+async fn a_name_belongs_to_one_player(pool: PgPool) {
+    let world = World::new(pool);
+    let (_, nelly) = world.mii_sign_in("Nelly", "198.51.100.1").await;
+    let nelly = nelly["token"].as_str().unwrap().to_owned();
+    let kiki = world.sign_in("Kiki").await;
+
+    let free = |name: &'static str| {
+        let world = &world;
+        async move {
+            let uri = format!("/api/v1/names?name={}", name.replace(' ', "%20"));
+            world.send("GET", &uri, "", Value::Null).await
+        }
+    };
+    let (status, answer) = free("NELLY").await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_eq!(answer, json!({ "name": "NELLY", "free": false }));
+    assert_eq!(
+        free(" Nelly B. ").await.1,
+        json!({ "name": "Nelly B.", "free": true })
+    );
+    assert_eq!(free("%20").await.0, StatusCode::BAD_REQUEST);
+
+    let rename = |token: String, name: &'static str| {
+        let world = &world;
+        async move {
+            world
+                .send("PUT", "/api/v1/me/name", &token, json!({ "name": name }))
+                .await
+        }
+    };
+    assert_eq!(rename(kiki.clone(), "nelly").await.0, StatusCode::CONFLICT);
+    let (status, renamed) = rename(nelly.clone(), "Nelly B.").await;
+    assert_eq!(status, StatusCode::OK, "{renamed}");
+    assert_eq!(renamed["name"], "Nelly B.");
+    // The old name is free at once.
+    let (status, renamed) = rename(kiki.clone(), "Nelly").await;
+    assert_eq!(status, StatusCode::OK, "{renamed}");
+    assert_eq!(renamed["name"], "Nelly");
+    assert_eq!(
+        rename(String::new(), "Sam").await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (_, me) = world.send("GET", "/api/v1/me", &nelly, Value::Null).await;
+    assert_eq!(me["name"], "Nelly B.");
+}
+
+#[sqlx::test]
+async fn a_player_comes_back_from_its_game_save(pool: PgPool) {
+    let world = World::new(pool);
+    let from_save = |user_id: i64, gsbrcd: &'static str, address: &'static str| {
+        let world = &world;
+        async move {
+            world
+                .send_with(
+                    "POST",
+                    "/api/v1/sign-in/save",
+                    "",
+                    &[("cf-connecting-ip", address)],
+                    json!({ "user_id": user_id, "gsbrcd": gsbrcd }),
+                )
+                .await
+        }
+    };
+    let (_, nelly) = world.mii_sign_in("Nelly", "198.51.100.1").await;
+    let nelly_id = nelly["player"]["id"].clone();
+    let nelly = nelly["token"].as_str().unwrap().to_owned();
+    let pid = world.wfc_login(7, "R4QEaaaaaaa").await;
+    // Before the profile is proven it signs nobody in.
+    assert_eq!(
+        from_save(7, "R4QEaaaaaaa", "198.51.100.2").await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(world.prove(&nelly, pid).await.0, StatusCode::OK);
+    assert_eq!(
+        world
+            .send("POST", "/api/v1/sign-out", &nelly, Value::Null)
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+
+    // The slot's userid and gsbrcd, as the game's login sends them.
+    let (status, back) = from_save(7, "R4QEaaaaaaa", "198.51.100.2").await;
+    assert_eq!(status, StatusCode::OK, "{back}");
+    assert_eq!(back["status"], "signed_in");
+    assert_eq!(back["player"]["id"], nelly_id);
+    let token = back["token"].as_str().unwrap();
+    let (status, me) = world.send("GET", "/api/v1/me", token, Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        me["friend_code"],
+        accounts::friend_code(pid, "R4QE").as_str()
+    );
+
+    // Another console's, another slot's or another game's: nobody.
+    for (user_id, gsbrcd) in [(8, "R4QEaaaaaaa"), (7, "R4QEbbbbbbb"), (7, "R4QPaaaaaaa")] {
+        assert_eq!(
+            from_save(user_id, gsbrcd, "198.51.100.2").await.0,
+            StatusCode::NOT_FOUND
+        );
+    }
+    // A banned console's: refused.
+    sqlx::raw_sql(
+        "INSERT INTO bans (name, banned_by) VALUES ('Nelly', 'admin@example.com');
+         INSERT INTO banned_accounts (user_id, ban_id) SELECT 7, ban_id FROM bans",
+    )
+    .execute(&world.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        from_save(7, "R4QEaaaaaaa", "198.51.100.4").await.0,
+        StatusCode::FORBIDDEN
+    );
+    // One address tries a few, not every console.
+    for _ in 0..10 {
+        from_save(9, "R4QEaaaaaaa", "198.51.100.3").await;
+    }
+    assert_eq!(
+        from_save(7, "R4QEaaaaaaa", "198.51.100.3").await.0,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+}
+
+#[sqlx::test]
+async fn a_player_chooses_the_face_of_their_profile(pool: PgPool) {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    let world = World::new(pool);
+    let nelly = world.sign_in("Nelly").await;
+    let face = STANDARD.encode([7u8; 74]);
+    let (status, player) = world
+        .send("PUT", "/api/v1/me/mii", &nelly, json!({ "data": face }))
+        .await;
+    assert_eq!(status, StatusCode::OK, "{player}");
+    assert_eq!(player["mii_data"], face.as_str());
+    let (_, me) = world.send("GET", "/api/v1/me", &nelly, Value::Null).await;
+    assert_eq!(me["mii_data"], face.as_str());
+    for refused in [
+        STANDARD.encode([0u8; 74]),
+        STANDARD.encode([7u8; 70]),
+        "?".into(),
+    ] {
+        assert_eq!(
+            world
+                .send("PUT", "/api/v1/me/mii", &nelly, json!({ "data": refused }))
+                .await
+                .0,
+            StatusCode::BAD_REQUEST
+        );
+    }
+    assert_eq!(
+        world
+            .send("PUT", "/api/v1/me/mii", "", json!({ "data": face }))
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[sqlx::test]
+async fn a_fresh_install_gets_the_players_slots_back(pool: PgPool) {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    let world = World::new(pool);
+    let nelly = world.sign_in("Nelly").await;
+    let kiki = world.sign_in("Kiki").await;
+    let us = world.wfc_login(1, "R4QEaaaaaaa").await;
+    let eu = world.wfc_login(1, "R4QPaaaaaaa").await;
+    let kikis = world.wfc_login(2, "R4QEbbbbbbb").await;
+    for pid in [us, eu] {
+        world.prove(&nelly, pid).await;
+    }
+    world.prove(&kiki, kikis).await;
+    let upload = |token: String, miis: Value| {
+        let world = &world;
+        async move {
+            world
+                .send("POST", "/api/v1/me/miis", &token, json!({ "miis": miis }))
+                .await
+        }
+    };
+    let (mii, slot) = (STANDARD.encode([1u8; 74]), STANDARD.encode([2u8; 0xB10]));
+    // Nelly's slots; one that isn't a slot; Kiki can't send one of Nelly's.
+    let (status, stored) = upload(
+        nelly.clone(),
+        json!([
+            {"profile_id": us, "data": mii, "slot": slot},
+            {"profile_id": eu, "data": mii, "slot": STANDARD.encode([2u8; 100])},
+        ]),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{stored}");
+    assert_eq!(stored, json!({ "stored": 2, "slots": 1 }));
+    let (_, stored) = upload(
+        kiki.clone(),
+        json!([{"profile_id": us, "data": mii, "slot": STANDARD.encode([3u8; 0xB10])}]),
+    )
+    .await;
+    assert_eq!(stored["slots"], 0);
+    let face = STANDARD.encode([5u8; 74]);
+    world
+        .send("PUT", "/api/v1/me/mii", &nelly, json!({ "data": face }))
+        .await;
+
+    let (status, restore) = world
+        .send("GET", "/api/v1/me/restore", &nelly, Value::Null)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{restore}");
+    assert_eq!(
+        restore,
+        json!({
+            "mii": face,
+            "slots": [{
+                "profile_id": us,
+                "game": "R4QE",
+                "friend_code": accounts::friend_code(us, "R4QE"),
+                "data": slot,
+            }],
+        })
+    );
+    let (_, restore) = world
+        .send("GET", "/api/v1/me/restore", &kiki, Value::Null)
+        .await;
+    assert_eq!(restore, json!({ "mii": null, "slots": [] }));
+    assert_eq!(
+        world
+            .send("GET", "/api/v1/me/restore", "", Value::Null)
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+#[sqlx::test]
+async fn an_imported_profile_goes_into_the_signed_in_one(pool: PgPool) {
+    let world = World::new(pool);
+    let import = |token: String, user_id: i64, gsbrcd: &'static str| {
+        let world = &world;
+        async move {
+            world
+                .send(
+                    "POST",
+                    "/api/v1/me/take-over-save",
+                    &token,
+                    json!({ "user_id": user_id, "gsbrcd": gsbrcd }),
+                )
+                .await
+        }
+    };
+    // Sam is signed in (with Discord, on a fresh install); Nelly is the
+    // profile of an old game save, with a friend.
+    let sam = world.sign_in("Sam").await;
+    let (_, nelly) = world.mii_sign_in("Nelly", "198.51.100.1").await;
+    let nelly = nelly["token"].as_str().unwrap().to_owned();
+    let (_, mario) = world.mii_sign_in("Mario", "198.51.100.1").await;
+    world
+        .send(
+            "POST",
+            "/api/v1/friends",
+            &nelly,
+            json!({ "player_id": mario["player"]["id"] }),
+        )
+        .await;
+    let pid = world.wfc_login(7, "R4QEaaaaaaa").await;
+    world.prove(&nelly, pid).await;
+
+    // A Mii never online here: nothing to import.
+    assert_eq!(
+        import(sam.clone(), 8, "R4QEaaaaaaa").await.0,
+        StatusCode::NOT_FOUND
+    );
+    let (status, player) = import(sam.clone(), 7, "R4QEaaaaaaa").await;
+    assert_eq!(status, StatusCode::OK, "{player}");
+    // The import wins: its name and friend code, and its friend came along.
+    assert_eq!(player["name"], "Nelly");
+    assert_eq!(
+        player["friend_code"],
+        accounts::friend_code(pid, "R4QE").as_str()
+    );
+    let (_, lists) = world
+        .send("GET", "/api/v1/players", &sam, Value::Null)
+        .await;
+    assert_eq!(lists["friends"][0]["id"], mario["player"]["id"]);
+    // The save signs in to it now; again changes nothing.
+    let (_, back) = world
+        .send(
+            "POST",
+            "/api/v1/sign-in/save",
+            "",
+            json!({ "user_id": 7, "gsbrcd": "R4QEaaaaaaa" }),
+        )
+        .await;
+    assert_eq!(back["player"]["id"], player["id"]);
+    assert_eq!(
+        import(sam.clone(), 7, "R4QEaaaaaaa").await.0,
+        StatusCode::OK
+    );
+
+    // A Mii that played for nobody becomes the player's, its friend code first.
+    let other = world.wfc_login(9, "R4QPbbbbbbb").await;
+    let (status, player) = import(sam.clone(), 9, "R4QPbbbbbbb").await;
+    assert_eq!(status, StatusCode::OK, "{player}");
+    assert_eq!(
+        player["friend_code"],
+        accounts::friend_code(other, "R4QP").as_str()
+    );
+    assert_eq!(
+        import(String::new(), 9, "R4QPbbbbbbb").await.0,
+        StatusCode::UNAUTHORIZED
+    );
 }

@@ -1,0 +1,42 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT games, coalesce(home_wins, 0::smallint) AS \"home_wins!\",\n                            coalesce(away_wins, 0::smallint) AS \"away_wins!\"\n                     FROM tournament_sets WHERE tournament_set_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "games",
+        "type_info": "Int2",
+        "origin": {
+          "Table": {
+            "table": "tournament_sets",
+            "name": "games"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "home_wins!",
+        "type_info": "Int2",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "away_wins!",
+        "type_info": "Int2",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "b263c02de6098665930607c3f852e49c0b2249960b12d9d4bf875b511b753173"
+}

@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE player_wfc_profiles SET bound_at = now() WHERE profile_id = ANY($1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "7f5f6d5aaf746b1373ab111e190b0879aa787487ce2902e2c12e125619edbb3a"
+}

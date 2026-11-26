@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE tournament_sets SET state = $2, home = $3, away = $4, decided_by = $5,\n                        winner = $6, updated_at = now(),\n                        home_wins = CASE WHEN (home, away) IS DISTINCT FROM ($3, $4)\n                                         THEN NULL ELSE home_wins END,\n                        away_wins = CASE WHEN (home, away) IS DISTINCT FROM ($3, $4)\n                                         THEN NULL ELSE away_wins END,\n                        resume = CASE WHEN (home, away) IS DISTINCT FROM ($3, $4)\n                                      THEN NULL ELSE resume END\n                 WHERE tournament_set_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Int8",
+        "Int8",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "902c60f5f5dc098c1ff661043f7acbc2fc13183c16fc8575841d6c4f22f43204"
+}

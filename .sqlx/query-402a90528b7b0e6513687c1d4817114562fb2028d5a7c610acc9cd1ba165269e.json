@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS (SELECT 1 FROM match_reports\n                        WHERE match_id = $1 AND games::jsonb -> -1 ->> 'interrupted' = 'true')\n         AS \"broke!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "broke!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "402a90528b7b0e6513687c1d4817114562fb2028d5a7c610acc9cd1ba165269e"
+}

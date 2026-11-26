@@ -1320,6 +1320,25 @@ code.fields {
   font-size: 12px;
 }
 
+/* The new tournament's card, folded to its head. */
+.new-tournament > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.new-tournament > summary::-webkit-details-marker {
+  display: none;
+}
+
+.new-tournament > summary h2::before {
+  content: '▸ ';
+  color: var(--muted);
+}
+
+.new-tournament[open] > summary h2::before {
+  content: '▾ ';
+}
+
 .card-tools {
   padding: 0 20px 12px;
 }
@@ -1560,6 +1579,12 @@ td.actions .button + .button {
   display: grid;
   gap: 16px;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.editor-note {
+  margin: -8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .editor-check {
@@ -1853,4 +1878,157 @@ dialog.confirm::backdrop {
   .flag[data-tone="warning"] {
     color: var(--warning);
   }
+}
+
+/* A tournament's bracket: its sets as cards on a canvas wider than the card
+   when it must be, scrolled sideways; the lines under them. */
+
+.bracket {
+  overflow-x: auto;
+  padding: 4px 20px 20px;
+  border-top: 1px solid var(--hairline);
+}
+
+.bracket-canvas {
+  position: relative;
+}
+
+.bracket-lines {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+}
+
+.bracket-lines path {
+  fill: none;
+  stroke: var(--border);
+  stroke-width: 1.5;
+}
+
+.bracket-lines path[data-done="true"] {
+  stroke: var(--muted);
+}
+
+.bracket-section {
+  position: absolute;
+  left: 0;
+  margin: 8px 0 0;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.bracket-caption {
+  position: absolute;
+  color: var(--ink-2);
+  font-size: 12px;
+  font-weight: 550;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.bracket-set {
+  position: absolute;
+  display: grid;
+  grid-template-rows: 1fr 1fr;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.bracket-set:hover {
+  border-color: var(--accent);
+}
+
+.bracket-set:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.bracket-set[data-state="ready"] {
+  border-left-color: var(--accent);
+}
+
+.bracket-set[data-state="playing"] {
+  border-left-color: var(--warning);
+}
+
+.bracket-set[data-state="disputed"] {
+  border-left-color: var(--critical);
+}
+
+.bracket-set[data-state="finished"] {
+  border-left-color: var(--good);
+}
+
+.bracket-set[data-state="void"],
+.bracket-set[data-state="pending"] {
+  background: var(--surface-sunken);
+}
+
+.bracket-slot {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+  padding: 0 10px 0 6px;
+}
+
+.bracket-slot + .bracket-slot {
+  border-top: 1px solid var(--hairline);
+}
+
+.bracket-seed {
+  color: var(--muted);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.bracket-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bracket-score {
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.bracket-slot[data-won="true"] .bracket-name {
+  font-weight: 650;
+}
+
+.bracket-slot[data-won="true"] .bracket-score {
+  color: var(--accent-ink);
+}
+
+.bracket-slot[data-lost="true"] {
+  color: var(--muted);
+}
+
+dialog.set-dialog {
+  width: min(620px, calc(100vw - 32px));
+}
+
+.set-dialog .table-wrap,
+.set-dialog .set-players {
+  border-bottom: 1px solid var(--hairline);
+}
+
+.set-dialog .editor-status {
+  margin-right: auto;
+}
+
+/* A set whose match streams: ringed, to open and watch. */
+.bracket-set[data-live="true"] {
+  box-shadow: 0 0 0 2px var(--critical);
 }

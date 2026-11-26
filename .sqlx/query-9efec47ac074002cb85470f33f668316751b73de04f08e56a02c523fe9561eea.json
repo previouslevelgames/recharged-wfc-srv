@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE matches SET state = 'cancelled', updated_at = now()\n         WHERE state IN ('challenged', 'accepted') AND tournament_set_id IN (\n             SELECT tournament_set_id FROM tournament_sets WHERE tournament_id = $1)\n         RETURNING match_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "match_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "matches",
+            "name": "match_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "9efec47ac074002cb85470f33f668316751b73de04f08e56a02c523fe9561eea"
+}

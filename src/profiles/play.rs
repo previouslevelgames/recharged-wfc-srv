@@ -74,21 +74,19 @@ pub(super) async fn bind(
     let Some(profile) = profile else {
         return json_error(StatusCode::NOT_FOUND, "the profile went away");
     };
-    if player.account == "mii" && player.friend_code.is_none() {
-        match players::bind_identity(
-            &state.pool,
-            player.id,
-            profile.profile_id,
-            &profile.friend_code,
-        )
-        .await
-        {
-            Ok(true) => {
-                info!(target: "profiles", player_id = player.id, profile_id = profile.profile_id, "WFC profile identifies the player")
-            }
-            Ok(false) => {}
-            Err(error) => return database_error(error),
+    match players::bind_identity(
+        &state.pool,
+        player.id,
+        profile.profile_id,
+        &profile.friend_code,
+    )
+    .await
+    {
+        Ok(true) => {
+            info!(target: "profiles", player_id = player.id, profile_id = profile.profile_id, "WFC profile identifies the player")
         }
+        Ok(false) => {}
+        Err(error) => return database_error(error),
     }
     Json(profile).into_response()
 }
@@ -919,10 +917,15 @@ pub(super) async fn forfeit(
 impl ProfilesState {
     /// Ends the sets that waited too long or lost a player, and their
     /// pairings.
-    async fn sweep(&self) -> Result<(), Response> {
-        for match_id in matches::sweep(&self.pool).await.map_err(database_error)? {
-            self.pairings.end(match_id);
-        }
+    pub(super) async fn sweep(&self) -> Result<(), Response> {
+        self.pairings
+            .end_all(matches::sweep(&self.pool).await.map_err(database_error)?);
+        // Tournament sets go on from their matches' ends.
+        self.pairings.end_all(
+            super::tournaments::store::advance(&self.pool)
+                .await
+                .map_err(database_error)?,
+        );
         // Searches ask their next player.
         search::advance(&self.pool, &self.busy_profiles())
             .await
@@ -949,7 +952,7 @@ impl ProfilesState {
     }
 
     /// `found` as `player` sees it (docs/profiles.md, "Matches").
-    async fn view(&self, found: &Match, player: &Player) -> Result<Value, sqlx::Error> {
+    pub(super) async fn view(&self, found: &Match, player: &Player) -> Result<Value, sqlx::Error> {
         let opponent_id = found.opponent(player.id);
         let opponent = players::player(&self.pool, opponent_id).await?;
         let opponent_wfc = players::wfc_profiles(&self.pool, opponent_id).await?;
@@ -974,6 +977,10 @@ impl ProfilesState {
                 "opponent"
             }
         });
+        let tournament = match found.tournament_set {
+            Some(set) => super::tournaments::store::set_context(&self.pool, set, player.id).await?,
+            None => None,
+        };
         let side = found.side(player.id).unwrap_or(0);
         let unix = |time: Option<OffsetDateTime>| time.map(OffsetDateTime::unix_timestamp);
         let stage = found.stage();
@@ -1010,6 +1017,7 @@ impl ProfilesState {
             "random": found.random,
             "forfeited_by": forfeited_by,
             "forfeited_at": unix(found.forfeited_at),
+            "tournament": tournament,
         }))
     }
 }

@@ -92,6 +92,7 @@ const LEVELS = {
 // What a rule set can hold (src/profiles/rules.rs), with the names players
 // know.
 const TWEAK_NAMES = {
+  fair_ball_contests: "Defender's priority",
   fast_terrain: 'Fast terrain',
   mirror_match: 'Mirror match',
   no_mega_strikes: 'No Mega Strikes',
@@ -327,6 +328,7 @@ const ICONS = {
   monitoring: 'M22 12h-4l-3 9L9 3l-3 9H2',
   leaderboards: 'M6 9H4.5a2.5 2.5 0 0 1 0-5H6M18 9h1.5a2.5 2.5 0 0 0 0-5H18M4 22h16M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22M18 2H6v7a6 6 0 0 0 12 0V2z',
   competitive: 'M4 22v-7M4 15V3h13l-3 6 3 6H4',
+  tournaments: 'M3 4h6v5H3zM3 15h6v5H3zM9 6.5h3v11H9M12 12h4M16 9.5h5v5h-5z',
   moderation: 'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z',
   database: 'M12 8c4.97 0 9-1.34 9-3s-4.03-3-9-3-9 1.34-9 3 4.03 3 9 3zM21 12c0 1.66-4 3-9 3s-9-1.34-9-3M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5',
   logs: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M16 13H8M16 17H8M10 9H8',
@@ -397,6 +399,16 @@ const SECTIONS = [
     intro: 'Recharged profiles: the rules matches are played by, the players who signed in from the launcher, and their matches.',
     api: 'competitive',
     render: renderCompetitive,
+    editor: true,
+  },
+  {
+    path: '/admin/tournaments',
+    group: 'Game',
+    name: 'Tournaments',
+    icon: 'tournaments',
+    intro: 'Brackets of single or double elimination the server runs: players with Discord join from the game, their sets are matches.',
+    api: 'tournaments',
+    render: renderTournaments,
     editor: true,
   },
   {
@@ -2914,7 +2926,7 @@ const editor = {
   render(set) {
     const rules = set
       ? set.rules
-      : { tweaks: [], skill: 'rookie', limit: 'time', time: 180, goals: 5, games: 3, stadium: 'random' };
+      : { tweaks: ['fair_ball_contests'], skill: 'rookie', limit: 'time', time: 180, goals: 5, games: 3, stadium: 'random' };
     const cheat = (name) => rules[name] || 'none';
     // The CPU's skill: no effect between two games, kept as it was.
     this.skill = rules.skill || 'rookie';
@@ -2968,9 +2980,7 @@ const editor = {
   },
 
   status(text, tone) {
-    const status = document.getElementById('rule-status');
-    status.textContent = text;
-    status.dataset.tone = tone || '';
+    setStatus(document.getElementById('rule-status'), text, tone);
   },
 
   async save() {
@@ -3010,6 +3020,531 @@ const editor = {
       poll();
     } catch (error) {
       this.status(error.message, 'critical');
+    }
+  },
+};
+
+// --- Tournaments ---------------------------------------------------------
+
+const TOURNAMENT_STATES = {
+  registration: ['Open for entries', 'accent'],
+  running: ['Running', 'warning'],
+  finished: ['Finished', 'good'],
+  cancelled: ['Called off', null],
+};
+
+const SET_STATES = {
+  pending: ['Waiting for players', null],
+  ready: ['To play', 'accent'],
+  playing: ['Playing', 'warning'],
+  finished: ['Finished', 'good'],
+  disputed: ['Disputed', 'serious'],
+  void: ['Not played', null],
+};
+
+const FORMAT_NAMES = {
+  single: 'Single elimination',
+  double: 'Double elimination',
+  single_ash: 'Single elimination + ash bracket',
+};
+
+/** An editor's status line says `text`, in `tone`. */
+function setStatus(status, text, tone) {
+  status.textContent = text;
+  status.dataset.tone = tone || '';
+}
+
+/** A tournament's action, then the page again; errors in its status line. */
+async function tournamentAction(id, method, path, body, confirmText) {
+  if (confirmText && !window.confirm(confirmText)) return;
+  const status = document.getElementById(`tournament-status-${id}`);
+  try {
+    await send(method, path, body);
+    if (status) setStatus(status, '');
+    poll();
+  } catch (error) {
+    if (status) setStatus(status, error.message, 'critical');
+  }
+}
+
+function renderTournament(tournament) {
+  const [stateText, stateTone] = TOURNAMENT_STATES[tournament.state] || [tournament.state, null];
+  const base = `/admin/api/tournaments/${tournament.id}`;
+  const running = tournament.state === 'running';
+  const entrants = table(
+    [
+      { label: 'Seed', num: true, cell: (entrant) => (entrant.seed == null ? '–' : integer.format(entrant.seed + 1)) },
+      {
+        label: 'Player',
+        cell: (entrant) =>
+          entrant.player_id == null
+            ? h('span', { class: 'sub' }, 'deleted player')
+            : [h('strong', null, entrant.name), entrant.dropped && h('span', { class: 'sub' }, ' left')],
+      },
+      { label: 'Place', num: true, cell: (entrant) => (entrant.place ? integer.format(entrant.place) : '–') },
+      {
+        label: '',
+        class: 'actions',
+        cell: (entrant) =>
+          ['registration', 'running'].includes(tournament.state) &&
+          !entrant.dropped &&
+          entrant.player_id != null &&
+          h(
+            'button',
+            {
+              class: 'button',
+              type: 'button',
+              onclick: () =>
+                tournamentAction(
+                  tournament.id,
+                  'POST',
+                  `${base}/entrants/${entrant.player_id}/drop`,
+                  null,
+                  running ? `Disqualify ${entrant.name}? They lose their open sets.` : `Take ${entrant.name} out?`,
+                ),
+            },
+            running ? 'Disqualify' : 'Remove',
+          ),
+      },
+    ],
+    tournament.entrants,
+    'Nobody has joined yet.',
+  );
+  const sets = tournament.sets.length ? renderBracket(tournament) : null;
+  const start = (seeding, kind, how, label) =>
+    tournament.state === 'registration' &&
+    h('button', { class: kind, type: 'button', disabled: tournament.entrants.length < 2, onclick: () => tournamentAction(tournament.id, 'POST', `${base}/start`, { seeding }, `Start it with the entrants seeded ${how}? Entries close.`) }, label);
+  const tools = [
+    start('joined', 'button primary', 'in the order they joined', 'Start'),
+    start('shuffled', 'button', 'at random', 'Start shuffled'),
+    ['registration', 'running'].includes(tournament.state) &&
+      h('button', { class: 'button danger', type: 'button', onclick: () => tournamentAction(tournament.id, 'POST', `${base}/cancel`, null, `Call ${tournament.name} off? Its open matches end.`) }, 'Call off'),
+    h('span', { class: 'editor-status', id: `tournament-status-${tournament.id}`, role: 'status' }),
+  ];
+  const format = FORMAT_NAMES[tournament.format] || tournament.format;
+  const limit = tournament.max_entrants ? ` of ${integer.format(tournament.max_entrants)}` : '';
+  // Its schedule while it matters: when entries close, when games begin.
+  const at = (seconds) => dateTime.format(new Date(seconds * 1000));
+  const past = (seconds) => seconds * 1000 <= Date.now();
+  const closes = tournament.state === 'registration' && tournament.registration_ends_at;
+  const starts = ['registration', 'running'].includes(tournament.state) && tournament.starts_at && !past(tournament.starts_at);
+  const schedule = [
+    closes && ` · Entries ${past(closes) ? 'closed' : 'close'} ${at(closes)}`,
+    starts && ` · Games from ${at(tournament.starts_at)}`,
+  ].filter(Boolean).join('');
+  const node = card(
+    [tournament.name, ' ', badge(stateTone, stateText)],
+    `${format} · ${tournament.rule_set}, best of ${tournament.best_of} (semifinals ${tournament.semifinals_best_of}, finals ${tournament.finals_best_of}) · ${integer.format(tournament.entrants.length)}${limit} entrants${schedule}`,
+    entrants,
+    tools,
+  );
+  // The bracket first, the entrants under it.
+  if (sets) node.querySelector('.table-wrap').before(sets);
+  return node;
+}
+
+// The bracket, laid out as the game's (mscharged-competitive's
+// src/ui/rui_bracket.cpp): the rounds in columns, the winners' bracket (the
+// grand final and its reset after it) above the losers' or the ash
+// bracket's, each set level with the middle of the sets its winners come
+// from, so no lines cross. Design pixels:
+const BRACKET = { width: 220, height: 56, columnGap: 40, rowGap: 12, head: 56, sectionGap: 28 };
+
+/** A set's column caption, as the game says it: "Winners Round 2",
+ * "Losers Final", "Grand Final", "Ash Final". */
+function roundText(tournament, set, last) {
+  const single = tournament.format !== 'double';
+  if (set.side === 'grand_final') return 'Grand Final';
+  if (set.side === 'grand_final_reset') return 'Grand Final Reset';
+  const final = set.round === last[set.side];
+  if (set.side === 'ash') return final ? 'Ash Final' : `Ash Round ${set.round}`;
+  if (set.side === 'losers') return final ? 'Losers Final' : `Losers Round ${set.round}`;
+  if (single) return final ? 'Final' : `Round ${set.round}`;
+  return final ? 'Winners Final' : `Winners Round ${set.round}`;
+}
+
+/** Where each set's card goes: `{cells: [{set, x, y}], columns: [{x, y,
+ * caption}], sections: [{y, title}], width, height}`. */
+function layOutBracket(tournament) {
+  const last = {};
+  for (const set of tournament.sets) last[set.side] = Math.max(last[set.side] || 0, set.round);
+  const winners = last.winners || 0;
+  // Its column's number: the winners' rounds up, the losers' (or the ash
+  // bracket's) negative; a grand final's reset only when it is played.
+  const shown = tournament.sets
+    .filter((set) => !(set.side === 'grand_final_reset' && set.state === 'void'))
+    .map((set) => ({
+      set,
+      round:
+        set.side === 'losers' || set.side === 'ash' ? -set.round : set.side === 'grand_final' ? winners + 1 : set.side === 'grand_final_reset' ? winners + 2 : set.round,
+      caption: roundText(tournament, set, last),
+      // The sets whose winners come here: the lines.
+      feeders: (set.from || []).filter((from) => from && from.winner != null).map((from) => from.winner),
+    }));
+  const out = { cells: [], columns: [], sections: [], width: 0, height: 0 };
+  const step = BRACKET.width + BRACKET.columnGap;
+  let top = 0;
+  for (const losers of [false, true]) {
+    const section = shown.filter((item) => item.round < 0 === losers);
+    if (!section.length) continue;
+    if (out.sections.length) top += BRACKET.sectionGap;
+    out.sections.push({ y: top, title: losers ? (tournament.format === 'single_ash' ? 'Ash bracket' : 'Losers bracket') : tournament.format === 'double' ? 'Winners bracket' : 'Bracket' });
+    const rounds = [...new Set(section.map((item) => Math.abs(item.round)))].sort((a, b) => a - b);
+    const columnOf = (item) => rounds.indexOf(Math.abs(item.round));
+    const byId = new Map(section.map((item) => [item.set.id, item]));
+    const feeders = (item) => item.feeders.filter((id) => byId.has(id) && id !== item.set.id).map((id) => byId.get(id));
+    const fed = new Set(section.flatMap((item) => feeders(item)));
+    // A tree from each last set back: the last rounds first, then in order.
+    const roots = section.filter((item) => !fed.has(item)).sort((a, b) => columnOf(b) - columnOf(a));
+    const ys = new Map();
+    const floors = new Map(); // A column's next free height.
+    const visiting = new Set();
+    let cursor = top + BRACKET.head;
+    const place = (item, y) => {
+      const column = columnOf(item);
+      const at = Math.max(y, floors.get(column) ?? -Infinity);
+      ys.set(item, at);
+      floors.set(column, at + BRACKET.height + BRACKET.rowGap);
+      cursor = Math.max(cursor, at + BRACKET.height + BRACKET.rowGap);
+    };
+    const layOut = (item) => {
+      if (ys.has(item) || visiting.has(item)) return;
+      visiting.add(item);
+      const from = feeders(item);
+      from.forEach(layOut);
+      const placed = from.filter((other) => ys.has(other));
+      place(item, placed.length ? placed.reduce((sum, other) => sum + ys.get(other), 0) / placed.length : cursor);
+    };
+    roots.forEach(layOut);
+    section.forEach(layOut);
+    const captioned = new Set();
+    let bottom = top + BRACKET.head;
+    for (const item of section) {
+      const column = columnOf(item);
+      const x = column * step;
+      out.cells.push({ ...item, losers, x, y: ys.get(item) });
+      bottom = Math.max(bottom, ys.get(item) + BRACKET.height);
+      if (!captioned.has(column)) {
+        captioned.add(column);
+        out.columns.push({ x, y: top + 30, caption: item.caption, games: item.set.games });
+      }
+    }
+    out.width = Math.max(out.width, rounds.length * step - BRACKET.columnGap);
+    top = bottom;
+  }
+  out.height = top;
+  return out;
+}
+
+/** Whether a set's place `n` (0 home, 1 away) is a bye: a seed past the
+ * entrants. */
+function isBye(tournament, set, n) {
+  const from = set.from && set.from[n];
+  return from != null && from.seed != null && from.seed >= tournament.entrants.filter((entrant) => entrant.seed != null).length;
+}
+
+// How far each tournament's bracket is scrolled sideways, kept across polls.
+const bracketScroll = new Map();
+
+/** A tournament's bracket: its sets as cards joined by lines; a card opens
+ * the set ([`tournamentSet`]). */
+function renderBracket(tournament) {
+  const layout = layOutBracket(tournament);
+  const names = new Map(tournament.entrants.map((entrant) => [entrant.player_id, entrant.name]));
+  const seeds = new Map(tournament.entrants.map((entrant) => [entrant.player_id, entrant.seed]));
+  const canvas = h('div', { class: 'bracket-canvas', style: { width: `${layout.width}px`, height: `${layout.height}px` } });
+  const lines = svg('svg', { class: 'bracket-lines', width: layout.width, height: layout.height, 'aria-hidden': 'true' });
+  const cells = new Map(layout.cells.map((cell) => [cell.set.id, cell]));
+  const middle = (cell) => cell.y + BRACKET.height / 2;
+  for (const cell of layout.cells) {
+    for (const id of cell.feeders) {
+      const from = cells.get(id);
+      if (!from || from.losers !== cell.losers) continue;
+      const x0 = from.x + BRACKET.width;
+      const x1 = cell.x;
+      const xm = (x0 + x1) / 2;
+      const done = from.set.state === 'finished';
+      lines.append(svg('path', { d: `M${x0} ${middle(from)}H${xm}V${middle(cell)}H${x1}`, 'data-done': done ? 'true' : 'false' }));
+    }
+  }
+  canvas.append(lines);
+  for (const section of layout.sections) {
+    canvas.append(h('h3', { class: 'bracket-section', style: { top: `${section.y}px` } }, section.title));
+  }
+  for (const column of layout.columns) {
+    canvas.append(
+      h('span', { class: 'bracket-caption', style: { left: `${column.x}px`, top: `${column.y}px`, width: `${BRACKET.width}px` } }, column.caption, h('span', { class: 'sub' }, ` · Bo${column.games}`)),
+    );
+  }
+  for (const cell of layout.cells) {
+    const set = cell.set;
+    const [stateText] = SET_STATES[set.state] || [set.state];
+    const slot = (id, wins, n) => {
+      if (id == null && isBye(tournament, set, n)) {
+        return h('span', { class: 'bracket-slot', 'data-lost': 'true' }, h('span', { class: 'bracket-seed' }), h('span', { class: 'bracket-name' }, 'bye'), h('span'));
+      }
+      const won = set.winner != null && set.winner === id;
+      const lost = set.state === 'finished' && id != null && !won;
+      const seed = seeds.get(id);
+      return h(
+        'span',
+        { class: 'bracket-slot', 'data-won': won ? 'true' : null, 'data-lost': lost ? 'true' : null },
+        h('span', { class: 'bracket-seed' }, seed == null ? '' : integer.format(seed + 1)),
+        h('span', { class: 'bracket-name' }, id == null ? '—' : names.get(id) || `#${id}`),
+        h('span', { class: 'bracket-score' }, wins == null ? '' : integer.format(wins)),
+      );
+    };
+    const label = `${cell.caption}: ${names.get(set.home) || 'to be decided'} against ${names.get(set.away) || 'to be decided'}, ${stateText}${set.live ? ', streaming' : ''}`;
+    canvas.append(
+      h(
+        'button',
+        {
+          class: 'bracket-set',
+          type: 'button',
+          'data-state': set.state,
+          'data-live': set.live ? 'true' : null,
+          'aria-label': label,
+          title: `${stateText}${set.decided_by && set.decided_by !== 'match' ? ` · by ${set.decided_by}` : ''}`,
+          style: { left: `${cell.x}px`, top: `${cell.y}px`, width: `${BRACKET.width}px`, height: `${BRACKET.height}px` },
+          onclick: () => tournamentSet.open(tournament.id, set.id),
+        },
+        slot(set.home, set.home_wins, 0),
+        slot(set.away, set.away_wins, 1),
+      ),
+    );
+  }
+  const wrap = h('div', { class: 'bracket', onscroll: (event) => bracketScroll.set(tournament.id, event.target.scrollLeft) }, canvas);
+  // Back where it was before this poll, once it is on the page.
+  queueMicrotask(() => {
+    wrap.scrollLeft = bracketScroll.get(tournament.id) || 0;
+  });
+  return wrap;
+}
+
+/** A set of the bracket, opened from its card: its players, its games and
+ * the organizer's decisions. The dialog stays out of the polled page and
+ * follows each poll's data while it is open. */
+const tournamentSet = {
+  dialog: null,
+  picked: null, // [tournament id, set id]
+  error: null, // The last decision's error, while the dialog is open.
+  tournaments: [],
+
+  /** The polled tournaments: an open dialog shows its set as it is now. */
+  load(tournaments) {
+    this.tournaments = tournaments;
+    if (this.dialog && this.dialog.open) this.show();
+  },
+
+  open(tournamentId, setId) {
+    this.picked = [tournamentId, setId];
+    this.error = null;
+    if (!this.dialog) {
+      this.dialog = h('dialog', { class: 'confirm set-dialog', 'aria-labelledby': 'set-title' });
+      document.body.append(this.dialog);
+    }
+    this.show();
+    if (!this.dialog.open) this.dialog.showModal();
+  },
+
+  show() {
+    const [tournamentId, setId] = this.picked;
+    const tournament = this.tournaments.find((t) => t.id === tournamentId);
+    const set = tournament && tournament.sets.find((s) => s.id === setId);
+    if (!set) {
+      this.dialog.close();
+      return;
+    }
+    const last = {};
+    for (const other of tournament.sets) last[other.side] = Math.max(last[other.side] || 0, other.round);
+    const names = new Map(tournament.entrants.map((entrant) => [entrant.player_id, entrant.name]));
+    const seeds = new Map(tournament.entrants.map((entrant) => [entrant.player_id, entrant.seed]));
+    const name = (id, n) => (id != null ? names.get(id) || `#${id}` : n != null && isBye(tournament, set, n) ? 'Bye' : 'To be decided');
+    const [stateText, stateTone] = SET_STATES[set.state] || [set.state, null];
+    const status = h('span', { class: 'editor-status', role: 'status', 'data-tone': this.error ? 'critical' : null }, this.error || '');
+    const base = `/admin/api/tournaments/${tournament.id}`;
+    const decide = (winner, label, kind) =>
+      h(
+        'button',
+        {
+          class: kind,
+          type: 'button',
+          onclick: async () => {
+            if (!window.confirm(winner == null ? 'Have this set played again?' : `${name(winner)} wins this set?`)) return;
+            try {
+              await send('POST', `${base}/sets/${set.id}/decide`, { winner });
+              this.dialog.close();
+              poll();
+            } catch (error) {
+              this.error = error.message;
+              setStatus(status, error.message, 'critical');
+            }
+          },
+        },
+        label,
+      );
+    const open = ['ready', 'playing', 'disputed'].includes(set.state);
+    const changeable = set.state === 'finished' && set.decided_by !== 'walkover';
+    const decidable = tournament.state === 'running' && (open || changeable) && set.home != null && set.away != null;
+    const player = (id, wins, side) =>
+      h(
+        'tr',
+        null,
+        h('td', { class: 'num' }, seeds.get(id) == null ? '–' : integer.format(seeds.get(id) + 1)),
+        h('td', null, set.winner != null && set.winner === id ? h('strong', null, name(id)) : name(id, side === 'home' ? 0 : 1), h('span', { class: 'sub' }, ` ${side}`)),
+        h('td', { class: 'num' }, wins == null ? '–' : integer.format(wins)),
+      );
+    const games = set.played.length
+      ? table(
+          [
+            { label: 'Game', num: true, cell: (game) => integer.format(game.number) },
+            { label: 'Home', cell: (game) => captainName(game.home_captain) },
+            { label: 'Score', cell: (game) => [`${game.home_score} - ${game.away_score}`, game.interrupted && h('span', { class: 'sub' }, ' broke off')] },
+            { label: 'Away', cell: (game) => captainName(game.away_captain) },
+            { label: 'Stadium', cell: (game) => (game.stadium ? STADIUM_NAMES[game.stadium] || game.stadium : '–') },
+          ],
+          set.played.map((game, n) => ({ ...game, number: n + 1 })),
+          '',
+        )
+      : h('p', { class: 'sub' }, 'No games reported yet.');
+    const how = set.decided_by && set.decided_by !== 'match' ? ` · decided by ${set.decided_by}` : '';
+    // Its match while it has one (each game is a match of its own): its page,
+    // and Watch while its games stream.
+    const match =
+      set.match != null &&
+      h('div', { class: 'editor-actions' }, h('a', { class: 'button', href: matchPath({ id: set.match }) }, `Match #${set.match}`), watchButton({ id: set.match, live: set.live }));
+    this.dialog.replaceChildren(
+      h(
+        'form',
+        { method: 'dialog' },
+        h('h2', { id: 'set-title' }, `${roundText(tournament, set, last)} · Best of ${set.games}`),
+        h('p', null, badge(stateTone, stateText), h('span', { class: 'sub' }, how)),
+        match,
+        h(
+          'table',
+          { class: 'set-players' },
+          h('thead', null, h('tr', null, h('th', { class: 'num', scope: 'col' }, 'Seed'), h('th', { scope: 'col' }, 'Player'), h('th', { class: 'num', scope: 'col' }, 'Games'))),
+          h('tbody', null, player(set.home, set.home_wins, 'home'), player(set.away, set.away_wins, 'away')),
+        ),
+        h('div', { class: 'table-wrap' }, games),
+        decidable && h('p', null, changeable ? 'Changing the result works until a set after this one has a result.' : 'Decide the set, or have it played again.'),
+        h(
+          'div',
+          { class: 'editor-actions' },
+          status,
+          decidable && [decide(set.home, `${name(set.home)} wins`, 'button'), decide(set.away, `${name(set.away)} wins`, 'button'), decide(null, 'Play again', 'button')],
+          h('button', { class: 'button primary', type: 'submit' }, 'Close'),
+        ),
+      ),
+    );
+  },
+};
+
+function renderTournaments(data) {
+  if (!data.content) return [unreachable(data.error)];
+  const { tournaments, rule_sets: ruleSets, series } = data.content;
+  const open = tournaments.filter((tournament) => ['registration', 'running'].includes(tournament.state));
+  tournamentForm.load(ruleSets, series, open.length === 0);
+  tournamentSet.load(tournaments);
+  return [
+    h(
+      'div',
+      { class: 'tiles' },
+      tile('Open or running', count(open.length), `${count(tournaments.length - open.length)} ended lately`),
+      tile('Entrants', count(open.reduce((sum, tournament) => sum + tournament.entrants.length, 0)), 'in the open ones'),
+    ),
+    ...(tournaments.length ? tournaments.map(renderTournament) : [h('p', { class: 'empty' }, 'No tournaments yet: make one above.')]),
+  ];
+}
+
+/** The form for a new tournament, above the list that grows. It stays out
+ * of the polled page, so typing survives each refresh; folded while a
+ * tournament is open or running, open when there is none. */
+const tournamentForm = {
+  node: null,
+
+  load(ruleSets, series, unfolded) {
+    if (this.node) return;
+    const { field, select } = editor;
+    const bestOf = Object.fromEntries(series.map((games) => [games, `Best of ${games} (first to ${(games + 1) / 2})`]));
+    const ruleNames = Object.fromEntries(ruleSets.map((set) => [set.id, set.name]));
+    // A tournament's sets play their own best of, whatever the rule set says.
+    const note = h('p', { class: 'editor-note' });
+    const noteRules = () => {
+      const chosen = ruleSets.find((set) => String(set.id) === document.getElementById('tournament-rules').value);
+      note.textContent = chosen
+        ? `Sets, semifinals and finals override the rule set's best of ${chosen.rules.games}.`
+        : "Sets, semifinals and finals override the rule set's best of.";
+    };
+    const body = h(
+      'form',
+      { class: 'editor', onsubmit: (event) => { event.preventDefault(); this.save(); } },
+      field('Name', h('input', { id: 'tournament-name', maxlength: '64', required: true })),
+      h(
+        'div',
+        { class: 'editor-row' },
+        field('Format', select('tournament-format', Object.keys(FORMAT_NAMES), FORMAT_NAMES, 'double')),
+        field('Rules', select('tournament-rules', ruleSets.map((set) => set.id), ruleNames, (ruleSets.find((set) => set.name === 'Competitive') || {}).id)),
+      ),
+      h(
+        'div',
+        { class: 'editor-row' },
+        field('Sets', select('tournament-best-of', series, bestOf, 3)),
+        field('Semifinals', select('tournament-semifinals', series, bestOf, 3)),
+        field('Finals', select('tournament-finals', series, bestOf, 5)),
+        field('Most entrants', h('input', { id: 'tournament-max', type: 'number', min: '2', max: '256', placeholder: 'no limit' })),
+      ),
+      h(
+        'div',
+        { class: 'editor-row' },
+        // In this browser's time zone; empty: when it starts, and at once.
+        field('Entries close', h('input', { id: 'tournament-closes', type: 'datetime-local' })),
+        field('Games from', h('input', { id: 'tournament-starts', type: 'datetime-local' })),
+      ),
+      note,
+      h(
+        'div',
+        { class: 'editor-actions' },
+        h('button', { class: 'button primary', type: 'submit' }, 'Make tournament'),
+        h('span', { class: 'editor-status', id: 'tournament-form-status', role: 'status' }),
+      ),
+    );
+    this.node = h(
+      'details',
+      { class: 'card new-tournament', open: unfolded },
+      h('summary', { class: 'card-head' }, h('h2', null, 'New tournament'), h('p', null, 'It opens for entries at once; start it here when everybody is in.')),
+      body,
+    );
+    document.getElementById('body').before(this.node);
+    document.getElementById('tournament-rules').addEventListener('change', noteRules);
+    noteRules();
+  },
+
+  async save() {
+    const value = (id) => document.getElementById(id).value;
+    const status = document.getElementById('tournament-form-status');
+    const max = value('tournament-max');
+    // A local date and time as Unix seconds; empty: none.
+    const seconds = (id) => (value(id) ? Math.floor(new Date(value(id)).getTime() / 1000) : null);
+    try {
+      await send('POST', '/admin/api/tournaments', {
+        name: value('tournament-name'),
+        format: value('tournament-format'),
+        rule_set: Number(value('tournament-rules')),
+        best_of: Number(value('tournament-best-of')),
+        semifinals_best_of: Number(value('tournament-semifinals')),
+        finals_best_of: Number(value('tournament-finals')),
+        max_entrants: max ? Number(max) : null,
+        registration_ends_at: seconds('tournament-closes'),
+        starts_at: seconds('tournament-starts'),
+      });
+      document.getElementById('tournament-name').value = '';
+      document.getElementById('tournament-closes').value = '';
+      document.getElementById('tournament-starts').value = '';
+      setStatus(status, 'Made', 'good');
+      poll();
+    } catch (error) {
+      setStatus(status, error.message, 'critical');
     }
   },
 };

@@ -26,6 +26,16 @@ in. It stops with Ctrl-C, and its data goes with it. `just preview-dev` serves
 the same dashboard, signed in the same way, on the development database as it
 is: the matches of games played against `just run`, alongside it.
 
+`just tournament-samples` makes sample tournaments in the development
+database (`src/profiles/tournaments/samples.rs`), to look at brackets of every
+shape on the dashboard and in the game: each format with 2 to 128 entrants,
+powers of 2 or not (byes), at every stage from open for entries to finished,
+with players who left, a grand final's reset and long names. Their players
+have no Discord, so they are made past the routes' check, as the admin's
+would be; the game shows them like any other tournament. `just
+tournament-samples double,reset` makes only those whose name has one of the
+words. `just tournament-samples-clear` takes them away, their players too.
+
 For `/admin` with real Google sign-in locally, register `http://127.0.0.1:8080/admin/callback` as another
 redirect URI of the OAuth client, then run with `PUBLIC_URL=http://127.0.0.1:8080`
 and the other three variables, and open `http://127.0.0.1:8080/admin` (not

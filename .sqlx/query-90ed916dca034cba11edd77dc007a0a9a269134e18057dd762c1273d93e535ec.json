@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE players SET last_seen_at = now(), heartbeat_at = now(), activity = NULL,\n                     match_kind = NULL\n         WHERE player_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "90ed916dca034cba11edd77dc007a0a9a269134e18057dd762c1273d93e535ec"
+}

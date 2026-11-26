@@ -120,6 +120,13 @@ async fn plan_in(
     if open {
         return Ok(Err("the player has a set to play: wait until it is over"));
     }
+    if let Some(player_id) = player_id
+        && crate::profiles::tournaments::store::still_in_one(&mut *conn, player_id).await?
+    {
+        return Ok(Err(
+            "the player is in a tournament open or running: take them out of it first (Tournaments)",
+        ));
+    }
     // A report after the delete would open the match again, without its
     // start.
     let playing = sqlx::query_scalar!(
