@@ -117,7 +117,11 @@ from: `{"stadium", "seconds", "home": "you" | "opponent", "you":
 ## The admin page
 
 `/admin/tournaments` lists them like `GET /api/v1/tournaments`, with each
-one's entrants and sets. An admin makes one (`POST /admin/api/tournaments`
+one's entrants and sets (each with its `from` and `played`, as on the
+tournament's page). The sets are drawn as the bracket, laid out as the
+game's own: the rounds in columns, the losers' or the ash bracket below, a
+line from each set to the one its winner goes to. A set opened shows its
+players, its games and the organizer's decisions. An admin makes one (`POST /admin/api/tournaments`
 with `name`, `format`, `rule_set` (an id), `best_of`, `semifinals_best_of`,
 `finals_best_of`, `max_entrants`), starts it (`POST …/<id>/start` with `{"seeding":
 "joined"}`, `"shuffled"` or the players' ids in seed order), calls it off
