@@ -1,0 +1,46 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT (SELECT count(*) FROM accounts WHERE user_id <> $1) AS \"accounts!\",\n                  (SELECT count(*) FROM profiles WHERE profile_id <> $2) AS \"profiles!\",\n                  (SELECT max(last_login_at) FROM profiles WHERE profile_id <> $2) AS last_login,\n                  (SELECT count(*) FROM players\n                   WHERE heartbeat_at > now() - make_interval(secs => $3)) AS \"recharged!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "accounts!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "profiles!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 2,
+        "name": "last_login",
+        "type_info": "Timestamptz",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 3,
+        "name": "recharged!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int4",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "b86f2b330e94a5237113242691418d1fdb5ae1d54738228ebb82011b06310a29"
+}

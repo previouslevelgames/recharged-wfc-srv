@@ -1,0 +1,100 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT DISTINCT ON (players.player_id)\n                  bound.profile_id, players.player_id, players.display_name, players.activity,\n                  players.screen, players.match_kind, players.heartbeat_at AS \"heartbeat_at!\"\n           FROM players\n           JOIN player_wfc_profiles bound USING (player_id)\n           JOIN profiles USING (profile_id)\n           WHERE players.heartbeat_at > now() - make_interval(secs => $1)\n           ORDER BY players.player_id,\n                    coalesce(left(profiles.gsbrcd, 4) = players.game, false) DESC,\n                    profiles.last_login_at DESC, profiles.profile_id",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "profile_id",
+        "type_info": "Int4",
+        "origin": {
+          "Table": {
+            "table": "player_wfc_profiles",
+            "name": "profile_id"
+          }
+        }
+      },
+      {
+        "ordinal": 1,
+        "name": "player_id",
+        "type_info": "Int8",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "player_id"
+          }
+        }
+      },
+      {
+        "ordinal": 2,
+        "name": "display_name",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
+        "name": "activity",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "activity"
+          }
+        }
+      },
+      {
+        "ordinal": 4,
+        "name": "screen",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "screen"
+          }
+        }
+      },
+      {
+        "ordinal": 5,
+        "name": "match_kind",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "match_kind"
+          }
+        }
+      },
+      {
+        "ordinal": 6,
+        "name": "heartbeat_at!",
+        "type_info": "Timestamptz",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "heartbeat_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Float8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "bb76265fd1f0db1899f34dc53916767e340d6cc13cff5398564962812ae16573"
+}

@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO players (display_name, heartbeat_at) VALUES ('Nelly', now())",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "af039bf5467357cef47570418a2afc7a56782a1cb91b620e51fb4cbf3db6293e"
+}
