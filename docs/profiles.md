@@ -574,7 +574,7 @@ session, lists the rule sets: `{"rule_sets": [{"id", "name", "rules", "hash"}]}`
 
 | Rule | Values |
 |---|---|
-| `tweaks` | The port's gameplay tweaks for both teams: `fair_ball_contests` (Defender's priority: when both teams reach a loose ball at once, the defending team gets it), `fast_terrain`, `no_mega_strikes`, `thunder_island_walls`, and `mirror_match` (both players may draft the same captain). The others stay off. Every other online game plays with fair ball contests; a set only when its rules have them (a game too old to know them as a rule refuses such a set). |
+| `tweaks` | The port's gameplay tweaks for both teams: `fair_ball_contests` (Defender's priority: when both teams reach a loose ball at once, the defending team gets it; without it the home team does, and the player away drafts first), `fast_terrain`, `no_mega_strikes`, `thunder_island_walls`, and `mirror_match` (both players may draft the same captain). The others stay off. Every other online game plays with fair ball contests; a set only when its rules have them (a game too old to know them as a rule refuses such a set). |
 | `skill` | `training`, `rookie`, `professional`, `superstar`, `legend`; `rookie` when left out. The CPU's skill: no effect on a match between two games (the game gives both teams the human level) |
 | `limit` | `time` or `goals`: what ends a game |
 | `time` | A game's length in seconds, 60 to 900 in steps of 30 |
