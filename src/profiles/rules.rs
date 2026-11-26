@@ -12,8 +12,10 @@ use sqlx::PgPool;
 /// The port's gameplay tweaks a rule set may switch on: the ones that change
 /// play for both teams alike, and mirror match (both players may draft the
 /// same captain; 1.2 clients from its release on). Its other tweaks stay off
-/// in a match; fair ball contests are always on online.
-pub const TWEAKS: [&str; 4] = [
+/// in a match. Fair ball contests (Defender's priority) are on in every other
+/// online game; a set plays them only when its rules have them.
+pub const TWEAKS: [&str; 5] = [
+    "fair_ball_contests",
     "fast_terrain",
     "mirror_match",
     "no_mega_strikes",
@@ -357,12 +359,14 @@ mod tests {
             .unwrap(),
             rules
         );
-        // Mirror match sorts in with the others.
+        // Mirror match and fair ball contests sort in with the others.
         let mut mirror = competitive();
         mirror.tweaks.push("mirror_match".into());
+        mirror.tweaks.push("fair_ball_contests".into());
         assert_eq!(
             mirror.check().unwrap().tweaks,
             [
+                "fair_ball_contests",
                 "fast_terrain",
                 "mirror_match",
                 "no_mega_strikes",
