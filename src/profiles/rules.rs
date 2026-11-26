@@ -416,8 +416,14 @@ mod tests {
         assert_eq!(names, ["Competitive", "Retail ranked"]);
         assert_eq!(
             sets[0].rules.tweaks,
-            ["fast_terrain", "no_mega_strikes", "thunder_island_walls"]
+            [
+                "fair_ball_contests",
+                "fast_terrain",
+                "no_mega_strikes",
+                "thunder_island_walls"
+            ]
         );
+        assert_eq!(sets[1].rules.tweaks, ["fair_ball_contests"]);
     }
 
     #[sqlx::test]
