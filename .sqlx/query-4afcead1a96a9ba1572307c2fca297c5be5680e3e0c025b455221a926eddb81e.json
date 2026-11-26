@@ -1,0 +1,30 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS (SELECT 1 FROM player_identities\n                          WHERE player_id = $1 AND provider = 'discord') AS \"linked!\",\n                  EXISTS (SELECT 1 FROM player_identities\n                          WHERE player_id = $1 AND provider = 'wfc') AS \"identified!\"\n           FROM players WHERE player_id = $1\n           FOR UPDATE",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "linked!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 1,
+        "name": "identified!",
+        "type_info": "Bool",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null
+    ]
+  },
+  "hash": "4afcead1a96a9ba1572307c2fca297c5be5680e3e0c025b455221a926eddb81e"
+}

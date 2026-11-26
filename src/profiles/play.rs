@@ -74,21 +74,19 @@ pub(super) async fn bind(
     let Some(profile) = profile else {
         return json_error(StatusCode::NOT_FOUND, "the profile went away");
     };
-    if player.account == "mii" && player.friend_code.is_none() {
-        match players::bind_identity(
-            &state.pool,
-            player.id,
-            profile.profile_id,
-            &profile.friend_code,
-        )
-        .await
-        {
-            Ok(true) => {
-                info!(target: "profiles", player_id = player.id, profile_id = profile.profile_id, "WFC profile identifies the player")
-            }
-            Ok(false) => {}
-            Err(error) => return database_error(error),
+    match players::bind_identity(
+        &state.pool,
+        player.id,
+        profile.profile_id,
+        &profile.friend_code,
+    )
+    .await
+    {
+        Ok(true) => {
+            info!(target: "profiles", player_id = player.id, profile_id = profile.profile_id, "WFC profile identifies the player")
         }
+        Ok(false) => {}
+        Err(error) => return database_error(error),
     }
     Json(profile).into_response()
 }

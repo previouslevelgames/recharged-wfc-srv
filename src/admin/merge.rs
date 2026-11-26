@@ -43,7 +43,7 @@ async fn side(pool: &PgPool, player_id: i64) -> Result<Option<Side>, sqlx::Error
         return Ok(None);
     };
     let signs_in_with = sqlx::query_scalar!(
-        "SELECT provider FROM player_identities WHERE player_id = $1 ORDER BY provider",
+        "SELECT DISTINCT provider FROM player_identities WHERE player_id = $1 ORDER BY provider",
         player_id
     )
     .fetch_all(pool)
@@ -240,7 +240,7 @@ pub async fn plan(
     let identities = from_side
         .signs_in_with
         .iter()
-        .filter(|kind| !into_side.signs_in_with.contains(kind))
+        .filter(|kind| *kind == "wfc" || !into_side.signs_in_with.contains(kind))
         .cloned()
         .collect();
     Ok(Ok(Merge {
@@ -393,7 +393,8 @@ pub async fn merge(
     sqlx::query!(
         "UPDATE player_identities SET player_id = $2
          WHERE player_id = $1
-           AND provider NOT IN (SELECT provider FROM player_identities WHERE player_id = $2)",
+           AND (provider = 'wfc'
+                OR provider NOT IN (SELECT provider FROM player_identities WHERE player_id = $2))",
         from,
         into
     )

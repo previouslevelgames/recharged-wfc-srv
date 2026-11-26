@@ -16,8 +16,8 @@ const USE_RESOLUTION: Duration = Duration::hours(1);
 /// Session tokens: 32 random bytes in Base64url.
 const TOKEN_LEN: usize = 43;
 
-/// An account to sign in with: Discord's, or a test name. (A Mii player's
-/// WFC profile is one too, made by [`bind_identity`].)
+/// An account to sign in with: Discord's, or a test name. (A player's WFC
+/// profiles are some too, made by [`bind_identity`].)
 pub struct Identity<'a> {
     /// `discord` or `test`.
     pub provider: &'static str,
@@ -43,8 +43,8 @@ pub struct Player {
     /// What they sign in with: `discord`, `test`, or `mii` for a player
     /// without either (docs/profiles.md, "Players").
     pub account: &'static str,
-    /// The friend code of the WFC profile that identifies them: a Mii
-    /// player's first proven profile, once there is one.
+    /// The friend code of the WFC profile that identifies them, the latest
+    /// bound of those that do: none before their first proven profile.
     pub friend_code: Option<String>,
     /// The country whose flag shows beside their name, two letters
     /// (docs/profiles.md, "Countries"); none when unknown or hidden.
@@ -223,8 +223,9 @@ pub async fn rename(pool: &PgPool, player_id: i64, name: &str) -> Result<bool, s
 }
 
 /// Makes the WFC profile `profile_id`, whose friend code is `friend_code`,
-/// the identity of `player_id` if that is a Mii player without one yet and
-/// the profile identifies nobody else. Whether it did.
+/// an identity of `player_id` unless it identifies a player already (the first
+/// to prove it): its WFC login then signs that player in again
+/// (docs/profiles.md, "Coming back"). Whether it did.
 pub async fn bind_identity(
     pool: &PgPool,
     player_id: i64,
@@ -233,9 +234,7 @@ pub async fn bind_identity(
 ) -> Result<bool, sqlx::Error> {
     let bound = sqlx::query!(
         "INSERT INTO player_identities (provider, external_id, player_id, username)
-         SELECT 'wfc', $1, $2, $3
-         WHERE NOT EXISTS (SELECT 1 FROM player_identities
-                           WHERE player_id = $2 AND provider IN ('discord', 'test'))
+         VALUES ('wfc', $1, $2, $3)
          ON CONFLICT DO NOTHING",
         profile_id.to_string(),
         player_id,
@@ -374,6 +373,49 @@ pub async fn link(
     Ok(Ok(()))
 }
 
+/// Why Discord can't be disconnected from a player.
+#[derive(Debug, PartialEq, Eq)]
+pub enum UnlinkRefusal {
+    /// It has no Discord account.
+    NotLinked,
+    /// Nothing else would sign it in again: no WFC profile identifies it yet.
+    LastWay,
+}
+
+/// Takes the Discord account off `player_id`, which keeps everything else
+/// and signs in again by its Miis (docs/profiles.md, "Connecting Discord").
+pub async fn unlink_discord(
+    pool: &PgPool,
+    player_id: i64,
+) -> Result<Result<(), UnlinkRefusal>, sqlx::Error> {
+    let mut transaction = pool.begin().await?;
+    let row = sqlx::query!(
+        r#"SELECT EXISTS (SELECT 1 FROM player_identities
+                          WHERE player_id = $1 AND provider = 'discord') AS "linked!",
+                  EXISTS (SELECT 1 FROM player_identities
+                          WHERE player_id = $1 AND provider = 'wfc') AS "identified!"
+           FROM players WHERE player_id = $1
+           FOR UPDATE"#,
+        player_id,
+    )
+    .fetch_optional(&mut *transaction)
+    .await?;
+    match row {
+        Some(row) if !row.linked => return Ok(Err(UnlinkRefusal::NotLinked)),
+        Some(row) if !row.identified => return Ok(Err(UnlinkRefusal::LastWay)),
+        Some(_) => {}
+        None => return Ok(Err(UnlinkRefusal::NotLinked)),
+    }
+    sqlx::query!(
+        "DELETE FROM player_identities WHERE player_id = $1 AND provider = 'discord'",
+        player_id,
+    )
+    .execute(&mut *transaction)
+    .await?;
+    transaction.commit().await?;
+    Ok(Ok(()))
+}
+
 pub async fn player(pool: &PgPool, player_id: i64) -> Result<Option<Player>, sqlx::Error> {
     Ok(players(pool, &[player_id]).await?.remove(&player_id))
 }
@@ -402,7 +444,7 @@ pub async fn players(
     let rows = sqlx::query!(
         r#"SELECT players.player_id, players.display_name,
                   discord.username AS "discord?", discord.avatar_url AS "avatar_url?",
-                  test.username AS "test?", wfc.username AS "friend_code?",
+                  test.username AS "test?", main.username AS "friend_code?",
                   CASE players.country_choice WHEN 'auto' THEN players.country WHEN 'none' THEN NULL
                        ELSE players.country_choice END AS country
            FROM players
@@ -410,8 +452,14 @@ pub async fn players(
                   ON discord.player_id = players.player_id AND discord.provider = 'discord'
            LEFT JOIN player_identities test
                   ON test.player_id = players.player_id AND test.provider = 'test'
-           LEFT JOIN player_identities wfc
-                  ON wfc.player_id = players.player_id AND wfc.provider = 'wfc'
+           LEFT JOIN LATERAL (
+               SELECT identity.username FROM player_identities identity
+               LEFT JOIN player_wfc_profiles bound
+                      ON bound.profile_id::text = identity.external_id
+                     AND bound.player_id = identity.player_id
+               WHERE identity.player_id = players.player_id AND identity.provider = 'wfc'
+               ORDER BY bound.bound_at DESC NULLS LAST, identity.linked_at
+               LIMIT 1) main ON true
            WHERE players.player_id = ANY($1)"#,
         player_ids,
     )
@@ -971,7 +1019,7 @@ pub(super) async fn listed(
                   (SELECT count(*) FROM chat_messages
                    WHERE chat_messages.sender = players.player_id AND chat_messages.recipient = $3
                      AND chat_messages.read_at IS NULL) AS "unread!",
-                  discord.external_id AS "discord_id?", wfc.username AS "friend_code?",
+                  discord.external_id AS "discord_id?", main.username AS "friend_code?",
                   CASE players.country_choice WHEN 'auto' THEN players.country WHEN 'none' THEN NULL
                        ELSE players.country_choice END AS country,
                   players.screen, players.set_game,
@@ -985,8 +1033,14 @@ pub(super) async fn listed(
                   ON discord.player_id = players.player_id AND discord.provider = 'discord'
            LEFT JOIN player_identities test
                   ON test.player_id = players.player_id AND test.provider = 'test'
-           LEFT JOIN player_identities wfc
-                  ON wfc.player_id = players.player_id AND wfc.provider = 'wfc'
+           LEFT JOIN LATERAL (
+               SELECT identity.username FROM player_identities identity
+               LEFT JOIN player_wfc_profiles bound
+                      ON bound.profile_id::text = identity.external_id
+                     AND bound.player_id = identity.player_id
+               WHERE identity.player_id = players.player_id AND identity.provider = 'wfc'
+               ORDER BY bound.bound_at DESC NULLS LAST, identity.linked_at
+               LIMIT 1) main ON true
            -- Their set still to be played: one that keeps them busy first.
            LEFT JOIN LATERAL (
                SELECT m.state, m.go_at IS NOT NULL AS went, m.playing_at IS NOT NULL AS met,
@@ -1270,6 +1324,43 @@ mod tests {
     }
 
     #[sqlx::test]
+    async fn discord_comes_off_once_a_mii_signs_the_player_in(pool: PgPool) {
+        let nelly = sign_in(&pool, &discord("1", "nelly", "Nelly"))
+            .await
+            .unwrap();
+        let kiki = create_mii(&pool, "Kiki").await.unwrap().unwrap();
+        // Discord is all that signs Nelly in yet.
+        assert_eq!(
+            unlink_discord(&pool, nelly).await.unwrap(),
+            Err(UnlinkRefusal::LastWay)
+        );
+        assert_eq!(
+            unlink_discord(&pool, kiki).await.unwrap(),
+            Err(UnlinkRefusal::NotLinked)
+        );
+        crate::accounts::log_in(&pool, 1).await.unwrap();
+        let pid =
+            crate::accounts::profile_login(&pool, 1, "R4QEaaaaaaa", Some("Nelly"), "10.0.0.1")
+                .await
+                .unwrap()
+                .profile_id;
+        assert!(bind_identity(&pool, nelly, pid, "fc").await.unwrap());
+        assert_eq!(unlink_discord(&pool, nelly).await.unwrap(), Ok(()));
+        let player = player(&pool, nelly).await.unwrap().unwrap();
+        assert_eq!(
+            (player.name.as_str(), player.account, player.discord),
+            ("Nelly", "mii", None)
+        );
+        assert_eq!(by_wfc_identity(&pool, pid).await.unwrap(), Some(nelly));
+        // Discord again is a new player, who can't take Nelly's name.
+        let (again, created) = sign_in_or_create(&pool, &discord("1", "nelly", "Nelly"))
+            .await
+            .unwrap();
+        assert!(created);
+        assert_ne!(again, nelly);
+    }
+
+    #[sqlx::test]
     async fn a_player_renames_to_a_free_name(pool: PgPool) {
         let nelly = create_mii(&pool, "Nelly").await.unwrap().unwrap();
         let kiki = create_mii(&pool, "Kiki").await.unwrap().unwrap();
@@ -1365,10 +1456,11 @@ mod tests {
         );
         assert_eq!(nelly.friend_code, None);
 
-        // The first profile only, and a profile identifies one player.
+        // Every profile a player proves first, and a profile identifies one
+        // player: the first to prove it.
         assert!(bind_identity(&pool, mii, first, &first_code).await.unwrap());
         assert!(
-            !bind_identity(&pool, mii, second, &second_code)
+            bind_identity(&pool, mii, second, &second_code)
                 .await
                 .unwrap()
         );
@@ -1378,17 +1470,24 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(by_wfc_identity(&pool, first).await.unwrap(), Some(mii));
-        assert_eq!(by_wfc_identity(&pool, second).await.unwrap(), None);
+        assert_eq!(by_wfc_identity(&pool, second).await.unwrap(), Some(mii));
+        // Neither bound yet: the friend code is the first one's.
         let nelly = player(&pool, mii).await.unwrap().unwrap();
         assert_eq!(nelly.friend_code.as_deref(), Some(first_code.as_str()));
+        // Bound, the one played with last.
+        bind_wfc(&pool, mii, first).await.unwrap();
+        bind_wfc(&pool, mii, second).await.unwrap();
+        let nelly = player(&pool, mii).await.unwrap().unwrap();
+        assert_eq!(nelly.friend_code.as_deref(), Some(second_code.as_str()));
         assert_eq!(
             listed(&pool, other_mii, &[mii]).await.unwrap()[0].player,
             nelly
         );
 
-        // Players with an account of their own get none.
+        // Players with an account of their own too.
         let sam = sign_in(&pool, &discord("2", "sam", "Sam")).await.unwrap();
-        assert!(!bind_identity(&pool, sam, third, &third_code).await.unwrap());
+        assert!(bind_identity(&pool, sam, third, &third_code).await.unwrap());
+        assert_eq!(by_wfc_identity(&pool, third).await.unwrap(), Some(sam));
         assert_eq!(
             player(&pool, sam).await.unwrap().unwrap().account,
             "discord"

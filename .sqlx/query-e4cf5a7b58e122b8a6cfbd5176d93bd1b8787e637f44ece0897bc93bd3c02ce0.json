@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE players SET mii_data = $2, mii_stored_at = now() WHERE player_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Bytea"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e4cf5a7b58e122b8a6cfbd5176d93bd1b8787e637f44ece0897bc93bd3c02ce0"
+}

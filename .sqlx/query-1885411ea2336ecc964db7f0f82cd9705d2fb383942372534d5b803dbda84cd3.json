@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT players.player_id, players.display_name,\n                  discord.username AS \"discord?\", discord.avatar_url AS \"avatar_url?\",\n                  test.username AS \"test?\", wfc.username AS \"friend_code?\",\n                  CASE players.country_choice WHEN 'auto' THEN players.country WHEN 'none' THEN NULL\n                       ELSE players.country_choice END AS country\n           FROM players\n           LEFT JOIN player_identities discord\n                  ON discord.player_id = players.player_id AND discord.provider = 'discord'\n           LEFT JOIN player_identities test\n                  ON test.player_id = players.player_id AND test.provider = 'test'\n           LEFT JOIN player_identities wfc\n                  ON wfc.player_id = players.player_id AND wfc.provider = 'wfc'\n           WHERE players.player_id = ANY($1)",
+  "query": "SELECT players.player_id, players.display_name,\n                  discord.username AS \"discord?\", discord.avatar_url AS \"avatar_url?\",\n                  test.username AS \"test?\", main.username AS \"friend_code?\",\n                  CASE players.country_choice WHEN 'auto' THEN players.country WHEN 'none' THEN NULL\n                       ELSE players.country_choice END AS country\n           FROM players\n           LEFT JOIN player_identities discord\n                  ON discord.player_id = players.player_id AND discord.provider = 'discord'\n           LEFT JOIN player_identities test\n                  ON test.player_id = players.player_id AND test.provider = 'test'\n           LEFT JOIN LATERAL (\n               SELECT identity.username FROM player_identities identity\n               LEFT JOIN player_wfc_profiles bound\n                      ON bound.profile_id::text = identity.external_id\n                     AND bound.player_id = identity.player_id\n               WHERE identity.player_id = players.player_id AND identity.provider = 'wfc'\n               ORDER BY bound.bound_at DESC NULLS LAST, identity.linked_at\n               LIMIT 1) main ON true\n           WHERE players.player_id = ANY($1)",
   "describe": {
     "columns": [
       {
@@ -91,5 +91,5 @@
       null
     ]
   },
-  "hash": "b67a8e3164de188c8a680981263dfcf31a6574567c8218b54d5d94eafa37529d"
+  "hash": "1885411ea2336ecc964db7f0f82cd9705d2fb383942372534d5b803dbda84cd3"
 }

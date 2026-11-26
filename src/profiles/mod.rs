@@ -101,6 +101,8 @@ struct ProfilesState {
     known_asks: mii_sign_in::PerAddress,
     /// The name asks each address made lately.
     name_asks: mii_sign_in::PerAddress,
+    /// The sign-ins from game saves each address made lately.
+    save_sign_ins: mii_sign_in::PerAddress,
     /// Who is logged in to WFC with which login ticket.
     gpcm: Arc<Gpcm>,
     /// Matches' games kept for RANKED, which the server browser reads.
@@ -136,6 +138,7 @@ pub(crate) fn router(
         mii_players: mii_sign_in::PerAddress::creations(),
         known_asks: mii_sign_in::PerAddress::known(),
         name_asks: names::asks(),
+        save_sign_ins: mii_sign_in::PerAddress::save_sign_ins(),
         gpcm,
         pairings,
         countries,
@@ -149,14 +152,18 @@ pub(crate) fn router(
         .route("/api/v1/sign-in/mii", post(mii_sign_in::sign_in_mii))
         .route("/api/v1/sign-in/wfc", post(mii_sign_in::sign_in_wfc))
         .route("/api/v1/sign-in/wfc/known", post(mii_sign_in::known_wfc))
+        .route("/api/v1/sign-in/save", post(mii_sign_in::sign_in_save))
         .route("/api/v1/sign-in/{id}", get(poll_sign_in))
         .route("/api/v1/sign-out", post(sign_out))
         .route("/api/v1/me", get(me))
         .route("/api/v1/me/country", put(choose_country))
         .route("/api/v1/me/name", put(names::rename))
+        .route("/api/v1/me/discord", delete(unlink_discord))
         .route("/api/v1/names", get(names::free))
         .route("/api/v1/me/available", put(play::set_available))
         .route("/api/v1/me/miis", post(mii_data::upload))
+        .route("/api/v1/me/mii", put(mii_data::choose_mii))
+        .route("/api/v1/me/restore", get(mii_data::restore))
         .route("/api/v1/me/stats", get(stats::stats))
         .route("/api/v1/rules", get(play::rule_sets))
         .route("/api/v1/wfc", post(play::bind))
@@ -464,7 +471,7 @@ enum Finished {
 }
 
 /// What the launcher and the page say to a banned account.
-const BANNED: &str = "This account is banned from this server";
+pub(super) const BANNED: &str = "This account is banned from this server";
 
 /// What the launcher and the page say when a link can't be made.
 fn link_refusal(refusal: &LinkRefusal) -> &'static str {
@@ -705,6 +712,34 @@ async fn me(
             me["country_choice"] = json!(country_choice);
             Json(me).into_response()
         }
+        Err(error) => database_error(error),
+    }
+}
+
+/// `DELETE /api/v1/me/discord`: the player goes on without Discord, signed in
+/// here, and signs in again by its Miis. The answer is the player.
+async fn unlink_discord(State(state): State<Arc<ProfilesState>>, headers: HeaderMap) -> Response {
+    let player = match state.signed_in(&headers).await {
+        Ok(player) => player,
+        Err(response) => return response,
+    };
+    match players::unlink_discord(&state.pool, player.id).await {
+        Ok(Ok(())) => {}
+        Ok(Err(players::UnlinkRefusal::NotLinked)) => {
+            return json_error(StatusCode::CONFLICT, "this profile has no Discord account");
+        }
+        Ok(Err(players::UnlinkRefusal::LastWay)) => {
+            return json_error(
+                StatusCode::CONFLICT,
+                "play online once first: then your Mii signs you in again without Discord",
+            );
+        }
+        Err(error) => return database_error(error),
+    }
+    info!(target: "profiles", player_id = player.id, "Discord disconnected");
+    match players::player(&state.pool, player.id).await {
+        Ok(Some(player)) => Json(player).into_response(),
+        Ok(None) => json_error(StatusCode::UNAUTHORIZED, "signed out"),
         Err(error) => database_error(error),
     }
 }
