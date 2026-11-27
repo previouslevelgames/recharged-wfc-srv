@@ -225,8 +225,6 @@ h1 .server-label {
   align-items: center;
   justify-content: space-between;
   gap: 12px 20px;
-  max-width: 1320px;
-  margin: 0 auto;
   padding: 10px 24px;
 }
 
@@ -352,8 +350,6 @@ h1 .server-label {
   display: grid;
   grid-template-columns: 216px minmax(0, 1fr);
   gap: 12px;
-  max-width: 1320px;
-  margin: 0 auto;
   padding: 0 24px;
 }
 
@@ -1592,7 +1588,23 @@ td.actions {
 }
 
 td.actions .button + .button {
-  margin-left: 8px;
+  margin-left: 6px;
+}
+
+/* A button that is only its icon (Watch, Ticket, Replay, Download): its
+   name is its tooltip. */
+.button.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  padding: 0;
+  vertical-align: middle;
+}
+
+.button.icon-button svg {
+  width: 16px;
+  height: 16px;
 }
 
 .editor {
