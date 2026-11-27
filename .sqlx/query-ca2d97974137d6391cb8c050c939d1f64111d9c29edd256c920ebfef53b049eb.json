@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT count(*) AS \"count!\" FROM players\n           WHERE player_id <> $1 AND heartbeat_at > now() - make_interval(secs => $2)\n             AND (available\n                  OR EXISTS (SELECT 1 FROM searches WHERE searches.player_id = players.player_id))",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "count!",
+        "type_info": "Int8",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Float8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "ca2d97974137d6391cb8c050c939d1f64111d9c29edd256c920ebfef53b049eb"
+}

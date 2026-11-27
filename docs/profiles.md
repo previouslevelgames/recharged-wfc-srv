@@ -361,11 +361,25 @@ country of their heart). `PUT /api/v1/me/country` with `{"country": "auto"}`
 A player can make themselves available for random games
 (`players.available`, off by default). `PUT /api/v1/me/available` with
 `{"available": true}` (or `false`) switches it and answers the same;
-`GET /api/v1/me` has it as `available`. While a player is available,
-`available` in `GET /api/v1/players` lists the other available players who
-have Recharged open (at most 100, by name, as the other lists show players);
-for a player who isn't, it is empty. So only those who take part see each
-other. The game calls it **Open to challenges**.
+`GET /api/v1/me` has it as `available`. A search may ask an available
+player (see "Random opponents"), and anybody may challenge them. Nobody
+sees who is available: `available_count` in `GET /api/v1/players` only
+says how many others with Recharged open are available or searching (from
+1.3.3; up to 1.3.2 `available` listed them to the players available too).
+The game calls being unavailable **Do not disturb**.
+
+### Do not disturb
+
+A player who is neither available nor searching takes challenges from
+friends only: players they keep as friends (see "Friends"), players one of
+whose WFC profiles they keep as a Mii friend (see "Mii profiles"), and
+Discord friends. The server keeps no Discord friends (see "Discord
+friends"), so for those it takes the challenger's word: `"discord_friend":
+true` in the challenge. Anybody else's challenge is refused (409). Each
+player in the lists says it as the player who asks sees it:
+`do_not_disturb` is `true` when they would refuse that player's challenge
+now. A rematch of a set that ended, a search's challenge and a tournament's
+sets don't ask (from 1.3.3).
 
 ## Random opponents
 
@@ -413,12 +427,10 @@ whose host plays once a friend has joined; `null` otherwise, and for a game
 that was already playing when the server started) and `last_online` the last
 login in Unix seconds.
 
-`GET /api/v1/players` has them twice: `mii_friends`, the Mii profiles the
+`GET /api/v1/players` has them as `mii_friends`: the Mii profiles the
 player keeps as friends (`friend_profiles`, those logged in first by name,
-then the last online first), and, while the player is available for random
-games, `game_online`: the profiles logged in that aren't in the lists already
-(not the player's own, not a player's whose launcher is open, not a Mii
-friend), by Mii name, at most 100.
+then the last online first). Up to 1.3.2, while the player was available
+for random games, `game_online` listed the other profiles logged in too.
 
 | Route | |
 |---|---|
@@ -687,8 +699,8 @@ terrain and Thunder Island walls; 3 minutes before 1.2.7).
 
 | Route | |
 |---|---|
-| `GET /api/v1/players` | `{"online": [...], "recent": [...], "friends": [...]}`: who has Recharged open (by name, at most 100), the last 10 players played a set with, and the player's friends (see "Friends"). Each is a player as in a sign-in, with `online`, `busy` (has a set to play), `activity` (while online: `launcher`, `game` or `match`, see "Activity"), `match` (in a match: its kind, see "Activity"), `game` (while online: the game their Recharged plays, `R4QE` and so on, see "Activity"), `last_online` (their last heartbeat in Unix seconds, `null` before the first), `friend` (the player keeps them as one), and from 1.2.12 `screen` (while online: the screens their game shows, see "Activity"), `searching` (while online: they search for a random opponent) and `set` (while online: their set to play, or playing, else `null`: `{"stage", "challenger", "opponent", "games", "game"}`, its stage as in "Sets", whether they sent the challenge, the opponent's name, the games of its series, and the game their game plays or last played, `null` when it doesn't say). `busy` counts a challenge waiting for an answer and a set that goes or plays, not a stopped one. |
-| `POST /api/v1/matches` | `{"opponent": "<Discord username>", "rule_set": <id>}`, or `"opponent_id": <player id>` instead of the name (a Mii player only by id): a challenge, 201. Instead of a rule set, `"rules": {…}` (see "Rules") and `"name"`, the preset they come from (1 to 48 characters; `Custom` without one): the match's `rule_set` then is that name; 400 for rules the game doesn't have. 404 for nobody of that name, 409 when either already has a match to play, or the opponent doesn't have Recharged open or is playing a match (see "Activity"). |
+| `GET /api/v1/players` | `{"recent": [...], "friends": [...], "mii_friends": [...], "available_count": <n>}`: the last 10 players played a set with (finished or disputed, each once, the latest first), the player's friends (see "Friends") and Mii friends (see "Mii profiles"), and how many others are available (see "Available for random games"). Nobody else: up to 1.3.2 `online` listed who has Recharged open (by name, at most 100). Each is a player as in a sign-in, with `online`, `busy` (has a set to play), `activity` (while online: `launcher`, `game` or `match`, see "Activity"), `match` (in a match: its kind, see "Activity"), `game` (while online: the game their Recharged plays, `R4QE` and so on, see "Activity"), `last_online` (their last heartbeat in Unix seconds, `null` before the first), `friend` (the player keeps them as one), and from 1.2.12 `screen` (while online: the screens their game shows, see "Activity"), `searching` (while online: they search for a random opponent) and `set` (while online: their set to play, or playing, else `null`: `{"stage", "challenger", "opponent", "games", "game"}`, its stage as in "Sets", whether they sent the challenge, the opponent's name, the games of its series, and the game their game plays or last played, `null` when it doesn't say). `busy` counts a challenge waiting for an answer and a set that goes or plays, not a stopped one. From 1.3.3 `do_not_disturb` (they would refuse the player's challenge, see "Do not disturb"). |
+| `POST /api/v1/matches` | `{"opponent": "<Discord username>", "rule_set": <id>}`, or `"opponent_id": <player id>` instead of the name (a Mii player only by id): a challenge, 201. Instead of a rule set, `"rules": {…}` (see "Rules") and `"name"`, the preset they come from (1 to 48 characters; `Custom` without one): the match's `rule_set` then is that name; 400 for rules the game doesn't have. `"discord_friend": true` when the challenger's Discord says the two are friends there (from 1.3.3). 404 for nobody of that name, 409 when either already has a match to play, or the opponent doesn't have Recharged open, is playing a match (see "Activity") or takes no challenge from the player (see "Do not disturb"). |
 | `GET /api/v1/matches/current` | `{"match": …, "search": …, "poll_interval": 2, "server_time": <unix seconds>}`: the match still to be played, or the last one that ended within the hour, or `null`; the player's search (see "Random opponents"); `poll_interval` is how soon to ask again (2 while the set waits for its players or the player searches, 10 while they play, 5 otherwise) |
 | `POST /api/v1/search`, `DELETE /api/v1/search` | Search for a random opponent, and stop (see "Random opponents") |
 | `POST /api/v1/matches/<id>/accept`, `…/decline` | The challenged player's answer; the accept of a rematch whose turn is theirs may say `{"stadium": "<stadium>"}`, see "Turns" |

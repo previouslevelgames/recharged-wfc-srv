@@ -173,7 +173,7 @@ async fn a_discord_sign_in_without_the_sdk_scopes_passes_no_tokens(pool: PgPool)
 }
 
 #[sqlx::test]
-async fn available_players_see_each_other(pool: PgPool) {
+async fn the_lists_count_the_available_players_but_name_none(pool: PgPool) {
     let (config, _) = fake_discord(true).await;
     let app = recharged_wfc_srv::App::new(pool).router(None, Some(config));
     let nelly = test_sign_in(&app, "Nelly").await["token"]
@@ -186,43 +186,41 @@ async fn available_players_see_each_other(pool: PgPool) {
         .to_owned();
     let me = |body: String| serde_json::from_str::<Value>(&body).unwrap()["available"].clone();
 
-    // Off by default: nobody listed, for nobody.
+    // Off by default: nobody counted, for nobody.
     assert_eq!(
         me(send(&app, Request::get("/api/v1/me"), Some(&nelly)).await.2),
         false
     );
-    assert!(available_names(&app, &nelly).await.is_empty());
+    assert_eq!(available_count(&app, &nelly).await, 0);
 
-    // Only one available: the other is not listed to them.
+    // The others available count, never the player themselves; no list
+    // says who they are.
     set_available(&app, &nelly, true).await;
     assert_eq!(
         me(send(&app, Request::get("/api/v1/me"), Some(&nelly)).await.2),
         true
     );
-    assert!(available_names(&app, &nelly).await.is_empty());
-    assert!(available_names(&app, &sam).await.is_empty());
-
-    // Both: each sees the other, never themselves.
+    assert_eq!(available_count(&app, &nelly).await, 0);
+    assert_eq!(available_count(&app, &sam).await, 1);
     set_available(&app, &sam, true).await;
-    assert_eq!(available_names(&app, &nelly).await, ["Sam"]);
-    assert_eq!(available_names(&app, &sam).await, ["Nelly"]);
+    assert_eq!(available_count(&app, &nelly).await, 1);
+    assert_eq!(available_count(&app, &sam).await, 1);
 
     set_available(&app, &sam, false).await;
-    assert!(available_names(&app, &nelly).await.is_empty());
-    assert!(available_names(&app, &sam).await.is_empty());
+    assert_eq!(available_count(&app, &nelly).await, 0);
+    assert_eq!(available_count(&app, &sam).await, 1);
 }
 
-/// The names in `available` of `GET /api/v1/players`.
-async fn available_names(app: &Router, token: &str) -> Vec<String> {
+/// `available_count` of `GET /api/v1/players`, which lists nobody but the
+/// player's friends and their last opponents.
+async fn available_count(app: &Router, token: &str) -> i64 {
     let (status, _, body) = send(app, Request::get("/api/v1/players"), Some(token)).await;
     assert_eq!(status, 200, "{body}");
     let lists: Value = serde_json::from_str(&body).unwrap();
-    lists["available"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|player| player["name"].as_str().unwrap().to_owned())
-        .collect()
+    for gone in ["online", "available", "game_online"] {
+        assert!(lists.get(gone).is_none(), "{body}");
+    }
+    lists["available_count"].as_i64().unwrap()
 }
 
 async fn set_available(app: &Router, token: &str, on: bool) {

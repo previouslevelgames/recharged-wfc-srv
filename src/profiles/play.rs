@@ -109,6 +109,11 @@ pub(super) struct Challenge {
     rules: Option<Rules>,
     #[serde(default)]
     name: Option<String>,
+    /// The challenger's Discord says the two are friends there: Do not
+    /// disturb lets them through. The server keeps no Discord friends, so it
+    /// takes the challenger's word (docs/profiles.md, "Do not disturb").
+    #[serde(default)]
+    discord_friend: bool,
 }
 
 /// A challenge's or a search's rules: one of the server's rule sets, or rules
@@ -291,6 +296,19 @@ pub(super) async fn challenge(
         Ok(rule_set) => rule_set,
         Err(response) => return response,
     };
+    // Do not disturb: friends only (docs/profiles.md, "Do not disturb").
+    if !request.discord_friend {
+        match players::do_not_disturb(&state.pool, opponent, player.id).await {
+            Ok(true) => {
+                return json_error(
+                    StatusCode::CONFLICT,
+                    "that player doesn't want to be disturbed right now",
+                );
+            }
+            Ok(false) => {}
+            Err(error) => return database_error(error),
+        }
+    }
     match matches::challenge(&state.pool, player.id, opponent, &rule_set, None, false).await {
         Ok(Ok(found)) => {
             info!(target: "profiles", match_id = found.id, home = player.id, away = opponent, rule_set = found.rule_set, "challenge");
@@ -350,8 +368,10 @@ pub(super) async fn current(
     }
 }
 
-/// Who has Recharged open, the players last played with, and the player's
-/// friends.
+/// The players last played with, the player's friends and Mii friends, and
+/// how many others are available for random games. Nobody else: who else has
+/// Recharged open, or is available, stays private; a search finds an
+/// opponent on the server (docs/profiles.md, "Random opponents").
 pub(super) async fn players(
     State(state): State<Arc<ProfilesState>>,
     headers: HeaderMap,
@@ -367,43 +387,24 @@ pub(super) async fn players(
     if let Err(response) = state.sweep().await {
         return response;
     }
-    let online = match players::online(&state.pool, player.id).await {
-        Ok(online) => online,
-        Err(error) => return database_error(error),
-    };
     let recent = match players::recent_opponents(&state.pool, player.id).await {
         Ok(recent) => recent,
         Err(error) => return database_error(error),
     };
-    // The players available for random games, and the game's own online
-    // players, only for one who is available too.
-    let presence = state.gpcm.presence();
-    let (available, game_online) = match players::available(&state.pool, player.id).await {
-        Ok(true) => {
-            let available = match players::available_now(&state.pool, player.id).await {
-                Ok(available) => available,
-                Err(error) => return database_error(error),
-            };
-            match miis::online(&state.pool, player.id, &presence).await {
-                Ok(game_online) => (available, game_online),
-                Err(error) => return database_error(error),
-            }
-        }
-        Ok(false) => (Vec::new(), Vec::new()),
+    let available_count = match players::available_count(&state.pool, player.id).await {
+        Ok(count) => count,
         Err(error) => return database_error(error),
     };
-    let mii_friends = match miis::friends(&state.pool, player.id, &presence).await {
+    let mii_friends = match miis::friends(&state.pool, player.id, &state.gpcm.presence()).await {
         Ok(mii_friends) => mii_friends,
         Err(error) => return database_error(error),
     };
     match friends::list(&state.pool, player.id).await {
         Ok(friends) => Json(json!({
-            "online": online,
             "recent": recent,
             "friends": friends,
-            "available": available,
             "mii_friends": mii_friends,
-            "game_online": game_online,
+            "available_count": available_count,
         }))
         .into_response(),
         Err(error) => database_error(error),
