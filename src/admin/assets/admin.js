@@ -544,13 +544,14 @@ function svg(tag, attributes, ...children) {
   return node;
 }
 
-/** A button (or link, `tag`) that shows only its icon: `label` names it for
- * screen readers and starts its tooltip, followed by `title`. */
-function iconButton(tag, props, name, label, title) {
+/** A button (or link, `tag`) with its icon and its `label`; `title`, after the
+ * label, is its tooltip. `tone` colours it: 'watch' blue, 'replay' green. */
+function actionButton(tag, props, name, label, title, tone) {
   return h(
     tag,
-    { ...props, class: 'button icon-button', 'aria-label': label, title: title ? `${label}: ${title}` : label },
+    { ...props, class: tone ? `button action-button ${tone}` : 'button action-button', title: title ? `${label}: ${title}` : label },
     icon(name),
+    label,
   );
 }
 
@@ -1441,14 +1442,15 @@ function watchButton(match) {
   const watch = (event) =>
     openInRecharged(event.currentTarget, `/admin/api/matches/${match.id}/watch?as=link`, 'The match no longer streams.', 'Watch (file)');
   return [
-    iconButton(
+    actionButton(
       'button',
       { type: 'button', onclick: watch },
       'watch',
       'Watch',
       'the match in Recharged 1.2, half a second behind the players. Without Recharged 1.2 started once on this computer, use Watch (file).',
+      'watch',
     ),
-    iconButton(
+    actionButton(
       'a',
       { href: `/admin/api/matches/${match.id}/watch`, download: '' },
       'watchFile',
@@ -1473,15 +1475,16 @@ function playButton(match) {
         'The server keeps no replay of this match.',
         'Download',
       );
-    return iconButton('button', { type: 'button', onclick: play }, 'replay', 'Replay', 'the match from its start in Recharged 1.2.');
+    return actionButton('button', { type: 'button', onclick: play }, 'replay', 'Replay', 'the match from its start in Recharged 1.2.', 'replay');
   }
   if (match.live) {
-    return iconButton(
+    return actionButton(
       'button',
       { type: 'button', disabled: true },
       'replay',
       'Replay',
       "the players' games send the replay about a minute after the match: reload the page then.",
+      'replay',
     );
   }
   return null;
@@ -1500,14 +1503,15 @@ function replayButtons(match, kept) {
       'Download',
     );
   return [
-    iconButton(
+    actionButton(
       'button',
       { type: 'button', onclick: play },
       'replay',
       'Replay',
       `game ${kept.game} in Recharged 1.2, then the match's later games. Without Recharged 1.2 started once on this computer, download the file.`,
+      'replay',
     ),
-    iconButton(
+    actionButton(
       'a',
       { href: `/admin/api/matches/${match.id}/replays/${kept.game}`, download: '' },
       'download',
