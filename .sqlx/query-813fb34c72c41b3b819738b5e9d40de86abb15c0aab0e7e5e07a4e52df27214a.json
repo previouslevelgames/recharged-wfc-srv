@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT d.match_id, d.game, max(d.received_at) AS \"at!\", min(d.release) AS \"release!\",\n                  (array_agg(d.frame ORDER BY d.received_at))[1] AS \"frame!\",\n                  max(d.profile_id) FILTER (WHERE d.side = 'home') AS home_profile,\n                  max(p.ingamesn) FILTER (WHERE d.side = 'home') AS home_mii,\n                  max(d.build) FILTER (WHERE d.side = 'home') AS home_build,\n                  max(d.platform) FILTER (WHERE d.side = 'home') AS home_platform,\n                  max(d.profile_id) FILTER (WHERE d.side = 'away') AS away_profile,\n                  max(p.ingamesn) FILTER (WHERE d.side = 'away') AS away_mii,\n                  max(d.build) FILTER (WHERE d.side = 'away') AS away_build,\n                  max(d.platform) FILTER (WHERE d.side = 'away') AS away_platform,\n                  max(v.kind) AS kind, max(v.frame) AS diverged_frame,\n                  max(v.field_index) AS field_index,\n                  max(v.home_caller) AS home_caller, max(v.away_caller) AS away_caller,\n                  max(v.home_size) AS home_size, max(v.away_size) AS away_size,\n                  max(v.home_hash) AS home_hash, max(v.away_hash) AS away_hash,\n                  max(v.home_bytes) AS home_bytes, max(v.away_bytes) AS away_bytes\n           FROM desync_dossiers d\n           LEFT JOIN profiles p USING (profile_id)\n           LEFT JOIN desync_divergences v USING (match_id, game)\n           WHERE $2::bigint IS NULL OR d.match_id = $2\n           GROUP BY d.match_id, d.game\n           ORDER BY max(d.received_at) DESC\n           LIMIT $1",
+  "query": "SELECT d.match_id, d.game, max(d.received_at) AS \"at!\", min(d.release) AS \"release!\",\n                  (array_agg(d.frame ORDER BY d.received_at))[1] AS \"frame!\",\n                  max(d.profile_id) FILTER (WHERE d.side = 'home') AS home_profile,\n                  max(p.ingamesn) FILTER (WHERE d.side = 'home') AS home_mii,\n                  max(players.display_name) FILTER (WHERE d.side = 'home') AS home_player,\n                  max(d.build) FILTER (WHERE d.side = 'home') AS home_build,\n                  max(d.platform) FILTER (WHERE d.side = 'home') AS home_platform,\n                  max(d.profile_id) FILTER (WHERE d.side = 'away') AS away_profile,\n                  max(p.ingamesn) FILTER (WHERE d.side = 'away') AS away_mii,\n                  max(players.display_name) FILTER (WHERE d.side = 'away') AS away_player,\n                  max(d.build) FILTER (WHERE d.side = 'away') AS away_build,\n                  max(d.platform) FILTER (WHERE d.side = 'away') AS away_platform,\n                  max(v.kind) AS kind, max(v.frame) AS diverged_frame,\n                  max(v.field_index) AS field_index,\n                  max(v.home_caller) AS home_caller, max(v.away_caller) AS away_caller,\n                  max(v.home_size) AS home_size, max(v.away_size) AS away_size,\n                  max(v.home_hash) AS home_hash, max(v.away_hash) AS away_hash,\n                  max(v.home_bytes) AS home_bytes, max(v.away_bytes) AS away_bytes\n           FROM desync_dossiers d\n           LEFT JOIN profiles p USING (profile_id)\n           LEFT JOIN desync_divergences v USING (match_id, game)\n           LEFT JOIN player_wfc_profiles bound ON bound.profile_id = d.profile_id\n           LEFT JOIN players ON players.player_id = bound.player_id\n           WHERE $2::bigint IS NULL OR d.match_id = $2\n           GROUP BY d.match_id, d.game\n           ORDER BY max(d.received_at) DESC\n           LIMIT $1",
   "describe": {
     "columns": [
       {
@@ -57,102 +57,114 @@
       },
       {
         "ordinal": 7,
-        "name": "home_build",
+        "name": "home_player",
         "type_info": "Text",
         "origin": "Expression"
       },
       {
         "ordinal": 8,
-        "name": "home_platform",
+        "name": "home_build",
         "type_info": "Text",
         "origin": "Expression"
       },
       {
         "ordinal": 9,
+        "name": "home_platform",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 10,
         "name": "away_profile",
         "type_info": "Int4",
         "origin": "Expression"
       },
       {
-        "ordinal": 10,
+        "ordinal": 11,
         "name": "away_mii",
         "type_info": "Text",
         "origin": "Expression"
       },
       {
-        "ordinal": 11,
-        "name": "away_build",
-        "type_info": "Text",
-        "origin": "Expression"
-      },
-      {
         "ordinal": 12,
-        "name": "away_platform",
+        "name": "away_player",
         "type_info": "Text",
         "origin": "Expression"
       },
       {
         "ordinal": 13,
-        "name": "kind",
+        "name": "away_build",
         "type_info": "Text",
         "origin": "Expression"
       },
       {
         "ordinal": 14,
+        "name": "away_platform",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 15,
+        "name": "kind",
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "ordinal": 16,
         "name": "diverged_frame",
         "type_info": "Int4",
         "origin": "Expression"
       },
       {
-        "ordinal": 15,
+        "ordinal": 17,
         "name": "field_index",
         "type_info": "Int4",
         "origin": "Expression"
       },
       {
-        "ordinal": 16,
+        "ordinal": 18,
         "name": "home_caller",
         "type_info": "Int8",
         "origin": "Expression"
       },
       {
-        "ordinal": 17,
+        "ordinal": 19,
         "name": "away_caller",
         "type_info": "Int8",
         "origin": "Expression"
       },
       {
-        "ordinal": 18,
+        "ordinal": 20,
         "name": "home_size",
         "type_info": "Int8",
         "origin": "Expression"
       },
       {
-        "ordinal": 19,
+        "ordinal": 21,
         "name": "away_size",
         "type_info": "Int8",
         "origin": "Expression"
       },
       {
-        "ordinal": 20,
+        "ordinal": 22,
         "name": "home_hash",
         "type_info": "Int8",
         "origin": "Expression"
       },
       {
-        "ordinal": 21,
+        "ordinal": 23,
         "name": "away_hash",
         "type_info": "Int8",
         "origin": "Expression"
       },
       {
-        "ordinal": 22,
+        "ordinal": 24,
         "name": "home_bytes",
         "type_info": "Bytea",
         "origin": "Expression"
       },
       {
-        "ordinal": 23,
+        "ordinal": 25,
         "name": "away_bytes",
         "type_info": "Bytea",
         "origin": "Expression"
@@ -188,8 +200,10 @@
       null,
       null,
       null,
+      null,
+      null,
       null
     ]
   },
-  "hash": "d3c5836c6852aaf6d3bed7ce366aa796b08004edd785a32ba9f1a0f6b7e41a95"
+  "hash": "813fb34c72c41b3b819738b5e9d40de86abb15c0aab0e7e5e07a4e52df27214a"
 }

@@ -152,6 +152,8 @@ struct Incident {
     side: String,
     mii: String,
     profile_id: i32,
+    /// The Recharged player the profile is bound to.
+    player: Option<String>,
     /// `desync` or `disconnect` (a game ended so), `left` (the game left
     /// WFC), or how a series stopped without either: `offline` or
     /// `abandoned`.
@@ -211,6 +213,8 @@ pub(super) struct Desync {
 struct DossierSide {
     profile_id: i32,
     mii: Option<String>,
+    /// The Recharged player the profile is bound to.
+    player: Option<String>,
     build: String,
     /// The kind of game module, `linux x86_64`...; empty when unknown.
     platform: String,
@@ -248,6 +252,8 @@ struct Spot {
 struct Refusal {
     profile_id: i32,
     mii: Option<String>,
+    /// The Recharged player the profile is bound to.
+    player: Option<String>,
     /// `elsewhere` or `invalid`.
     kind: String,
     count: i64,
@@ -396,9 +402,11 @@ async fn incidents(
     // game; one that stopped without either, as its end.
     sqlx::query_as!(
         Incident,
-        r#"SELECT at AS "at!", match_id AS "match_id!", side AS "side!", mii AS "mii!",
-                  profile_id AS "profile_id!", kind AS "kind!", game, sync_check, sync_frame,
-                  how, build
+        r#"SELECT incidents.at AS "at!", incidents.match_id AS "match_id!",
+                  incidents.side AS "side!", incidents.mii AS "mii!",
+                  incidents.profile_id AS "profile_id!", players.display_name AS "player?",
+                  incidents.kind AS "kind!", incidents.game, incidents.sync_check,
+                  incidents.sync_frame, incidents.how, incidents.build
            FROM (SELECT g.reported_at AS at, g.match_id, g.side, s.mii, s.profile_id,
                         g.ending AS kind, g.number AS game, g.sync_check, g.sync_frame,
                         NULL::text AS how, s.build
@@ -417,7 +425,9 @@ async fn incidents(
                    AND NOT EXISTS (SELECT FROM online_match_games g
                                    WHERE g.match_id = s.match_id AND g.side = s.side
                                      AND g.ending <> 'normal')) incidents
-           ORDER BY at DESC
+           LEFT JOIN player_wfc_profiles bound ON bound.profile_id = incidents.profile_id
+           LEFT JOIN players ON players.player_id = bound.player_id
+           ORDER BY incidents.at DESC
            LIMIT $2"#,
         since,
         SHOWN,
@@ -459,10 +469,12 @@ pub(super) async fn desyncs(
                   (array_agg(d.frame ORDER BY d.received_at))[1] AS "frame!",
                   max(d.profile_id) FILTER (WHERE d.side = 'home') AS home_profile,
                   max(p.ingamesn) FILTER (WHERE d.side = 'home') AS home_mii,
+                  max(players.display_name) FILTER (WHERE d.side = 'home') AS home_player,
                   max(d.build) FILTER (WHERE d.side = 'home') AS home_build,
                   max(d.platform) FILTER (WHERE d.side = 'home') AS home_platform,
                   max(d.profile_id) FILTER (WHERE d.side = 'away') AS away_profile,
                   max(p.ingamesn) FILTER (WHERE d.side = 'away') AS away_mii,
+                  max(players.display_name) FILTER (WHERE d.side = 'away') AS away_player,
                   max(d.build) FILTER (WHERE d.side = 'away') AS away_build,
                   max(d.platform) FILTER (WHERE d.side = 'away') AS away_platform,
                   max(v.kind) AS kind, max(v.frame) AS diverged_frame,
@@ -474,6 +486,8 @@ pub(super) async fn desyncs(
            FROM desync_dossiers d
            LEFT JOIN profiles p USING (profile_id)
            LEFT JOIN desync_divergences v USING (match_id, game)
+           LEFT JOIN player_wfc_profiles bound ON bound.profile_id = d.profile_id
+           LEFT JOIN players ON players.player_id = bound.player_id
            WHERE $2::bigint IS NULL OR d.match_id = $2
            GROUP BY d.match_id, d.game
            ORDER BY max(d.received_at) DESC
@@ -487,11 +501,12 @@ pub(super) async fn desyncs(
         .into_iter()
         .map(|row| {
             let release = row.release;
-            let side = |profile_id: Option<i32>, mii, build: Option<String>, platform| {
+            let side = |profile_id: Option<i32>, mii, player, build: Option<String>, platform| {
                 let platform: String = Option::unwrap_or_default(platform);
                 Some(DossierSide {
                     profile_id: profile_id?,
                     mii,
+                    player,
                     build: build.unwrap_or_default(),
                     symbolize: dossiers::symbolize(
                         &release,
@@ -505,12 +520,14 @@ pub(super) async fn desyncs(
             let home = side(
                 row.home_profile,
                 row.home_mii,
+                row.home_player,
                 row.home_build,
                 row.home_platform,
             );
             let away = side(
                 row.away_profile,
                 row.away_mii,
+                row.away_player,
                 row.away_build,
                 row.away_platform,
             );
@@ -776,9 +793,11 @@ async fn timeline(conn: &mut PgConnection, online_now: Online) -> Result<Timelin
 async fn refusals(conn: &mut PgConnection) -> Result<Vec<Refusal>, sqlx::Error> {
     sqlx::query_as!(
         Refusal,
-        r#"SELECT r.profile_id, p.ingamesn AS mii, r.kind, r.count, r.problem, r.address,
-                  r.first_at, r.last_at
+        r#"SELECT r.profile_id, p.ingamesn AS mii, players.display_name AS "player?", r.kind,
+                  r.count, r.problem, r.address, r.first_at, r.last_at
            FROM report_refusals r JOIN profiles p USING (profile_id)
+           LEFT JOIN player_wfc_profiles bound ON bound.profile_id = r.profile_id
+           LEFT JOIN players ON players.player_id = bound.player_id
            ORDER BY r.last_at DESC
            LIMIT $1"#,
         SHOWN,

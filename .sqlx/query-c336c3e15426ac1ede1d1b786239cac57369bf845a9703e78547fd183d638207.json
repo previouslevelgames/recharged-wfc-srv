@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT r.profile_id, p.ingamesn AS mii, r.kind, r.count, r.problem, r.address,\n                  r.first_at, r.last_at\n           FROM report_refusals r JOIN profiles p USING (profile_id)\n           ORDER BY r.last_at DESC\n           LIMIT $1",
+  "query": "SELECT r.profile_id, p.ingamesn AS mii, players.display_name AS \"player?\", r.kind,\n                  r.count, r.problem, r.address, r.first_at, r.last_at\n           FROM report_refusals r JOIN profiles p USING (profile_id)\n           LEFT JOIN player_wfc_profiles bound ON bound.profile_id = r.profile_id\n           LEFT JOIN players ON players.player_id = bound.player_id\n           ORDER BY r.last_at DESC\n           LIMIT $1",
   "describe": {
     "columns": [
       {
@@ -27,6 +27,17 @@
       },
       {
         "ordinal": 2,
+        "name": "player?",
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "players",
+            "name": "display_name"
+          }
+        }
+      },
+      {
+        "ordinal": 3,
         "name": "kind",
         "type_info": "Text",
         "origin": {
@@ -37,7 +48,7 @@
         }
       },
       {
-        "ordinal": 3,
+        "ordinal": 4,
         "name": "count",
         "type_info": "Int8",
         "origin": {
@@ -48,7 +59,7 @@
         }
       },
       {
-        "ordinal": 4,
+        "ordinal": 5,
         "name": "problem",
         "type_info": "Text",
         "origin": {
@@ -59,7 +70,7 @@
         }
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "address",
         "type_info": "Text",
         "origin": {
@@ -70,7 +81,7 @@
         }
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "first_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -81,7 +92,7 @@
         }
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "last_at",
         "type_info": "Timestamptz",
         "origin": {
@@ -105,8 +116,9 @@
       false,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "b5c6e9ceb4393d46d9016119b85cecb33149936a267ef5d0edf093ddcd0e6557"
+  "hash": "c336c3e15426ac1ede1d1b786239cac57369bf845a9703e78547fd183d638207"
 }

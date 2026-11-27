@@ -518,6 +518,26 @@ pub async fn names(
     .collect())
 }
 
+/// The display name of the player each of `profile_ids` is bound to
+/// (`player_wfc_profiles`), for those bound to one, in one ask: the
+/// dashboard names a WFC profile by it before its Mii's.
+pub async fn names_of_profiles(
+    executor: impl sqlx::PgExecutor<'_>,
+    profile_ids: &[i32],
+) -> Result<HashMap<i32, String>, sqlx::Error> {
+    Ok(sqlx::query!(
+        "SELECT bound.profile_id, players.display_name
+         FROM player_wfc_profiles bound JOIN players USING (player_id)
+         WHERE bound.profile_id = ANY($1)",
+        profile_ids,
+    )
+    .fetch_all(executor)
+    .await?
+    .into_iter()
+    .map(|row| (row.profile_id, row.display_name))
+    .collect())
+}
+
 /// [`player`] for each of `player_ids` there is, in one ask.
 pub async fn players(
     pool: &PgPool,

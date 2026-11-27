@@ -797,7 +797,7 @@ function presence(player, now) {
   if (player.banned && !player.online) return [badge('critical', 'Banned'), h('span', { class: 'sub' }, 'Its console logs in nowhere')];
   if (!player.online && player.recharged) {
     const [name, tone, about] = rechargedOf(player.recharged);
-    return [h('span', { class: 'badge', 'data-tone': tone, title: about }, name), h('span', { class: 'sub' }, `${player.recharged.name} · not on WFC`)];
+    return [h('span', { class: 'badge', 'data-tone': tone, title: about }, name), h('span', { class: 'sub' }, 'Not on WFC')];
   }
   if (!player.online) return badge(null, 'Offline');
   const [name, tone, about] = statusOf(player.online);
@@ -834,7 +834,7 @@ function renderPlayers(data, now) {
           : 'Every profile, online first; the CPU buddy is the server\'s own',
       table(
         [
-          { label: 'Player', cell: (p) => [h('a', { href: playerPath(p.profile_id) }, p.mii_name || 'Unnamed'), h('span', { class: 'sub' }, `Profile ${p.profile_id}`)] },
+          { label: 'Player', cell: (p) => [h('a', { href: playerPath(p.profile_id) }, who(p.player, p.mii_name)), h('span', { class: 'sub' }, `Profile ${p.profile_id}`)] },
           { label: 'Friend code', cell: (p) => h('code', null, p.friend_code) },
           { label: 'Status', cell: (p) => presence(p, now) },
           {
@@ -877,8 +877,8 @@ function renderPlayer(data, now) {
   }
   const { profile, stats, standing, matches, relayed, relay_kept_days: keptDays, technical } = detail;
   const opponent = (r) => (r.games[0].profile_id === profile.profile_id ? r.games[1] : r.games[0]);
-  setHead(profile.mii_name || 'Unnamed', [`Profile ${profile.profile_id} · friend code `, h('code', null, profile.friend_code)]);
   const player = profile.player;
+  setHead(who(player?.name, profile.mii_name), [`Profile ${profile.profile_id} · friend code `, h('code', null, profile.friend_code)]);
   const client = technical.builds[0];
   const relayedNow = relayed.find((r) => !r.ended_at);
   const version = technical.sessions.find((session) => session.version)?.version;
@@ -965,7 +965,7 @@ function renderPlayer(data, now) {
           { label: 'Mode', cell: (m) => [MODES[m.mode] || m.mode, h('span', { class: 'sub' }, `${m.release} · best of ${m.best_of}`)] },
           { label: 'Played as', cell: (m) => [captainName(m.captain), h('span', { class: 'sub' }, m.side === 'home' ? 'Home' : 'Away')] },
           { label: 'Games', num: true, cell: (m) => h('a', { href: matchPath(m) }, `${m.games_won} – ${m.games_lost}`) },
-          { label: 'Opponent', cell: (m) => [miiLink(m.opponent.mii, m.opponent.profile_id), h('span', { class: 'sub' }, captainName(m.opponent.captain))] },
+          { label: 'Opponent', cell: (m) => [profileLink(teamName(m.opponent), m.opponent.profile_id), h('span', { class: 'sub' }, captainName(m.opponent.captain))] },
           { label: 'Result', cell: (m) => playedResult(m, now) },
           { label: '', class: 'actions', cell: (m) => h('a', { class: 'button', href: matchPath(m) }, 'Open') },
         ],
@@ -998,8 +998,8 @@ function renderPlayer(data, now) {
             [
               { label: 'When', cell: (e) => [ago(e.last_at, now), h('span', { class: 'sub' }, `from ${clock.format(new Date(e.first_at))}`)] },
               { label: 'What', cell: (e) => eventWhat(e) },
-              { label: 'Who', cell: (e) => eventWho(e, technical.names) },
-              { label: 'Filter', class: 'query', cell: (e) => eventDetail(e, technical.names) },
+              { label: 'Who', cell: (e) => eventWho(e, eventNames(technical.names, technical.players)) },
+              { label: 'Filter', class: 'query', cell: (e) => eventDetail(e, eventNames(technical.names, technical.players)) },
             ],
             technical.events,
             'No matchmaking of its games since the server started.',
@@ -1187,7 +1187,7 @@ function matchMode(game) {
   return [kinds.join(', ') || 'Normal', h('span', { class: 'sub' }, `Region group ${game.region_group ?? '—'}`)];
 }
 
-// A profile in an event: its Mii name and number.
+// A profile in an event: its name (`eventNames`) and number.
 function party(profile, names) {
   if (profile == null) return h('span', { class: 'sub' }, 'Unknown');
   return [names[profile] || 'Unnamed', h('span', { class: 'sub' }, `Profile ${profile}`)];
@@ -1245,7 +1245,8 @@ function eventDetail(event, names) {
 function renderMatchmaking(data, now) {
   const content = data.content;
   if (!content) return [unreachable(data.error)];
-  const { totals, sessions, activity, names } = content;
+  const { totals, sessions, activity } = content;
+  const names = eventNames(content.names, content.players);
   const idle = totals.sessions - totals.searching - totals.with_friends;
 
   return [
@@ -1266,7 +1267,7 @@ function renderMatchmaking(data, now) {
             label: 'Player',
             cell: (g) => (g.profile_id == null
               ? ['—', h('span', { class: 'sub' }, 'No profile until matchmaking')]
-              : [g.mii_name || 'Unnamed', h('span', { class: 'sub' }, `Profile ${g.profile_id}`)]),
+              : [who(g.player, g.mii_name), h('span', { class: 'sub' }, `Profile ${g.profile_id}`)]),
           },
           { label: 'Doing', cell: (g) => matchState(g) },
           { label: 'Mode', cell: (g) => matchMode(g) },
@@ -1311,7 +1312,7 @@ function captainName(captain) {
 function onlineState(match, now) {
   const [name, tone] = ONLINE_STATES[match.state] || [match.state, null];
   const sub = match.ended_at ? ['ended ', ago(match.ended_at, now)] : ['last report ', ago(match.last_report_at, now)];
-  const forfeit = match.forfeited_by && h('span', { class: 'sub' }, `forfeit by ${match[match.forfeited_by].mii}`);
+  const forfeit = match.forfeited_by && h('span', { class: 'sub' }, `forfeit by ${teamName(match[match.forfeited_by])}`);
   return [badge(tone, name), forfeit, h('span', { class: 'sub' }, sub)];
 }
 
@@ -1319,14 +1320,35 @@ function playerPath(profileId) {
   return `/admin/players/${profileId}`;
 }
 
-/** A Mii's name, to its profile's page when a game reported it. */
-function miiLink(mii, profileId) {
-  return profileId == null ? mii : h('a', { href: playerPath(profileId) }, mii);
+/** How the dashboard names a WFC profile: its Recharged player's name, then
+ * its Mii's in brackets when that is another name; the Mii's alone (or
+ * `unnamed`) for a profile no Recharged player has. */
+function who(player, mii, unnamed = 'Unnamed') {
+  if (!player) return mii || unnamed;
+  const same = !mii || mii.trim().toLowerCase() === player.trim().toLowerCase();
+  return same ? player : `${player} (${mii})`;
 }
 
-/** A team in the list: its Mii, bold when it won, and its captain. */
+/** The names `who` gives the profiles of events: `names` has their Miis',
+ * `players` their Recharged players'. */
+function eventNames(names, players = {}) {
+  const ids = new Set([...Object.keys(names), ...Object.keys(players)]);
+  return Object.fromEntries([...ids].map((id) => [id, who(players[id], names[id])]));
+}
+
+/** A team's name: its player's and Mii's. */
+function teamName(team) {
+  return who(team.player, team.mii);
+}
+
+/** A name, to its profile's page when a game reported it. */
+function profileLink(name, profileId) {
+  return profileId == null ? name : h('a', { href: playerPath(profileId) }, name);
+}
+
+/** A team in the list: its name, bold when it won, and its captain. */
 function matchTeam(team, won) {
-  const link = miiLink(team.mii, team.profile_id);
+  const link = profileLink(teamName(team), team.profile_id);
   const name = won ? h('strong', null, link) : link;
   const reported = team.profile_id == null ? ' · no reports' : '';
   return [name, h('span', { class: 'sub' }, `${captainName(team.captain)}${reported}`)];
@@ -1421,10 +1443,10 @@ function replayButtons(match, kept) {
   ];
 }
 
-/** A game the NAT relay carried: its Mii (to its profile) and address. */
+/** A game the NAT relay carried: its name (to its profile) and address. */
 function relayedGame(game) {
-  const who = game.profile_id == null ? h('span', { class: 'sub' }, 'Profile unknown') : miiLink(game.mii_name || `Profile ${game.profile_id}`, game.profile_id);
-  return [who, h('span', { class: 'sub' }, h('code', null, game.address))];
+  const name = game.profile_id == null ? h('span', { class: 'sub' }, 'Profile unknown') : profileLink(who(game.player, game.mii_name, `Profile ${game.profile_id}`), game.profile_id);
+  return [name, h('span', { class: 'sub' }, h('code', null, game.address))];
 }
 
 /** Why the relay took a pair, the reason's explanation on hover. */
@@ -1491,12 +1513,10 @@ function renderMatches(data, now) {
 /** What a finished match came to, for its banner. */
 function matchResult(match) {
   const score = `${match.score.home} – ${match.score.away}`;
-  if (match.forfeited_by) {
-    const forfeiter = match[match.forfeited_by].mii;
-    return `${match.winner === 'home' ? match.home.mii : match.away.mii} won, forfeit by ${forfeiter} at ${score}`;
-  }
+  const winner = match.winner === 'home' ? match.home : match.away;
+  if (match.forfeited_by) return `${teamName(winner)} won, forfeit by ${teamName(match[match.forfeited_by])} at ${score}`;
   if (!match.winner) return `A draw, ${score}`;
-  return `${match.winner === 'home' ? match.home.mii : match.away.mii} won, ${score}`;
+  return `${teamName(winner)} won, ${score}`;
 }
 
 function matchBanner(match, now, why) {
@@ -1525,9 +1545,9 @@ function stopCause(detail) {
   const cause = (name) => reporters.find((side) => side.reporter.cause === name);
   if (cause('desync')) return 'The series went out of sync';
   if (cause('disconnect')) return 'The connection was lost';
-  if (cause('offline')) return `${cause('offline').mii}'s game went offline`;
+  if (cause('offline')) return `${teamName(cause('offline'))}'s game went offline`;
   const left = reporters.find((side) => side.reporter.left_at);
-  if (left) return `${left.mii}'s game ${LEFT_HOW[left.reporter.left_how] || 'left WFC'}`;
+  if (left) return `${teamName(left)}'s game ${LEFT_HOW[left.reporter.left_how] || 'left WFC'}`;
   return views.length ? null : 'It stopped before a game ended';
 }
 
@@ -1603,7 +1623,7 @@ function renderMatch(data, now) {
   }
   const { match, sides, games, events, relayed, relay_kept_days: keptDays, desyncs, dossiers_kept_days: dossierDays, replays } = detail;
   const outOfSync = games.some((game) => ['home', 'away'].some((side) => game[side]?.ending === 'desync'));
-  setHead(`${match.home.mii} vs ${match.away.mii}`, [
+  setHead(`${teamName(match.home)} vs ${teamName(match.away)}`, [
     `${MODES[match.mode] || match.mode} · ${match.release} · best of ${match.best_of} · started `,
     ago(match.started_at, now),
   ]);
@@ -1618,7 +1638,7 @@ function renderMatch(data, now) {
       table(
         [
           { label: 'Side', cell: (side) => (side.side === 'home' ? 'Home' : 'Away') },
-          { label: 'Mii', cell: (side) => (match.winner === side.side ? h('strong', null, side.mii) : side.mii) },
+          { label: 'Player', cell: (side) => (match.winner === side.side ? h('strong', null, teamName(side)) : teamName(side)) },
           { label: 'Reported by', cell: (side) => sideReporter(side) },
           { label: 'Captain', cell: (side) => captainName(side.captain) },
           { label: 'Sidekicks', cell: (side) => (side.sidekicks.length ? side.sidekicks.map((name) => SIDEKICK_NAMES[name] || name).join(', ') : h('span', { class: 'sub' }, 'unknown')) },
@@ -1705,7 +1725,7 @@ function renderMatch(data, now) {
       table(
         [
           { label: 'When', cell: (e) => [h('time', { datetime: e.at, title: dateTime.format(new Date(e.at)) }, clock.format(new Date(e.at))), h('span', { class: 'sub' }, ago(e.at, now))] },
-          { label: 'Side', cell: (e) => [e.side === 'home' ? 'Home' : 'Away', h('span', { class: 'sub' }, bySide[e.side].mii)] },
+          { label: 'Side', cell: (e) => [e.side === 'home' ? 'Home' : 'Away', h('span', { class: 'sub' }, teamName(bySide[e.side]))] },
           {
             label: 'Report',
             cell: (e) => {
@@ -2163,7 +2183,7 @@ function dossierSide(desync, side) {
   const dossier = desync[side];
   if (!dossier) return h('span', { class: 'sub' }, 'No dossier yet');
   return [
-    h('a', { href: playerPath(dossier.profile_id) }, dossier.mii || `Profile ${dossier.profile_id}`),
+    h('a', { href: playerPath(dossier.profile_id) }, who(dossier.player, dossier.mii, `Profile ${dossier.profile_id}`)),
     h('span', { class: 'sub' }, h('code', null, dossier.build), ` · ${dossier.platform || 'unknown platform'}`),
     h('span', { class: 'sub', title: dossier.symbolize }, h('a', { href: `/admin/api/desyncs/${desync.match_id}/${desync.game}/${side}`, download: '' }, 'Raw dossier')),
   ];
@@ -2247,7 +2267,7 @@ function renderMonitoring(data, now) {
         [
           { label: 'When', cell: (i) => [h('time', { datetime: i.at, title: dateTime.format(new Date(i.at)) }, ago(i.at, now))] },
           { label: 'What', cell: incidentWhat },
-          { label: 'Player', cell: (i) => [i.mii, h('span', { class: 'sub' }, h('a', { href: playerPath(i.profile_id) }, `Profile ${i.profile_id}`))] },
+          { label: 'Player', cell: (i) => [who(i.player, i.mii), h('span', { class: 'sub' }, h('a', { href: playerPath(i.profile_id) }, `Profile ${i.profile_id}`))] },
           { label: 'Match', cell: (i) => [h('a', { href: `/admin/matches/${i.match_id}` }, `Match ${i.match_id}`), h('span', { class: 'sub' }, i.side === 'home' ? 'Home' : 'Away')] },
           { label: 'Build', cell: (i) => build(i.build) },
         ],
@@ -2346,7 +2366,7 @@ function renderMonitoring(data, now) {
       'Reports of known profiles the server did not take, the latest first: a game whose matches show no reports from its side is often here',
       table(
         [
-          { label: 'Player', cell: (r) => [r.mii || 'Unknown', h('span', { class: 'sub' }, h('a', { href: playerPath(r.profile_id) }, `Profile ${r.profile_id}`))] },
+          { label: 'Player', cell: (r) => [who(r.player, r.mii, 'Unknown'), h('span', { class: 'sub' }, h('a', { href: playerPath(r.profile_id) }, `Profile ${r.profile_id}`))] },
           { label: 'Why', cell: (r) => [REFUSALS[r.kind] || r.kind, h('span', { class: 'sub' }, r.problem)] },
           { label: 'Reports', num: true, cell: (r) => integer.format(r.count) },
           { label: 'From', cell: (r) => h('code', null, r.address) },
@@ -2397,8 +2417,7 @@ function renderLeaderboards(data, now) {
         // A Recharged player's WFC profiles are one row, its points added up.
         const ids = e.profile_ids && e.profile_ids.length ? e.profile_ids : [e.profile_id];
         const profiles = ids.length > 1 ? `Profiles ${ids.join(', ')}` : `Profile ${ids[0]}`;
-        const sub = e.player && e.player !== e.name ? `${e.player} · ${profiles}` : profiles;
-        return [e.name || 'Unknown', h('span', { class: 'sub' }, sub)];
+        return [who(e.player, e.name, 'Unknown'), h('span', { class: 'sub' }, profiles)];
       },
     },
     { label: 'Region', cell: (e) => REGIONS[e.region] || `${e.region}` },
@@ -3951,7 +3970,7 @@ function playerCard(profile) {
         result,
       ]
     : [h('p', { class: 'sub' }, 'No Recharged player has proved this profile theirs.'), ban, result];
-  return card('Recharged player', 'Linked WFC profiles share one leaderboard row per season or day. The row uses the highest-scoring profile’s Mii name, not the Recharged player name.', body, tools);
+  return card('Recharged player', 'Linked WFC profiles share one leaderboard row per season or day. In the game, the row shows the highest-scoring profile’s Mii name, not the Recharged player name.', body, tools);
 }
 
 /** Linking a profile to a player, unlinking it, merging two players,
@@ -4015,7 +4034,7 @@ const playerTools = {
       try {
         if (kind.key === 'profile') {
           const paired = await send('PUT', path, { profile_id: number });
-          this.done(`WFC profiles #${profile.profile_id} and #${number} are both kept and linked to ${paired.created ? 'new' : 'existing'} Recharged player ${paired.name} (#${paired.player_id}). Their leaderboard rows are combined per season or day using the highest-scoring profile’s Mii name.`, 'good');
+          this.done(`WFC profiles #${profile.profile_id} and #${number} are both kept and linked to ${paired.created ? 'new' : 'existing'} Recharged player ${paired.name} (#${paired.player_id}). Their leaderboard rows are combined per season or day; the game shows the highest-scoring profile’s Mii name.`, 'good');
         } else {
           await send('PUT', path, { player_id: number });
           this.done(`WFC profile #${profile.profile_id} is now linked to Recharged player #${number}. No WFC profiles or Recharged players were deleted.`, 'good');
@@ -4027,7 +4046,7 @@ const playerTools = {
     this.show(
       `Link WFC profile #${profile.profile_id} (${profile.mii_name || 'Unnamed'})`,
       h('p', null, 'No WFC profile is deleted. Profiles linked to the same Recharged player have their points, wins and losses added into one leaderboard row per season or day.'),
-      h('p', null, 'Leaderboard name: the highest-scoring profile’s Mii name is shown, regardless of which profile you start from. In the game, your own combined row keeps your own Mii. Linking does not let you choose the displayed name.'),
+      h('p', null, 'Leaderboard name in the game: the highest-scoring profile’s Mii name is shown, regardless of which profile you start from; your own combined row keeps your own Mii. Linking does not let you choose the displayed name.'),
       h('div', { class: 'segmented', role: 'group', 'aria-label': 'Link with' }, buttons),
       about,
       h('label', { class: 'editor-field' }, field, input),
@@ -4110,7 +4129,7 @@ const playerTools = {
       confirm.disabled = true;
       try {
         await send('POST', '/admin/api/players/merge/confirm', { from, into: into.player_id, token, phrase: input.value.trim() });
-        this.done(`Kept ${impact.into.name} (player #${impact.into.player_id}). Removed ${impact.from.name} (player #${impact.from.player_id}) and moved their WFC profiles and data to the kept player. No WFC profiles were deleted. The leaderboard uses the highest-scoring profile’s Mii name.`, 'good');
+        this.done(`Kept ${impact.into.name} (player #${impact.into.player_id}). Removed ${impact.from.name} (player #${impact.from.player_id}) and moved their WFC profiles and data to the kept player. No WFC profiles were deleted. The game’s leaderboard shows the highest-scoring profile’s Mii name.`, 'good');
       } catch (error) {
         this.done(error.message, 'critical');
       }
@@ -4120,7 +4139,7 @@ const playerTools = {
       'Confirm which Recharged player stays',
       h('p', null, h('strong', null, 'Keep: '), `${impact.into.name} (player #${impact.into.player_id}, ${kinds(impact.into)}). This player and their name remain.`),
       h('p', null, h('strong', null, 'Remove: '), `${impact.from.name} (player #${impact.from.player_id}, ${kinds(impact.from)}). This Recharged player is deleted after their data moves to ${impact.into.name} (#${impact.into.player_id}).`),
-      h('p', null, h('strong', null, 'Leaderboard: '), 'WFC profiles are kept, with points, wins and losses combined per season or day. The row shows the highest-scoring profile’s Mii name, not necessarily the kept player’s name. In the game, your own combined row keeps your own Mii.'),
+      h('p', null, h('strong', null, 'Leaderboard: '), 'WFC profiles are kept, with points, wins and losses combined per season or day. In the game, the row shows the highest-scoring profile’s Mii name, not necessarily the kept player’s name; your own combined row keeps your own Mii.'),
       h('ul', null,
         h('li', null, plural(impact.profiles, 'WFC profile', 'WFC profiles'), ' and ', plural(impact.matches, 'set', 'sets'), ` move to ${impact.into.name} (#${impact.into.player_id})`),
         h('li', null, plural(impact.friends, 'friend', 'friends'), ` move to ${impact.into.name} (#${impact.into.player_id})`),

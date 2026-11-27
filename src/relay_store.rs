@@ -213,6 +213,8 @@ pub struct RelayedGame {
     pub address: String,
     pub profile_id: Option<i32>,
     pub mii_name: Option<String>,
+    /// The Recharged player the profile is bound to.
+    pub player: Option<String>,
 }
 
 /// The relayed matches of the `profiles` that ran while a match from `from`
@@ -238,9 +240,9 @@ pub async fn during(
         from,
         to,
     )
-    .fetch_all(conn)
+    .fetch_all(&mut *conn)
     .await?;
-    Ok(rows
+    let relayed = rows
         .into_iter()
         .map(|row| Relayed {
             id: row.relay_id,
@@ -252,11 +254,13 @@ pub async fn during(
                     address: row.first_address,
                     profile_id: row.first_profile,
                     mii_name: row.first_mii,
+                    player: None,
                 },
                 RelayedGame {
                     address: row.second_address,
                     profile_id: row.second_profile,
                     mii_name: row.second_mii,
+                    player: None,
                 },
             ],
             started_at: row.started_at,
@@ -266,7 +270,8 @@ pub async fn during(
             bytes: row.bytes,
             match_id: None,
         })
-        .collect())
+        .collect();
+    with_players(conn, relayed).await
 }
 
 /// The latest `limit` relayed matches of `profile_id`, the newest first,
@@ -296,9 +301,9 @@ pub async fn of_profile(
         profile_id,
         limit,
     )
-    .fetch_all(conn)
+    .fetch_all(&mut *conn)
     .await?;
-    Ok(rows
+    let relayed = rows
         .into_iter()
         .map(|row| Relayed {
             id: row.relay_id,
@@ -310,11 +315,13 @@ pub async fn of_profile(
                     address: row.first_address,
                     profile_id: row.first_profile,
                     mii_name: row.first_mii,
+                    player: None,
                 },
                 RelayedGame {
                     address: row.second_address,
                     profile_id: row.second_profile,
                     mii_name: row.second_mii,
+                    player: None,
                 },
             ],
             started_at: row.started_at,
@@ -324,7 +331,29 @@ pub async fn of_profile(
             bytes: row.bytes,
             match_id: row.match_id,
         })
-        .collect())
+        .collect();
+    with_players(conn, relayed).await
+}
+
+/// `relayed` with the player of each game's profile.
+async fn with_players(
+    conn: &mut PgConnection,
+    mut relayed: Vec<Relayed>,
+) -> Result<Vec<Relayed>, sqlx::Error> {
+    let profiles: Vec<i32> = relayed
+        .iter()
+        .flat_map(|relayed| relayed.games.iter().filter_map(|game| game.profile_id))
+        .collect();
+    let players = crate::profiles::players::names_of_profiles(conn, &profiles).await?;
+    for game in relayed
+        .iter_mut()
+        .flat_map(|relayed| relayed.games.iter_mut())
+    {
+        game.player = game
+            .profile_id
+            .and_then(|profile| players.get(&profile).cloned());
+    }
+    Ok(relayed)
 }
 
 #[cfg(test)]
