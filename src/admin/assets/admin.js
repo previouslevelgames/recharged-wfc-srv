@@ -351,7 +351,8 @@ const ICONS = {
   critical: 'M18 6 6 18M6 6l12 12',
   pending: 'M12 6v6l4 2',
   watch: 'M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
-  ticket: 'M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2zM13 5v2M13 17v2M13 11v2',
+  // Watch as a file: a page with Watch's eye on it.
+  watchFile: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6M7.5 15s1.8-3 4.5-3 4.5 3 4.5 3-1.8 3-4.5 3-4.5-3-4.5-3zM12 16a1 1 0 1 0 0-2 1 1 0 0 0 0 2z',
   replay: 'M1 4v6h6M3.51 15a9 9 0 1 0 2.13-9.36L1 10',
   download: 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3',
 };
@@ -1398,7 +1399,7 @@ const toast = {
  * program that signed up for it, and stays silent otherwise: Recharged 1.2's
  * launcher signs up each time it starts. When the page keeps the focus (no
  * "Open Recharged?" question, no Recharged window), it says what to do;
- * `file` names the button that gives the same thing as a file. */
+ * `file` names the button that gives the same as a file. */
 async function openInRecharged(button, api, gone, file) {
   button.disabled = true;
   let url;
@@ -1407,7 +1408,7 @@ async function openInRecharged(button, api, gone, file) {
     if (!response.ok) throw new Error(response.status === 404 ? gone : `The server answered HTTP ${response.status}.`);
     url = (await response.json()).url;
   } catch (error) {
-    toast.show('critical', 'No ticket', error.message);
+    toast.show('critical', 'Nothing to open', error.message);
     return;
   } finally {
     button.disabled = false;
@@ -1425,38 +1426,39 @@ async function openInRecharged(button, api, gone, file) {
     toast.show(
       'warning',
       'Nothing opened?',
-      `Start Recharged 1.2 once on this computer: its launcher signs up for these links. Then try again, or take the ${file} file and open it with Recharged.`,
+      `Start Recharged 1.2 once on this computer: its launcher signs up for these links. Then try again, or use ${file} and open its file with Recharged.`,
     );
   }, 4000);
 }
 
 /** While a match's games stream (REPLAYS on the server), Watch opens it in
- * Recharged (a recharged:// link, which Recharged 1.2 registers itself for);
- * Ticket downloads the same ticket as a file, to open with Recharged or drop on
- * its launcher. A ticket lasts four hours. */
+ * Recharged (a recharged:// link with a ticket, which Recharged 1.2 registers
+ * itself for); Watch (file) downloads the same ticket as a file, to open with
+ * Recharged or drop on its launcher, where the link opens nothing. A ticket
+ * lasts four hours. */
 function watchButton(match) {
   if (!match.live) return null;
   const watch = (event) =>
-    openInRecharged(event.currentTarget, `/admin/api/matches/${match.id}/watch?as=link`, 'The match no longer streams.', 'Ticket');
+    openInRecharged(event.currentTarget, `/admin/api/matches/${match.id}/watch?as=link`, 'The match no longer streams.', 'Watch (file)');
   return [
     iconButton(
       'button',
       { type: 'button', onclick: watch },
       'watch',
       'Watch',
-      'the match in Recharged 1.2, half a second behind the players. Without Recharged 1.2 started once on this computer, take the ticket file.',
+      'the match in Recharged 1.2, half a second behind the players. Without Recharged 1.2 started once on this computer, use Watch (file).',
     ),
     iconButton(
       'a',
       { href: `/admin/api/matches/${match.id}/watch`, download: '' },
-      'ticket',
-      'Ticket',
-      'the watch ticket as a file: open it with Recharged, or drop it on its launcher. It lasts four hours.',
+      'watchFile',
+      'Watch (file)',
+      'the same as Watch, from a small file (no replay): open it with Recharged 1.2, or drop it on its launcher. For when Watch opens nothing; it works for four hours.',
     ),
   ];
 }
 
-/** The list's buttons, and the match page's: Watch and Ticket while the
+/** The list's buttons, and the match page's: Watch and Watch (file) while the
  * match is played and its games stream, then Replay from its first kept game
  * (Recharged goes on with the match's later kept games). Between the two,
  * while the players' games send the replay (about a minute after the match),

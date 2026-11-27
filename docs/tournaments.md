@@ -123,7 +123,7 @@ one's entrants and sets (each with its `from` and `played`, as on the
 tournament's page). The sets are drawn as the bracket, laid out as the
 game's own: the rounds in columns, the losers' or the ash bracket below, a
 line from each set to the one its winner goes to. A set opened shows its
-players, its games and the organizer's decisions; while its match's games stream (the card is ringed) it has the Matches page's **Watch** and **Ticket**, for the game being played. An admin makes one (`POST /admin/api/tournaments`
+players, its games and the organizer's decisions; while its match's games stream (the card is ringed) it has the Matches page's **Watch** and **Watch (file)**, for the game being played. An admin makes one (`POST /admin/api/tournaments`
 with `name`, `format`, `rule_set` (an id), `best_of`, `semifinals_best_of`,
 `finals_best_of`, `max_entrants`, `registration_ends_at`, `starts_at`), starts it (`POST …/<id>/start` with `{"seeding":
 "joined"}`, `"shuffled"` or the players' ids in seed order), calls it off
