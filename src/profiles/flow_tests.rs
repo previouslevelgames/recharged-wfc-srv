@@ -103,6 +103,47 @@ impl World {
         (status, value)
     }
 
+    /// `lists`, an answer of `GET /api/v1/players` to `token`, with who has
+    /// Recharged open as that player would see them under `online`. The
+    /// answer names nobody else (docs/profiles.md, "Players"); these tests
+    /// look at how a player is listed while their Recharged is open.
+    async fn with_online(&self, mut lists: Value, token: &str) -> Value {
+        assert!(lists.get("online").is_none(), "{lists}");
+        let viewer = super::players::session(&self.pool, token)
+            .await
+            .unwrap()
+            .unwrap();
+        let ids: Vec<i64> = sqlx::query_scalar(
+            "SELECT player_id FROM players
+             WHERE heartbeat_at > now() - make_interval(secs => $2) AND player_id <> $1
+             ORDER BY lower(display_name), player_id",
+        )
+        .bind(viewer)
+        .bind(f64::from(super::matches::HEARTBEAT_TIMEOUT_SECS))
+        .fetch_all(&self.pool)
+        .await
+        .unwrap();
+        let listed = super::players::listed(&self.pool, viewer, &ids)
+            .await
+            .unwrap();
+        lists["online"] = serde_json::to_value(listed).unwrap();
+        lists
+    }
+
+    /// `token`'s player opens up to challenges (off by default: Do not
+    /// disturb takes challenges from friends only).
+    async fn open(&self, token: &str) {
+        let (status, body) = self
+            .send(
+                "PUT",
+                "/api/v1/me/available",
+                token,
+                json!({"available": true}),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
     async fn sign_in(&self, name: &str) -> String {
         let (status, body) = self
             .send("POST", "/api/v1/sign-in/test", "", json!({ "name": name }))
@@ -177,6 +218,7 @@ async fn a_test_match_from_challenge_to_result(pool: PgPool) {
     let world = World::new(pool);
     let mario = world.sign_in("Mario").await;
     let bowser = world.sign_in("Bowser").await;
+    world.open(&bowser).await;
 
     // Each game logs in to WFC; its port proves the login with the ticket.
     let mario_pid = world.wfc_login(1, "R4QEaaaaaaa").await;
@@ -378,8 +420,10 @@ async fn a_challenge_plays_by_rules_of_its_own(pool: PgPool) {
     let world = World::new(pool);
     let mario = world.sign_in("Mario").await;
     let peach = world.sign_in("Peach").await;
-    world.sign_in("Luigi").await;
-    world.sign_in("Daisy").await;
+    let luigi = world.sign_in("Luigi").await;
+    world.open(&luigi).await;
+    let daisy = world.sign_in("Daisy").await;
+    world.open(&daisy).await;
     let own = json!({"tweaks": ["fast_terrain"], "limit": "goals", "time": 180, "goals": 7, "games": 5,
                      "stadium": "the_palace", "stadium_cheat": "field_tilt", "powerup_cheat": "shells"});
     // No rules, and rules the game doesn't have, are refused.
@@ -475,8 +519,11 @@ async fn a_search_leaves_out_players_in_the_games_online_mode(pool: PgPool) {
 async fn a_stopped_set_keeps_nobody_from_the_next(pool: PgPool) {
     let world = World::new(pool);
     let mario = world.sign_in("Mario").await;
+    world.open(&mario).await;
     let bowser = world.sign_in("Bowser").await;
+    world.open(&bowser).await;
     let peach = world.sign_in("Peach").await;
+    world.open(&peach).await;
     let post = |path: String, token: &str, body: Value| {
         let world = &world;
         let token = token.to_owned();
@@ -531,18 +578,20 @@ async fn a_stopped_set_keeps_nobody_from_the_next(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    // The called-off set can be played again: Bowser's rematch challenges
-    // Mario by its rules.
+    // The called-off set has no result, so no rematch: a new challenge plays
+    // them again, with its challenger's turn.
     let (status, again) = post(
         format!("/api/v1/matches/{id}/rematch"),
         &bowser,
         Value::Null,
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{again}");
+    assert_eq!(status, StatusCode::CONFLICT, "{again}");
+    let (status, again) = challenge(&bowser, "mario").await;
+    assert_eq!(status, StatusCode::CREATED, "{again}");
     assert_eq!(
-        (&again["rematch_of"], &again["stage"]),
-        (&json!(id), &json!("invited"))
+        (&again["rematch_of"], &again["first_pick"]),
+        (&Value::Null, &json!("you"))
     );
 }
 
@@ -579,6 +628,7 @@ async fn a_set_pairs_players_of_two_versions(pool: PgPool) {
             Value::Null,
         )
         .await;
+    let lists = world.with_online(lists, &mario).await;
     assert_eq!(lists["online"][0]["game"], "R4QP", "{lists}");
 
     // A search asks him.
@@ -827,12 +877,14 @@ async fn a_set_from_the_lobby_to_a_rematch(pool: PgPool) {
     let world = World::new(pool);
     let mario = world.sign_in("Mario").await;
     let bowser = world.sign_in("Bowser").await;
+    world.open(&bowser).await;
 
     // The lobby: Bowser has Recharged open; Mario challenges him from the
     // list, by his player id.
     let (status, lists) = world
         .send("GET", "/api/v1/players", &mario, Value::Null)
         .await;
+    let lists = world.with_online(lists, &mario).await;
     assert_eq!(status, StatusCode::OK);
     let online = lists["online"].as_array().unwrap();
     assert_eq!(online.len(), 1);
@@ -860,10 +912,13 @@ async fn a_set_from_the_lobby_to_a_rematch(pool: PgPool) {
         async move { world.send("POST", &path, &token, body).await }
     };
     assert_eq!(challenge["you_ready"], json!(true));
+    // The challenger picked the stadium and drafts first.
+    assert_eq!(challenge["first_pick"], "you");
 
     // The accept is Bowser's Ready to play!, the challenge was Mario's: go.
     let (status, go) = post(format!("/api/v1/matches/{id}/accept"), &bowser, Value::Null).await;
     assert_eq!(status, StatusCode::OK, "{go}");
+    assert_eq!(go["first_pick"], "opponent");
     assert_eq!(
         (&go["stage"], &go["you_ready"], &go["opponent_ready"]),
         (&json!("go"), &json!(true), &json!(true))
@@ -933,24 +988,39 @@ async fn a_set_from_the_lobby_to_a_rematch(pool: PgPool) {
     )
     .await;
     assert_eq!(finished["stage"], "finished");
+    // The rematch is Bowser's turn: he picks its stadium, and drafts first.
     let (_, offered) = post(
         format!("/api/v1/matches/{id}/rematch"),
         &bowser,
-        Value::Null,
+        json!({"stadium": "the_palace"}),
     )
     .await;
     assert_eq!(
-        (&offered["stage"], &offered["rematch_of"]),
-        (&json!("invited"), &json!(id))
+        (
+            &offered["stage"],
+            &offered["rematch_of"],
+            &offered["first_pick"]
+        ),
+        (&json!("invited"), &json!(id), &json!("you"))
     );
-    let (_, again) = post(format!("/api/v1/matches/{id}/rematch"), &mario, Value::Null).await;
+    assert_eq!(offered["rules"]["stadium"], "the_palace");
+    let (status, refused) = post(
+        format!("/api/v1/matches/{id}/rematch"),
+        &mario,
+        json!({"stadium": "crater_field"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+    let (_, again) = post(format!("/api/v1/matches/{id}/rematch"), &mario, json!({})).await;
     assert_eq!(
-        (&again["id"], &again["stage"]),
-        (&offered["id"], &json!("go"))
+        (&again["id"], &again["stage"], &again["first_pick"]),
+        (&offered["id"], &json!("go"), &json!("opponent"))
     );
+    assert_eq!(again["rules"]["stadium"], "the_palace");
     let (_, lists) = world
         .send("GET", "/api/v1/players", &mario, Value::Null)
         .await;
+    let lists = world.with_online(lists, &mario).await;
     assert_eq!(lists["recent"][0]["name"], "Bowser");
     assert_eq!(lists["online"][0]["busy"], true);
 
@@ -977,6 +1047,7 @@ async fn a_set_lasts_while_its_games_call(pool: PgPool) {
     let world = World::new(pool);
     let mario = world.sign_in("Mario").await;
     let bowser = world.sign_in("Bowser").await;
+    world.open(&bowser).await;
     let (_, challenge) = world
         .send(
             "POST",
@@ -1229,10 +1300,12 @@ async fn a_match_in_the_game_shows_and_keeps_challenges_away(pool: PgPool) {
     let world = World::new(pool);
     let mario = world.sign_in("Mario").await;
     let luigi = world.sign_in("Luigi").await;
+    world.open(&luigi).await;
     let activity_of_luigi = || async {
         let (_, lists) = world
             .send("GET", "/api/v1/players", &mario, Value::Null)
             .await;
+        let lists = world.with_online(lists, &mario).await;
         lists["online"][0]["activity"].clone()
     };
     let challenge = || {
@@ -1270,6 +1343,7 @@ async fn a_match_in_the_game_shows_and_keeps_challenges_away(pool: PgPool) {
         let (_, lists) = world
             .send("GET", "/api/v1/players", &mario, Value::Null)
             .await;
+        let lists = world.with_online(lists, &mario).await;
         lists["online"][0]["match"].clone()
     };
     // A game before 1.2.1 doesn't say which kind; a newer one does, and
@@ -1325,10 +1399,12 @@ async fn the_lists_show_a_players_screens_search_and_set(pool: PgPool) {
     let world = World::new(pool);
     let mario = world.sign_in("Mario").await;
     let luigi = world.sign_in("Luigi").await;
+    world.open(&luigi).await;
     let luigi_for_mario = || async {
         let (_, lists) = world
             .send("GET", "/api/v1/players", &mario, Value::Null)
             .await;
+        let lists = world.with_online(lists, &mario).await;
         lists["online"][0].clone()
     };
     let luigi_says = |headers: &'static [(&'static str, &'static str)]| {
@@ -1386,6 +1462,7 @@ async fn the_lists_show_a_players_screens_search_and_set(pool: PgPool) {
     let (_, lists) = world
         .send("GET", "/api/v1/players", &luigi, Value::Null)
         .await;
+    let lists = world.with_online(lists, &luigi).await;
     let set = &lists["online"][0]["set"];
     assert_eq!(
         (&set["stage"], &set["challenger"], &set["opponent"]),
@@ -1437,6 +1514,7 @@ async fn the_lists_show_a_players_screens_search_and_set(pool: PgPool) {
     let (_, lists) = world
         .send("GET", "/api/v1/players", &mario, Value::Null)
         .await;
+    let lists = world.with_online(lists, &mario).await;
     let peach_listed = lists["online"]
         .as_array()
         .unwrap()
@@ -1452,7 +1530,9 @@ async fn friends_are_added_by_hand_and_follow_the_player(pool: PgPool) {
     let world = World::new(pool);
     let mario = world.sign_in("Mario").await;
     let luigi = world.sign_in("Luigi").await;
+    world.open(&luigi).await;
     let peach = world.sign_in("Peach").await;
+    world.open(&peach).await;
     let friends = |token: String| {
         let world = &world;
         async move {
@@ -1535,11 +1615,13 @@ async fn friends_are_added_by_hand_and_follow_the_player(pool: PgPool) {
     let (_, lists) = world
         .send("GET", "/api/v1/players", &mario, Value::Null)
         .await;
+    let lists = world.with_online(lists, &mario).await;
     assert_eq!(lists["online"][0]["name"], "Peach");
     assert_eq!(lists["online"][0]["friend"], json!(true));
     let (_, lists) = world
         .send("GET", "/api/v1/players", &peach, Value::Null)
         .await;
+    let lists = world.with_online(lists, &peach).await;
     assert_eq!(lists["online"][0]["name"], "Mario");
     assert_eq!(lists["online"][0]["friend"], json!(false));
 
@@ -1610,6 +1692,7 @@ async fn a_player_without_discord_plays_by_its_mii(pool: PgPool) {
     );
     let nelly_id = player["id"].as_i64().unwrap();
     let nelly = signed_in["token"].as_str().unwrap().to_owned();
+    world.open(&nelly).await;
     let (_, me) = world.send("GET", "/api/v1/me", &nelly, Value::Null).await;
     assert_eq!(
         (&me["account"], &me["discord_id"], &me["wfc"]),
@@ -1645,6 +1728,7 @@ async fn a_player_without_discord_plays_by_its_mii(pool: PgPool) {
     let (_, lists) = world
         .send("GET", "/api/v1/players", &mario, Value::Null)
         .await;
+    let lists = world.with_online(lists, &mario).await;
     let online = &lists["online"][0];
     assert_eq!(online["id"], nelly_id);
     assert_eq!(
@@ -1852,6 +1936,7 @@ async fn a_player_chooses_the_flag_beside_their_name(pool: PgPool) {
     let (_, lists) = world
         .send("GET", "/api/v1/players", &bowser, Value::Null)
         .await;
+    let lists = world.with_online(lists, &bowser).await;
     assert_eq!(mario_in(&lists), "CH");
 
     // He hides it, then shows another, then his own again.
@@ -1874,11 +1959,13 @@ async fn a_player_chooses_the_flag_beside_their_name(pool: PgPool) {
     let (_, lists) = world
         .send("GET", "/api/v1/players", &bowser, Value::Null)
         .await;
+    let lists = world.with_online(lists, &bowser).await;
     assert_eq!(mario_in(&lists), Value::Null);
     assert_eq!(choose("IT").await.1["country"], "IT");
     let (_, lists) = world
         .send("GET", "/api/v1/players", &bowser, Value::Null)
         .await;
+    let lists = world.with_online(lists, &bowser).await;
     assert_eq!(mario_in(&lists), "IT");
     for bad in ["it", "ITA", ""] {
         assert_eq!(
@@ -1895,6 +1982,7 @@ async fn a_player_who_forfeits_the_set_loses_it(pool: PgPool) {
     let world = World::new(pool);
     let mario = world.sign_in("Mario").await;
     let bowser = world.sign_in("Bowser").await;
+    world.open(&bowser).await;
     let luigi = world.sign_in("Luigi").await;
     let (_, challenge) = world
         .send(
@@ -2067,6 +2155,7 @@ fn mii(first: u8) -> String {
 async fn players_send_their_miis_and_are_shown_by_them(pool: PgPool) {
     let world = World::new(pool);
     let mario = world.sign_in("Mario").await;
+    world.open(&mario).await;
     let bowser = world.sign_in("Bowser").await;
     // Mario plays a US and a European game, Bowser a US one.
     let mario_us = world.wfc_login(1, "R4QEaaaaaaa").await;
@@ -2150,6 +2239,7 @@ async fn players_send_their_miis_and_are_shown_by_them(pool: PgPool) {
         let (_, lists) = world
             .send("GET", "/api/v1/players", &bowser, Value::Null)
             .await;
+        let lists = world.with_online(lists, &bowser).await;
         let online = lists["online"].as_array().unwrap();
         let mario = online.iter().find(|player| player["name"] == "Mario");
         mario.unwrap()["mii_data"].clone()
@@ -2745,4 +2835,115 @@ async fn an_imported_profile_goes_into_the_signed_in_one(pool: PgPool) {
         import(String::new(), 9, "R4QPbbbbbbb").await.0,
         StatusCode::UNAUTHORIZED
     );
+}
+
+/// Do not disturb (off by default) takes challenges from friends only: the
+/// players they keep as friends or by a Mii friend, and Discord friends on
+/// the challenger's word. The lists say it as the challenger sees it; open
+/// to challenges, anybody can (docs/profiles.md, "Do not disturb").
+#[sqlx::test]
+async fn do_not_disturb_takes_challenges_from_friends_only(pool: PgPool) {
+    let world = World::new(pool);
+    let mario = world.sign_in("Mario").await;
+    let bowser = world.sign_in("Bowser").await;
+    let id_of = async |token: &str| {
+        let (_, me) = world.send("GET", "/api/v1/me", token, Value::Null).await;
+        me["id"].as_i64().unwrap()
+    };
+    let (mario_id, bowser_id) = (id_of(&mario).await, id_of(&bowser).await);
+    let challenge = async |discord_friend: bool| {
+        let body =
+            json!({"opponent_id": bowser_id, "rule_set": 1, "discord_friend": discord_friend});
+        let (status, body) = world.send("POST", "/api/v1/matches", &mario, body).await;
+        if status == StatusCode::CREATED {
+            let id = body["id"].as_i64().unwrap();
+            let (cancelled, _) = world
+                .send(
+                    "POST",
+                    &format!("/api/v1/matches/{id}/cancel"),
+                    &mario,
+                    Value::Null,
+                )
+                .await;
+            assert_eq!(cancelled, StatusCode::OK);
+        }
+        (status, body)
+    };
+    let bowser_for_mario = async || {
+        let (_, lists) = world
+            .send("GET", "/api/v1/players", &mario, Value::Null)
+            .await;
+        lists["friends"][0]["do_not_disturb"].clone()
+    };
+
+    // Mario keeps Bowser as a friend; Bowser doesn't: Do not disturb.
+    let (status, _) = world
+        .send(
+            "POST",
+            "/api/v1/friends",
+            &mario,
+            json!({"player_id": bowser_id}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bowser_for_mario().await, json!(true));
+    let (status, refused) = challenge(false).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    assert!(
+        refused["error"].as_str().unwrap().contains("disturbed"),
+        "{refused}"
+    );
+    // Discord friends: the server takes Mario's word.
+    assert_eq!(challenge(true).await.0, StatusCode::CREATED);
+
+    // Bowser keeps Mario as a friend, then by his Mii instead.
+    let (status, _) = world
+        .send(
+            "POST",
+            "/api/v1/friends",
+            &bowser,
+            json!({"player_id": mario_id}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bowser_for_mario().await, json!(false));
+    assert_eq!(challenge(false).await.0, StatusCode::CREATED);
+    let (status, _) = world
+        .send(
+            "DELETE",
+            &format!("/api/v1/friends/{mario_id}"),
+            &bowser,
+            Value::Null,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(challenge(false).await.0, StatusCode::CONFLICT);
+    let mario_pid = world.wfc_login(3, "R4QEbbbbbbb").await;
+    world.prove(&mario, mario_pid).await;
+    let (status, _) = world
+        .send(
+            "POST",
+            "/api/v1/friends/miis",
+            &bowser,
+            json!({"profile_id": mario_pid}),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bowser_for_mario().await, json!(false));
+    assert_eq!(challenge(false).await.0, StatusCode::CREATED);
+    let (status, _) = world
+        .send(
+            "DELETE",
+            &format!("/api/v1/friends/miis/{mario_pid}"),
+            &bowser,
+            Value::Null,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bowser_for_mario().await, json!(true));
+
+    // Open to challenges: anybody's.
+    world.open(&bowser).await;
+    assert_eq!(bowser_for_mario().await, json!(false));
+    assert_eq!(challenge(false).await.0, StatusCode::CREATED);
 }

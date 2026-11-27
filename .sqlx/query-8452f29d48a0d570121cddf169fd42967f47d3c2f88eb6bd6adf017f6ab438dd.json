@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT m.match_id, m.mode, m.release, m.best_of, m.state, m.winner, m.home_mii,\n                  m.away_mii, m.home_captain, m.away_captain, m.home_wins, m.away_wins,\n                  m.started_at, m.last_report_at, m.ended_at, m.forfeited_at,\n                  CASE m.forfeited_by WHEN home.profile_id THEN 'home'\n                                      WHEN away.profile_id THEN 'away' END AS forfeited_by,\n                  home.profile_id AS \"home_profile?\", away.profile_id AS \"away_profile?\",\n                  EXISTS (SELECT 1 FROM relay_sessions r\n                          WHERE (r.first_profile IN (home.profile_id, away.profile_id)\n                                 OR r.second_profile IN (home.profile_id, away.profile_id))\n                            AND r.started_at <= m.last_report_at\n                            AND (r.ended_at IS NULL OR r.ended_at >= m.started_at)) AS \"relayed!\"\n           FROM online_matches m\n           LEFT JOIN online_match_sides home ON home.match_id = m.match_id AND home.side = 'home'\n           LEFT JOIN online_match_sides away ON away.match_id = m.match_id AND away.side = 'away'\n           WHERE $1::bigint IS NULL OR m.match_id = $1\n           ORDER BY (m.state <> 'in_progress'), m.started_at DESC\n           LIMIT $2",
+  "query": "SELECT m.match_id, m.mode, m.release, m.best_of, m.state, m.winner, m.home_mii,\n                  m.away_mii, m.home_captain, m.away_captain, m.home_wins, m.away_wins,\n                  m.started_at, m.last_report_at, m.ended_at, m.forfeited_at,\n                  CASE m.forfeited_by WHEN home.profile_id THEN 'home'\n                                      WHEN away.profile_id THEN 'away' END AS forfeited_by,\n                  home.profile_id AS \"home_profile?\", away.profile_id AS \"away_profile?\",\n                  EXISTS (SELECT 1 FROM relay_sessions r\n                          WHERE (r.first_profile IN (home.profile_id, away.profile_id)\n                                 OR r.second_profile IN (home.profile_id, away.profile_id))\n                            AND r.started_at <= m.last_report_at\n                            AND (r.ended_at IS NULL OR r.ended_at >= m.started_at)) AS \"relayed!\",\n                  (SELECT min(kept.game) FROM replays kept\n                   WHERE kept.match_id = m.match_id AND kept.file IS NOT NULL) AS replay_game\n           FROM online_matches m\n           LEFT JOIN online_match_sides home ON home.match_id = m.match_id AND home.side = 'home'\n           LEFT JOIN online_match_sides away ON away.match_id = m.match_id AND away.side = 'away'\n           WHERE $1::bigint IS NULL OR m.match_id = $1\n           ORDER BY (m.state <> 'in_progress'), m.started_at DESC\n           LIMIT $2",
   "describe": {
     "columns": [
       {
@@ -212,6 +212,12 @@
         "name": "relayed!",
         "type_info": "Bool",
         "origin": "Expression"
+      },
+      {
+        "ordinal": 20,
+        "name": "replay_game",
+        "type_info": "Int4",
+        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -240,8 +246,9 @@
       null,
       false,
       false,
+      null,
       null
     ]
   },
-  "hash": "21a4b6fd6d1c578fadd8bd7be503269402607099eeab1dc1a540f7bfd57ff6d4"
+  "hash": "8452f29d48a0d570121cddf169fd42967f47d3c2f88eb6bd6adf017f6ab438dd"
 }

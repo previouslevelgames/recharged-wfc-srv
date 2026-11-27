@@ -12,9 +12,6 @@ use super::friends::MAX_FRIENDS;
 use super::players::Activity;
 use crate::gpcm::{Matchmaking, Presence};
 
-/// The game's online players shown at most.
-const MAX_ONLINE: usize = 100;
-
 /// A WFC profile, as the launcher shows it: its Mii and friend code.
 #[derive(Debug, PartialEq, Serialize)]
 pub struct MiiProfile {
@@ -184,38 +181,6 @@ pub async fn friends(
     Ok(friends)
 }
 
-/// The profiles logged in to the game whose player isn't in Recharged's
-/// lists already, as `player_id` sees them, by Mii name: not their own, not a
-/// player's whose launcher is open, not their Mii friends.
-pub async fn online(
-    pool: &PgPool,
-    player_id: i64,
-    presence: &HashMap<i32, Presence>,
-) -> Result<Vec<MiiProfile>, sqlx::Error> {
-    let logged_in: Vec<i32> = presence.keys().copied().collect();
-    let ids = sqlx::query_scalar!(
-        r#"SELECT profiles.profile_id AS "profile_id!" FROM profiles
-           WHERE profiles.profile_id = ANY($1)
-             AND NOT EXISTS (
-                 SELECT 1 FROM player_wfc_profiles JOIN players USING (player_id)
-                 WHERE player_wfc_profiles.profile_id = profiles.profile_id
-                   AND (players.player_id = $2
-                        OR players.heartbeat_at > now() - make_interval(secs => $3)))
-             AND NOT EXISTS (
-                 SELECT 1 FROM friend_profiles
-                 WHERE friend_profiles.player_id = $2
-                   AND friend_profiles.profile_id = profiles.profile_id)
-           ORDER BY lower(profiles.ingamesn), profiles.profile_id"#,
-        &logged_in,
-        player_id,
-        f64::from(super::matches::HEARTBEAT_TIMEOUT_SECS),
-    )
-    .fetch_all(pool)
-    .await?;
-    let ids = &ids[..ids.len().min(MAX_ONLINE)];
-    profiles(pool, ids, presence, false).await
-}
-
 #[cfg(test)]
 mod tests {
     use time::OffsetDateTime;
@@ -260,63 +225,35 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn the_games_players_are_those_not_in_rechargeds_lists(pool: PgPool) {
-        let mine = profile(&pool, 1, "R4QEaaaaaaa", "Nelly").await;
-        let launcher = profile(&pool, 2, "R4QEbbbbbbb", "Sam").await;
+    async fn mii_friends_are_kept_online_first(pool: PgPool) {
         let kiki = profile(&pool, 3, "R4QPccccccc", "Kiki").await;
-        let bo = profile(&pool, 4, "R4QEddddddd", "Bo").await;
         let offline = profile(&pool, 5, "R4QEeeeeeee", "Zed").await;
         let nelly = player(&pool, "1", "nelly").await;
-        let sam = player(&pool, "2", "sam").await;
-        players::bind_wfc(&pool, nelly, mine).await.unwrap();
-        // Sam's launcher is open (the sign-in is a heartbeat): Sam shows as a player.
-        players::bind_wfc(&pool, sam, launcher).await.unwrap();
-        let presence: HashMap<i32, Presence> = [
-            (mine, logged_in(Some(1))),
-            (launcher, logged_in(Some(1))),
-            (kiki, logged_in(Some(2))),
-            (bo, logged_in(Some(4))),
-        ]
-        .into_iter()
-        .collect();
+        let presence: HashMap<i32, Presence> = [(kiki, logged_in(Some(2)))].into_iter().collect();
 
         let names = |list: &[MiiProfile]| {
             list.iter()
                 .map(|profile| (profile.mii.clone().unwrap(), profile.status))
                 .collect::<Vec<_>>()
         };
-        let game = online(&pool, nelly, &presence).await.unwrap();
-        assert_eq!(
-            names(&game),
-            [
-                ("Bo".to_owned(), Some("matchmaking")),
-                ("Kiki".to_owned(), Some("match"))
-            ]
-        );
-        assert_eq!(
-            (game[1].game.as_str(), game[1].online, game[1].friend),
-            ("R4QP", true, false)
-        );
-        assert_eq!(
-            game[1].friend_code,
-            crate::accounts::friend_code(kiki, "R4QP")
-        );
-
-        // A Mii friend leaves that list for the friends'.
         assert_eq!(add(&pool, nelly, kiki).await.unwrap(), Some(true));
         assert_eq!(add(&pool, nelly, kiki).await.unwrap(), Some(false));
         assert_eq!(add(&pool, nelly, offline).await.unwrap(), Some(true));
         assert_eq!(add(&pool, nelly, 999).await.unwrap(), None);
-        assert_eq!(
-            names(&online(&pool, nelly, &presence).await.unwrap()),
-            [("Bo".to_owned(), Some("matchmaking"))]
-        );
         let mii_friends = friends(&pool, nelly, &presence).await.unwrap();
         assert_eq!(
             names(&mii_friends),
             [("Kiki".to_owned(), Some("match")), ("Zed".to_owned(), None)]
         );
         assert!(mii_friends.iter().all(|friend| friend.friend));
+        assert_eq!(
+            (mii_friends[0].game.as_str(), mii_friends[0].online),
+            ("R4QP", true)
+        );
+        assert_eq!(
+            mii_friends[0].friend_code,
+            crate::accounts::friend_code(kiki, "R4QP")
+        );
         assert!(!mii_friends[1].online);
 
         assert!(remove(&pool, nelly, kiki).await.unwrap());

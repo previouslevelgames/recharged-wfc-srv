@@ -74,6 +74,11 @@ pub struct Match {
     pub forfeited_at: Option<OffsetDateTime>,
     /// The tournament set it plays ([`super::tournaments`]).
     pub tournament_set: Option<i64>,
+    /// The set's turn: the player who drafts first in its games (and whose
+    /// side follows from it). A challenge's challenger; a rematch's the other
+    /// player than in the set it plays again, who picks its stadium too.
+    /// None for tournament sets and sets from before turns.
+    pub first_pick: Option<i64>,
 }
 
 impl Match {
@@ -225,6 +230,11 @@ pub enum Refusal {
     BadReport(String),
     /// This player has reported already.
     Reported,
+    /// A stadium picked by a player whose turn it is not (a rematch's is the
+    /// turn's player's, a challenge's the challenger's).
+    NotYourPick,
+    /// A stadium that is not one of the rules'.
+    BadStadium(String),
 }
 
 /// A match's row.
@@ -247,6 +257,7 @@ struct Row {
     forfeited_by: Option<i64>,
     forfeited_at: Option<OffsetDateTime>,
     tournament_set_id: Option<i64>,
+    first_pick: Option<i64>,
 }
 
 /// Ends the sets that waited too long or lost a player, and sends back the
@@ -362,7 +373,7 @@ pub async fn current(pool: &PgPool, player_id: i64) -> Result<Option<Match>, sql
         Row,
         "SELECT match_id, state, home, away, rule_set, rules, rules_hash, winner, created_at,
                 home_ready_at, away_ready_at, go_at, playing_at, rematch_of, random,
-                forfeited_by, forfeited_at, tournament_set_id
+                forfeited_by, forfeited_at, tournament_set_id, first_pick
          FROM matches
          WHERE (home = $1 OR away = $1)
            AND (state IN ('challenged', 'accepted') OR updated_at > now() - interval '1 hour')
@@ -395,7 +406,7 @@ pub async fn find(
         Row,
         "SELECT match_id, state, home, away, rule_set, rules, rules_hash, winner, created_at,
                 home_ready_at, away_ready_at, go_at, playing_at, rematch_of, random,
-                forfeited_by, forfeited_at, tournament_set_id
+                forfeited_by, forfeited_at, tournament_set_id, first_pick
          FROM matches WHERE match_id = $1",
         match_id,
     )
@@ -407,7 +418,8 @@ pub async fn find(
 /// `home` challenges `away` to a match by `rule_set`, perhaps again
 /// (`rematch_of`), or for `home`'s search (`random`). Each may have one match
 /// still to be played at a time; a stopped set of `home`'s that nobody plays
-/// (see [`busy`]) is called off by it.
+/// (see [`busy`]) is called off by it. The challenger has the set's turn
+/// ([`Match::first_pick`]): they picked its stadium.
 pub async fn challenge(
     pool: &PgPool,
     home: i64,
@@ -415,6 +427,19 @@ pub async fn challenge(
     rule_set: &RuleSet,
     rematch_of: Option<i64>,
     random: bool,
+) -> Result<Result<Match, Refusal>, sqlx::Error> {
+    challenge_with_turn(pool, home, away, rule_set, rematch_of, random, home).await
+}
+
+/// [`challenge`], with the set's turn given to `first_pick`.
+async fn challenge_with_turn(
+    pool: &PgPool,
+    home: i64,
+    away: i64,
+    rule_set: &RuleSet,
+    rematch_of: Option<i64>,
+    random: bool,
+    first_pick: i64,
 ) -> Result<Result<Match, Refusal>, sqlx::Error> {
     let mut transaction = pool.begin().await?;
     lock_players(&mut transaction, home, away).await?;
@@ -426,8 +451,8 @@ pub async fn challenge(
     // set.
     let row = sqlx::query!(
         "INSERT INTO matches (kind, state, home, away, rule_set, rules, rules_hash, rematch_of,
-                              home_ready_at, random)
-         VALUES ('test', 'challenged', $1, $2, $3, $4, $5, $6, now(), $7)
+                              home_ready_at, random, first_pick)
+         VALUES ('test', 'challenged', $1, $2, $3, $4, $5, $6, now(), $7, $8)
          RETURNING match_id, created_at, home_ready_at",
         home,
         away,
@@ -436,6 +461,7 @@ pub async fn challenge(
         rule_set.hash,
         rematch_of,
         random,
+        first_pick,
     )
     .fetch_one(&mut *transaction)
     .await?;
@@ -458,6 +484,7 @@ pub async fn challenge(
         forfeited_by: None,
         forfeited_at: None,
         tournament_set: None,
+        first_pick: Some(first_pick),
     }))
 }
 
@@ -646,13 +673,26 @@ pub async fn answer(
     match_id: i64,
     player_id: i64,
     accept: bool,
+    stadium: Option<&str>,
 ) -> Result<Result<Match, Refusal>, sqlx::Error> {
-    let Some(found) = get(pool, match_id, player_id).await? else {
+    let Some(mut found) = get(pool, match_id, player_id).await? else {
         return Ok(Err(Refusal::NotFound));
     };
     if found.away != player_id {
         return Ok(Err(Refusal::NotYours));
     }
+    // A rematch whose turn is the challenged player's: their accept picks
+    // the stadium (none: the ended set's stays).
+    let picked = match stadium {
+        Some(_) if !accept || found.rematch_of.is_none() || found.first_pick != Some(player_id) => {
+            return Ok(Err(Refusal::NotYourPick));
+        }
+        Some(stadium) => match with_stadium(&found.rules, stadium) {
+            Ok(rules) => Some(rules),
+            Err(refusal) => return Ok(Err(refusal)),
+        },
+        None => None,
+    };
     let state = if accept { "accepted" } else { "declined" };
     if accept {
         // The two players' stopped sets give way to this one.
@@ -660,6 +700,20 @@ pub async fn answer(
         lock_players(&mut transaction, found.home, found.away).await?;
         release_stopped(&mut transaction, found.home, Some(match_id)).await?;
         release_stopped(&mut transaction, found.away, Some(match_id)).await?;
+        if let Some(rules) = picked.filter(|rules| *rules != found.rules) {
+            let hash = rules.hash();
+            sqlx::query!(
+                "UPDATE matches SET rules = $2, rules_hash = $3, updated_at = now()
+                 WHERE match_id = $1 AND state = 'challenged'",
+                match_id,
+                rules.to_json(),
+                hash,
+            )
+            .execute(&mut *transaction)
+            .await?;
+            found.rules = rules;
+            found.rules_hash = hash;
+        }
         transaction.commit().await?;
     }
     let answered = move_state(pool, found, &["challenged"], state).await?;
@@ -765,20 +819,21 @@ pub async fn game_ready(
 
 /// `player_id` plays the ended set `match_id` again, by the same rules: the
 /// opponent's rematch of it, if they offered one already, is accepted;
-/// otherwise this is a new challenge. A set that ended without a result
-/// (called off, expired, broken off) can be played again too.
+/// otherwise this is a new challenge. Only a set that was played (finished,
+/// a forfeit too, or disputed) is played again. The new set's turn
+/// ([`Match::first_pick`]) is the other player's than the ended one's, and
+/// that player picks its stadium: `stadium` when it is this one, else the
+/// ended set's stays until their accept picks one ([`answer`]).
 pub async fn rematch(
     pool: &PgPool,
     match_id: i64,
     player_id: i64,
+    stadium: Option<&str>,
 ) -> Result<Result<Match, Refusal>, sqlx::Error> {
     let Some(found) = get(pool, match_id, player_id).await? else {
         return Ok(Err(Refusal::NotFound));
     };
-    if !matches!(
-        found.state.as_str(),
-        "finished" | "disputed" | "cancelled" | "expired" | "dissolved"
-    ) {
+    if !matches!(found.state.as_str(), "finished" | "disputed") {
         return Ok(Err(Refusal::State(found.stage().into())));
     }
     let opponent = found.opponent(player_id);
@@ -792,15 +847,54 @@ pub async fn rematch(
     .fetch_optional(pool)
     .await?;
     if let Some(offered) = offered {
-        return answer(pool, offered, player_id, true).await;
+        return answer(pool, offered, player_id, true, stadium).await;
     }
+    // A set from before turns had the challenger's.
+    let first_pick = if found.first_pick.unwrap_or(found.home) == found.home {
+        found.away
+    } else {
+        found.home
+    };
+    if stadium.is_some() && first_pick != player_id {
+        return Ok(Err(Refusal::NotYourPick));
+    }
+    let rules = match stadium {
+        Some(stadium) => match with_stadium(&found.rules, stadium) {
+            Ok(rules) => rules,
+            Err(refusal) => return Ok(Err(refusal)),
+        },
+        None => found.rules.clone(),
+    };
     let rule_set = RuleSet {
         id: 0,
         name: found.rule_set.clone(),
-        rules: found.rules.clone(),
-        hash: found.rules_hash.clone(),
+        hash: if rules == found.rules {
+            found.rules_hash.clone()
+        } else {
+            rules.hash()
+        },
+        rules,
     };
-    challenge(pool, player_id, opponent, &rule_set, Some(match_id), false).await
+    challenge_with_turn(
+        pool,
+        player_id,
+        opponent,
+        &rule_set,
+        Some(match_id),
+        false,
+        first_pick,
+    )
+    .await
+}
+
+/// `rules` with the stadium `stadium` (`random` or one of the stadiums).
+fn with_stadium(rules: &Rules, stadium: &str) -> Result<Rules, Refusal> {
+    Rules {
+        stadium: stadium.into(),
+        ..rules.clone()
+    }
+    .check()
+    .map_err(Refusal::BadStadium)
 }
 
 /// `player_id`'s game reports the series. The second report settles it: the
@@ -892,7 +986,7 @@ pub async fn forfeit(
         Row,
         "SELECT match_id, state, home, away, rule_set, rules, rules_hash, winner, created_at,
                 home_ready_at, away_ready_at, go_at, playing_at, rematch_of, random,
-                forfeited_by, forfeited_at, tournament_set_id
+                forfeited_by, forfeited_at, tournament_set_id, first_pick
          FROM matches WHERE match_id = $1 FOR UPDATE",
         match_id,
     )
@@ -1104,6 +1198,7 @@ fn stored(row: Row) -> Option<Match> {
         forfeited_by: row.forfeited_by,
         forfeited_at: row.forfeited_at,
         tournament_set: row.tournament_set_id,
+        first_pick: row.first_pick,
     })
 }
 
@@ -1175,7 +1270,10 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        answer(pool, made.id, away, true).await.unwrap().unwrap()
+        answer(pool, made.id, away, true, None)
+            .await
+            .unwrap()
+            .unwrap()
     }
 
     #[sqlx::test]
@@ -1325,14 +1423,17 @@ mod tests {
         // Only the challenged answers; nobody else sees the match.
         let third = player(&pool, "Luigi").await;
         assert_eq!(
-            answer(&pool, made.id, mario, true).await.unwrap(),
+            answer(&pool, made.id, mario, true, None).await.unwrap(),
             Err(Refusal::NotYours)
         );
         assert_eq!(
-            answer(&pool, made.id, third, true).await.unwrap(),
+            answer(&pool, made.id, third, true, None).await.unwrap(),
             Err(Refusal::NotFound)
         );
-        let accepted = answer(&pool, made.id, bowser, true).await.unwrap().unwrap();
+        let accepted = answer(&pool, made.id, bowser, true, None)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(accepted.state, "accepted");
 
         let mario_saw = [game(3, 1), game(0, 2), game(2, 1)];
@@ -1372,7 +1473,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        answer(&pool, found.id, bowser, true)
+        answer(&pool, found.id, bowser, true, None)
             .await
             .unwrap()
             .unwrap();
@@ -1413,7 +1514,7 @@ mod tests {
                 .unwrap(),
             Err(Refusal::Busy)
         );
-        let declined = answer(&pool, found.id, bowser, false)
+        let declined = answer(&pool, found.id, bowser, false, None)
             .await
             .unwrap()
             .unwrap();
@@ -1443,7 +1544,7 @@ mod tests {
             report(&pool, found.id, mario, &[game(1, 0)]).await.unwrap(),
             Err(Refusal::State("challenged".into()))
         );
-        answer(&pool, found.id, bowser, true)
+        answer(&pool, found.id, bowser, true, None)
             .await
             .unwrap()
             .unwrap();
@@ -1514,7 +1615,7 @@ mod tests {
             Err(Refusal::State("invited".into()))
         );
         // The accept is the other's: the set goes.
-        let both = answer(&pool, found.id, bowser, true)
+        let both = answer(&pool, found.id, bowser, true, None)
             .await
             .unwrap()
             .unwrap();
@@ -1567,7 +1668,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        answer(&pool, found.id, bowser, true)
+        answer(&pool, found.id, bowser, true, None)
             .await
             .unwrap()
             .unwrap();
@@ -1587,7 +1688,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        answer(&pool, found.id, bowser, true)
+        answer(&pool, found.id, bowser, true, None)
             .await
             .unwrap()
             .unwrap();
@@ -1635,7 +1736,10 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        answer(pool, found.id, bowser, true).await.unwrap().unwrap();
+        answer(pool, found.id, bowser, true, None)
+            .await
+            .unwrap()
+            .unwrap();
         for (side, paired) in [(0, false), (1, true)] {
             game_called(pool, found.id, side).await.unwrap();
             game_ready(pool, found.id, side, paired).await.unwrap();
@@ -1816,7 +1920,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        answer(&pool, found.id, bowser, true)
+        answer(&pool, found.id, bowser, true, None)
             .await
             .unwrap()
             .unwrap();
@@ -1839,7 +1943,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        answer(&pool, found.id, bowser, true)
+        answer(&pool, found.id, bowser, true, None)
             .await
             .unwrap()
             .unwrap();
@@ -1875,10 +1979,10 @@ mod tests {
             .unwrap();
         // Not before the set ended.
         assert_eq!(
-            rematch(&pool, found.id, bowser).await.unwrap(),
+            rematch(&pool, found.id, bowser, None).await.unwrap(),
             Err(Refusal::State("invited".into()))
         );
-        answer(&pool, found.id, bowser, true)
+        answer(&pool, found.id, bowser, true, None)
             .await
             .unwrap()
             .unwrap();
@@ -1891,14 +1995,181 @@ mod tests {
             .unwrap()
             .unwrap();
         // Bowser asks first: a challenge to Mario by the same rules.
-        let offered = rematch(&pool, found.id, bowser).await.unwrap().unwrap();
+        let offered = rematch(&pool, found.id, bowser, None)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
             (offered.stage(), offered.home, offered.rematch_of),
             ("invited", bowser, Some(found.id))
         );
         assert_eq!(offered.rules_hash, found.rules_hash);
         // Mario's Rematch takes it, and the set goes (both asked).
-        let next = rematch(&pool, found.id, mario).await.unwrap().unwrap();
+        let next = rematch(&pool, found.id, mario, None)
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!((next.id, next.stage()), (offered.id, "go"));
+    }
+
+    /// `found` played out: `winner` won its one game.
+    async fn played(pool: &PgPool, found: &Match, winner: i64) {
+        let loser = found.opponent(winner);
+        report(pool, found.id, winner, &[game(1, 0)])
+            .await
+            .unwrap()
+            .unwrap();
+        report(pool, found.id, loser, &[game(0, 1)])
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[sqlx::test]
+    async fn the_turn_goes_back_and_forth_with_the_stadium(pool: PgPool) {
+        let (mario, bowser) = (player(&pool, "Mario").await, player(&pool, "Bowser").await);
+        let rules = competitive(&pool).await;
+        // The challenger's set: they picked the stadium and draft first.
+        let first = accepted(&pool, mario, bowser, &rules).await;
+        assert_eq!(first.first_pick, Some(mario));
+        played(&pool, &first, mario).await;
+        // Bowser's turn: his rematch picks the stadium.
+        let second = rematch(&pool, first.id, bowser, Some("the_palace"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (
+                second.home,
+                second.first_pick,
+                second.rules.stadium.as_str()
+            ),
+            (bowser, Some(bowser), "the_palace")
+        );
+        assert_eq!(second.rules_hash, second.rules.hash());
+        assert_ne!(second.rules_hash, first.rules_hash);
+        answer(&pool, second.id, mario, true, None)
+            .await
+            .unwrap()
+            .unwrap();
+        played(&pool, &second, bowser).await;
+        // Mario's turn again, whoever asks: Bowser can't pick it...
+        assert_eq!(
+            rematch(&pool, second.id, bowser, Some("crater_field"))
+                .await
+                .unwrap(),
+            Err(Refusal::NotYourPick)
+        );
+        let third = rematch(&pool, second.id, bowser, None)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (third.home, third.first_pick, third.rules.stadium.as_str()),
+            (bowser, Some(mario), "the_palace")
+        );
+        // ...Mario's accept does (his Rematch, as the launcher's Accept).
+        assert_eq!(
+            rematch(&pool, second.id, mario, Some("nowhere"))
+                .await
+                .unwrap(),
+            Err(Refusal::BadStadium(format!(
+                "stadium: random or one of {}",
+                rules::STADIUMS.join(", ")
+            )))
+        );
+        let going = rematch(&pool, second.id, mario, Some("random"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (
+                going.id,
+                going.stage(),
+                going.first_pick,
+                going.rules.stadium.as_str()
+            ),
+            (third.id, "go", Some(mario), "random")
+        );
+        assert_eq!(going.rules_hash, going.rules.hash());
+        assert_eq!(going.rules_hash, first.rules_hash);
+    }
+
+    #[sqlx::test]
+    async fn only_the_turn_picks_the_stadium_on_accept(pool: PgPool) {
+        let (mario, bowser) = (player(&pool, "Mario").await, player(&pool, "Bowser").await);
+        let rules = competitive(&pool).await;
+        // A challenge's stadium is the challenger's.
+        let made = challenge(&pool, mario, bowser, &rules, None, false)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            answer(&pool, made.id, bowser, true, Some("the_palace"))
+                .await
+                .unwrap(),
+            Err(Refusal::NotYourPick)
+        );
+        answer(&pool, made.id, bowser, true, None)
+            .await
+            .unwrap()
+            .unwrap();
+        played(&pool, &made, bowser).await;
+        // Mario asks, Bowser has the turn: his accept picks it, his decline
+        // can't. Without a pick (older games) the stadium stays.
+        let offered = rematch(&pool, made.id, mario, None).await.unwrap().unwrap();
+        assert_eq!(offered.first_pick, Some(bowser));
+        assert_eq!(
+            answer(&pool, offered.id, bowser, false, Some("the_palace"))
+                .await
+                .unwrap(),
+            Err(Refusal::NotYourPick)
+        );
+        let accepted = answer(&pool, offered.id, bowser, true, Some("the_palace"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (accepted.stage(), accepted.rules.stadium.as_str()),
+            ("go", "the_palace")
+        );
+        let stored = get(&pool, offered.id, mario).await.unwrap().unwrap();
+        assert_eq!(
+            (stored.rules.stadium.as_str(), stored.rules_hash.as_str()),
+            ("the_palace", stored.rules.hash().as_str())
+        );
+    }
+
+    #[sqlx::test]
+    async fn only_a_played_set_has_a_rematch(pool: PgPool) {
+        let (mario, bowser) = (player(&pool, "Mario").await, player(&pool, "Bowser").await);
+        let rules = competitive(&pool).await;
+        let called_off = accepted(&pool, mario, bowser, &rules).await;
+        cancel(&pool, called_off.id, bowser).await.unwrap().unwrap();
+        assert_eq!(
+            rematch(&pool, called_off.id, mario, None).await.unwrap(),
+            Err(Refusal::State("dissolved".into()))
+        );
+        // A forfeit is a result: the one who gave up may want another.
+        let given_up = accepted(&pool, mario, bowser, &rules).await;
+        sqlx::query!(
+            "UPDATE matches SET playing_at = now() WHERE match_id = $1",
+            given_up.id
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        forfeit(&pool, given_up.id, bowser, &[])
+            .await
+            .unwrap()
+            .unwrap();
+        let again = rematch(&pool, given_up.id, bowser, Some("the_palace"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (again.first_pick, again.rules.stadium.as_str()),
+            (Some(bowser), "the_palace")
+        );
     }
 }

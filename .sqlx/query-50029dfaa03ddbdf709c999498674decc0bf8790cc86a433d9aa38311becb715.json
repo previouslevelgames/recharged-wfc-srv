@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "INSERT INTO matches (kind, state, home, away, rule_set, rules, rules_hash, rematch_of,\n                              home_ready_at, random)\n         VALUES ('test', 'challenged', $1, $2, $3, $4, $5, $6, now(), $7)\n         RETURNING match_id, created_at, home_ready_at",
+  "query": "INSERT INTO matches (kind, state, home, away, rule_set, rules, rules_hash, rematch_of,\n                              home_ready_at, random, first_pick)\n         VALUES ('test', 'challenged', $1, $2, $3, $4, $5, $6, now(), $7, $8)\n         RETURNING match_id, created_at, home_ready_at",
   "describe": {
     "columns": [
       {
@@ -45,7 +45,8 @@
         "Text",
         "Text",
         "Int8",
-        "Bool"
+        "Bool",
+        "Int8"
       ]
     },
     "nullable": [
@@ -54,5 +55,5 @@
       true
     ]
   },
-  "hash": "ae19d989327d04bae7e46bd6e3a63a8d86c15289fbea4d3d87f68da9e1706974"
+  "hash": "50029dfaa03ddbdf709c999498674decc0bf8790cc86a433d9aa38311becb715"
 }

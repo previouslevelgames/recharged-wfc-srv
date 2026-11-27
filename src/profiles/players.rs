@@ -966,6 +966,9 @@ pub struct Listed {
     pub searching: bool,
     /// While online: their set to play, or playing.
     pub set: Option<ListedSet>,
+    /// They take no challenge from the player who asks: Do not disturb, and
+    /// they don't keep the player as a friend (see [`do_not_disturb`]).
+    pub do_not_disturb: bool,
 }
 
 /// A listed player's set still to be played, or playing (docs/profiles.md,
@@ -983,21 +986,6 @@ pub struct ListedSet {
     /// The game of the series their game plays, or last played between two,
     /// when it says.
     pub game: Option<i16>,
-}
-
-/// Who has Recharged open, but `player_id`, by name.
-pub async fn online(pool: &PgPool, player_id: i64) -> Result<Vec<Listed>, sqlx::Error> {
-    let ids = sqlx::query_scalar!(
-        "SELECT player_id FROM players
-         WHERE heartbeat_at > now() - make_interval(secs => $2) AND player_id <> $1
-         ORDER BY lower(display_name), player_id
-         LIMIT 100",
-        player_id,
-        f64::from(super::matches::HEARTBEAT_TIMEOUT_SECS),
-    )
-    .fetch_all(pool)
-    .await?;
-    listed(pool, player_id, &ids).await
 }
 
 /// Whether `player_id` is available for random games.
@@ -1025,20 +1013,51 @@ pub async fn set_available(
     Ok(())
 }
 
-/// The other players with Recharged open who are available for random games,
-/// by name, as `player_id` sees them.
-pub async fn available_now(pool: &PgPool, player_id: i64) -> Result<Vec<Listed>, sqlx::Error> {
-    let ids = sqlx::query_scalar!(
-        "SELECT player_id FROM players
-         WHERE available AND heartbeat_at > now() - make_interval(secs => $2) AND player_id <> $1
-         ORDER BY lower(display_name), player_id
-         LIMIT 100",
+/// How many others with Recharged open are available for random games or
+/// search for an opponent: whom a search may ask. Only the number: no list
+/// names them (docs/profiles.md, "Available for random games").
+pub async fn available_count(pool: &PgPool, player_id: i64) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar!(
+        r#"SELECT count(*) AS "count!" FROM players
+           WHERE player_id <> $1 AND heartbeat_at > now() - make_interval(secs => $2)
+             AND (available
+                  OR EXISTS (SELECT 1 FROM searches WHERE searches.player_id = players.player_id))"#,
         player_id,
         f64::from(super::matches::HEARTBEAT_TIMEOUT_SECS),
     )
-    .fetch_all(pool)
+    .fetch_one(pool)
+    .await
+}
+
+/// Whether `player_id` takes no challenge from `challenger`: Do not disturb
+/// (neither available for random games nor searching), and they keep the
+/// challenger neither as a friend nor by a Mii profile of theirs as a Mii
+/// friend (docs/profiles.md, "Do not disturb"). [`listed`] says the same as
+/// `do_not_disturb`. A Discord friendship the server doesn't know: the
+/// challenge says it.
+pub async fn do_not_disturb(
+    pool: &PgPool,
+    player_id: i64,
+    challenger: i64,
+) -> Result<bool, sqlx::Error> {
+    let refuses = sqlx::query_scalar!(
+        r#"SELECT NOT players.available
+                  AND NOT EXISTS (SELECT 1 FROM searches WHERE searches.player_id = players.player_id)
+                  AND NOT EXISTS (SELECT 1 FROM friends
+                                  WHERE friends.player_id = players.player_id
+                                    AND friends.friend_id = $2)
+                  AND NOT EXISTS (SELECT 1 FROM friend_profiles
+                                  JOIN player_wfc_profiles USING (profile_id)
+                                  WHERE friend_profiles.player_id = players.player_id
+                                    AND player_wfc_profiles.player_id = $2)
+                  AS "refuses!"
+           FROM players WHERE player_id = $1"#,
+        player_id,
+        challenger,
+    )
+    .fetch_optional(pool)
     .await?;
-    listed(pool, player_id, &ids).await
+    Ok(refuses.unwrap_or(false))
 }
 
 /// The last 10 players `player_id` played a set with, the latest first.
@@ -1127,6 +1146,17 @@ pub(super) async fn listed(
                   players.screen, players.set_game,
                   EXISTS (SELECT 1 FROM searches WHERE searches.player_id = players.player_id)
                       AS "searching!",
+                  -- As do_not_disturb(players.player_id, $3).
+                  NOT players.available
+                      AND NOT EXISTS (SELECT 1 FROM searches WHERE searches.player_id = players.player_id)
+                      AND NOT EXISTS (SELECT 1 FROM friends
+                                      WHERE friends.player_id = players.player_id
+                                        AND friends.friend_id = $3)
+                      AND NOT EXISTS (SELECT 1 FROM friend_profiles
+                                      JOIN player_wfc_profiles USING (profile_id)
+                                      WHERE friend_profiles.player_id = players.player_id
+                                        AND player_wfc_profiles.player_id = $3)
+                      AS "do_not_disturb!",
                   player_set.state AS "set_state?", player_set.went AS "set_went?",
                   player_set.met AS "set_met?", player_set.challenger AS "set_challenger?",
                   player_set.opponent AS "set_opponent?", player_set.games AS "set_games?"
@@ -1205,6 +1235,7 @@ pub(super) async fn listed(
                 .flatten()
                 .map(Screen::name),
             searching: row.online && row.searching,
+            do_not_disturb: row.do_not_disturb,
             set: row.set_state.filter(|_| row.online).map(|state| ListedSet {
                 stage: match state.as_str() {
                     "challenged" => "invited",
