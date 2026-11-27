@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use axum::{
     Json,
+    body::Bytes,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
@@ -660,12 +661,38 @@ pub(super) async fn send_chat(
     }
 }
 
+/// What the accept of a rematch, or a rematch, may say: the stadium picked by
+/// the player whose turn the new set is (docs/profiles.md, "Sets"). No body,
+/// `null`, `{}` or no `stadium`: none picked.
+#[derive(Default, Deserialize)]
+pub(super) struct Pick {
+    #[serde(default)]
+    stadium: Option<String>,
+}
+
+impl Pick {
+    /// The pick a request's body says, or why it is not one.
+    fn from_body(body: &[u8]) -> Result<Self, String> {
+        if body.iter().all(u8::is_ascii_whitespace) {
+            return Ok(Self::default());
+        }
+        serde_json::from_slice::<Option<Self>>(body)
+            .map(Option::unwrap_or_default)
+            .map_err(|error| error.to_string())
+    }
+}
+
 pub(super) async fn accept(
     state: State<Arc<ProfilesState>>,
     headers: HeaderMap,
     id: Path<i64>,
+    body: Bytes,
 ) -> Response {
-    answer(state, headers, id, true).await
+    let pick = match Pick::from_body(&body) {
+        Ok(pick) => pick,
+        Err(problem) => return json_error(StatusCode::BAD_REQUEST, &problem),
+    };
+    answer(state, headers, id, true, pick).await
 }
 
 pub(super) async fn decline(
@@ -673,7 +700,7 @@ pub(super) async fn decline(
     headers: HeaderMap,
     id: Path<i64>,
 ) -> Response {
-    answer(state, headers, id, false).await
+    answer(state, headers, id, false, Pick::default()).await
 }
 
 async fn answer(
@@ -681,6 +708,7 @@ async fn answer(
     headers: HeaderMap,
     Path(id): Path<i64>,
     accept: bool,
+    pick: Pick,
 ) -> Response {
     let player = match state.signed_in(&headers).await {
         Ok(player) => player,
@@ -689,7 +717,7 @@ async fn answer(
     if let Err(response) = state.sweep().await {
         return response;
     }
-    match matches::answer(&state.pool, id, player.id, accept).await {
+    match matches::answer(&state.pool, id, player.id, accept, pick.stadium.as_deref()).await {
         Ok(Ok(found)) => {
             info!(target: "profiles", match_id = id, state = found.state, "answered");
             if !accept {
@@ -759,12 +787,18 @@ pub(super) async fn ready_to_play(
     }
 }
 
-/// The player plays the ended set again with the same opponent and rules.
+/// The player plays the ended set again with the same opponent and rules;
+/// the stadium is the new set's turn's pick.
 pub(super) async fn rematch(
     State(state): State<Arc<ProfilesState>>,
     headers: HeaderMap,
     Path(id): Path<i64>,
+    body: Bytes,
 ) -> Response {
+    let pick = match Pick::from_body(&body) {
+        Ok(pick) => pick,
+        Err(problem) => return json_error(StatusCode::BAD_REQUEST, &problem),
+    };
     let player = match state.signed_in(&headers).await {
         Ok(player) => player,
         Err(response) => return response,
@@ -772,7 +806,7 @@ pub(super) async fn rematch(
     if let Err(response) = state.sweep().await {
         return response;
     }
-    match matches::rematch(&state.pool, id, player.id).await {
+    match matches::rematch(&state.pool, id, player.id, pick.stadium.as_deref()).await {
         Ok(Ok(found)) => {
             info!(target: "profiles", match_id = found.id, rematch_of = id, player_id = player.id, stage = found.stage(), "rematch");
             state.respond(StatusCode::OK, &found, &player).await
@@ -1014,6 +1048,7 @@ impl ProfilesState {
             "go_at": unix(found.go_at),
             "playing_at": unix(found.playing_at),
             "rematch_of": found.rematch_of,
+            "first_pick": found.first_pick.map(|first| if first == player.id { "you" } else { "opponent" }),
             "random": found.random,
             "forfeited_by": forfeited_by,
             "forfeited_at": unix(found.forfeited_at),
@@ -1036,5 +1071,10 @@ fn refused(refusal: Refusal) -> Response {
         ),
         Refusal::BadReport(problem) => json_error(StatusCode::BAD_REQUEST, &problem),
         Refusal::Reported => json_error(StatusCode::CONFLICT, "your game has reported this match"),
+        Refusal::NotYourPick => json_error(
+            StatusCode::FORBIDDEN,
+            "the stadium is the pick of the player whose turn the set is",
+        ),
+        Refusal::BadStadium(problem) => json_error(StatusCode::BAD_REQUEST, &problem),
     }
 }

@@ -531,18 +531,20 @@ async fn a_stopped_set_keeps_nobody_from_the_next(pool: PgPool) {
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    // The called-off set can be played again: Bowser's rematch challenges
-    // Mario by its rules.
+    // The called-off set has no result, so no rematch: a new challenge plays
+    // them again, with its challenger's turn.
     let (status, again) = post(
         format!("/api/v1/matches/{id}/rematch"),
         &bowser,
         Value::Null,
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "{again}");
+    assert_eq!(status, StatusCode::CONFLICT, "{again}");
+    let (status, again) = challenge(&bowser, "mario").await;
+    assert_eq!(status, StatusCode::CREATED, "{again}");
     assert_eq!(
-        (&again["rematch_of"], &again["stage"]),
-        (&json!(id), &json!("invited"))
+        (&again["rematch_of"], &again["first_pick"]),
+        (&Value::Null, &json!("you"))
     );
 }
 
@@ -860,10 +862,13 @@ async fn a_set_from_the_lobby_to_a_rematch(pool: PgPool) {
         async move { world.send("POST", &path, &token, body).await }
     };
     assert_eq!(challenge["you_ready"], json!(true));
+    // The challenger picked the stadium and drafts first.
+    assert_eq!(challenge["first_pick"], "you");
 
     // The accept is Bowser's Ready to play!, the challenge was Mario's: go.
     let (status, go) = post(format!("/api/v1/matches/{id}/accept"), &bowser, Value::Null).await;
     assert_eq!(status, StatusCode::OK, "{go}");
+    assert_eq!(go["first_pick"], "opponent");
     assert_eq!(
         (&go["stage"], &go["you_ready"], &go["opponent_ready"]),
         (&json!("go"), &json!(true), &json!(true))
@@ -933,21 +938,35 @@ async fn a_set_from_the_lobby_to_a_rematch(pool: PgPool) {
     )
     .await;
     assert_eq!(finished["stage"], "finished");
+    // The rematch is Bowser's turn: he picks its stadium, and drafts first.
     let (_, offered) = post(
         format!("/api/v1/matches/{id}/rematch"),
         &bowser,
-        Value::Null,
+        json!({"stadium": "the_palace"}),
     )
     .await;
     assert_eq!(
-        (&offered["stage"], &offered["rematch_of"]),
-        (&json!("invited"), &json!(id))
+        (
+            &offered["stage"],
+            &offered["rematch_of"],
+            &offered["first_pick"]
+        ),
+        (&json!("invited"), &json!(id), &json!("you"))
     );
-    let (_, again) = post(format!("/api/v1/matches/{id}/rematch"), &mario, Value::Null).await;
+    assert_eq!(offered["rules"]["stadium"], "the_palace");
+    let (status, refused) = post(
+        format!("/api/v1/matches/{id}/rematch"),
+        &mario,
+        json!({"stadium": "crater_field"}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{refused}");
+    let (_, again) = post(format!("/api/v1/matches/{id}/rematch"), &mario, json!({})).await;
     assert_eq!(
-        (&again["id"], &again["stage"]),
-        (&offered["id"], &json!("go"))
+        (&again["id"], &again["stage"], &again["first_pick"]),
+        (&offered["id"], &json!("go"), &json!("opponent"))
     );
+    assert_eq!(again["rules"]["stadium"], "the_palace");
     let (_, lists) = world
         .send("GET", "/api/v1/players", &mario, Value::Null)
         .await;

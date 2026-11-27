@@ -691,13 +691,13 @@ terrain and Thunder Island walls; 3 minutes before 1.2.7).
 | `POST /api/v1/matches` | `{"opponent": "<Discord username>", "rule_set": <id>}`, or `"opponent_id": <player id>` instead of the name (a Mii player only by id): a challenge, 201. Instead of a rule set, `"rules": {…}` (see "Rules") and `"name"`, the preset they come from (1 to 48 characters; `Custom` without one): the match's `rule_set` then is that name; 400 for rules the game doesn't have. 404 for nobody of that name, 409 when either already has a match to play, or the opponent doesn't have Recharged open or is playing a match (see "Activity"). |
 | `GET /api/v1/matches/current` | `{"match": …, "search": …, "poll_interval": 2, "server_time": <unix seconds>}`: the match still to be played, or the last one that ended within the hour, or `null`; the player's search (see "Random opponents"); `poll_interval` is how soon to ask again (2 while the set waits for its players or the player searches, 10 while they play, 5 otherwise) |
 | `POST /api/v1/search`, `DELETE /api/v1/search` | Search for a random opponent, and stop (see "Random opponents") |
-| `POST /api/v1/matches/<id>/accept`, `…/decline` | The challenged player's answer |
+| `POST /api/v1/matches/<id>/accept`, `…/decline` | The challenged player's answer; the accept of a rematch whose turn is theirs may say `{"stadium": "<stadium>"}`, see "Turns" |
 | `POST /api/v1/matches/<id>/cancel` | Either player, before the result |
 | `POST /api/v1/matches/<id>/ready-to-play` | `{"ready": true}` or `false`: the launcher's Ready to play!, see "Sets" |
 | `POST /api/v1/matches/<id>/ready` | `{"profile_id", "rules_hash"}`: the game's, see below |
 | `POST /api/v1/matches/<id>/report` | `{"games": [...]}`, see below |
 | `POST /api/v1/matches/<id>/forfeit` | `{"games": [...]}`: the player gives the playing set up, see "Forfeit" |
-| `POST /api/v1/matches/<id>/rematch` | After a set that ended (finished, disputed, or without a result): the same opponent and rules again, see "Sets" |
+| `POST /api/v1/matches/<id>/rematch` | After a set that was played (finished, a forfeit too, or disputed): the same opponent and rules again, `{"stadium": "<stadium>"}` from the player whose turn it is; see "Sets" and "Turns" |
 
 A match as the player sees it:
 
@@ -709,9 +709,13 @@ A match as the player sees it:
  "rule_set": "Competitive", "rules": {…}, "rules_hash": "…",
  "paired": false, "reported": false, "winner": null, "games": [], "created_at": 1792771200,
  "stage": "open", "reason": null, "you_ready": true, "opponent_ready": false,
- "opponent_online": true, "go_at": null, "playing_at": null, "rematch_of": null, "random": false,
- "forfeited_by": null, "forfeited_at": null, "tournament": null}
+ "opponent_online": true, "go_at": null, "playing_at": null, "rematch_of": null,
+ "first_pick": "you", "random": false, "forfeited_by": null, "forfeited_at": null,
+ "tournament": null}
 ```
+
+`first_pick` is the set's turn (see "Turns"), `you` or `opponent`; `null` for
+a tournament's set and for sets from servers before 1.3.3.
 
 `tournament` is `{"id", "name", "set", "side", "round", "games", "home_wins",
 "away_wins"}` for the match of a
@@ -775,9 +779,32 @@ still work:
 - A game saying it is ready (below) counts as its player's Ready to play!,
   for launchers without the button.
 - `rematch`: the first player to ask challenges the other with the ended
-  set's rules (`rematch_of` names it); the other's **Rematch** accepts it.
-  A set that ended without a result (called off, expired, broken off) can
-  be played again the same way.
+  set's rules (`rematch_of` names it); the other's **Rematch** accepts it,
+  as their accept does. Only a set that was played has a rematch:
+  `finished` (a forfeit too) or `disputed`; one that ended without a result
+  (called off, expired, broken off) is refused (409), a new challenge plays
+  it again. Its turn is the other player's (see "Turns").
+
+### Turns
+
+A set's turn (`first_pick`, from 1.3.3) is the player who drafts first in its
+games, and who picked its stadium. The game puts that player on the side
+that drafts first: at home with Defence priority (`fair_ball_contests`),
+away without it, so with the side the first pick changes hands too.
+
+- A challenge's turn is the challenger's (a search's, the searcher's): they
+  set up its rules, the stadium among them.
+- A rematch's turn is the other player's than the set it plays again
+  (`first_pick` there; a set from before turns counts as the challenger's),
+  whoever asks for it. So the turn goes back and forth while the two play
+  on, and a new challenge gives it to its challenger again.
+- The player whose turn the rematch is picks its stadium: `{"stadium": …}`
+  (`random` or one of the stadiums of "Rules") with their **Rematch**, or,
+  when the other asked first, with their accept (`…/accept` or their
+  **Rematch**). The rules and `rules_hash` change to it; the other rules stay
+  the ended set's. Without a stadium (older games) the ended set's stays.
+  A stadium from the other player is refused (403), one the rules don't
+  have too (400).
 
 ### Meeting in RANKED
 
