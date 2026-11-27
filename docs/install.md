@@ -213,7 +213,13 @@ System, each at its own address (e.g.
 Recharged builds report ([reports.md](reports.md)), in progress first; a match
 opens its own page (e.g. `/admin/matches/12`) with both players, whether the
 [NAT relay](#nat-relay) carried their games, each game as both sides saw it,
-and the reports as they came. A profile on **Players** opens
+and the reports as they came. **Players** lists the profiles online first:
+logged in to WFC, then those whose Recharged player has the launcher or game
+open without that login (**In the launcher**, **In the game**, **In a match**:
+a heartbeat in the last minute), each on the Mii that player plays with (one
+of the game their Recharged says it plays, else the one that logged in last);
+its **In Recharged** tile counts every player with Recharged open, on WFC or
+not, as Monitoring does. A profile on **Players** opens
 its own page too (e.g. `/admin/players/1000000000`): its friend code and
 console, its release and the Recharged build and system its game reported
 last, whether the relay carries it now, its record in the reported matches by

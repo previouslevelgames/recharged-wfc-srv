@@ -43,6 +43,18 @@ function statusOf(online) {
   }
   return [name, tone, about];
 }
+// A profile not logged in to WFC whose Recharged player has the launcher or
+// game open (docs/profiles.md, "Activity"), with its badge tone.
+const RECHARGED = {
+  launcher: ['In the launcher', 'accent', "Recharged's launcher is open; its game is not logged in to WFC"],
+  game: ['In the game', 'accent', "Recharged's game runs; it is not logged in to WFC"],
+  match: ['In a match', 'accent', "Recharged's game plays a match without WFC"],
+};
+function rechargedOf(recharged) {
+  const [name, tone, about] = RECHARGED[recharged.activity] || RECHARGED.launcher;
+  const doing = recharged.match_kind ? `${recharged.match_kind} match` : recharged.screen ? `screen ${recharged.screen}` : null;
+  return [name, tone, doing ? `${about} (${doing})` : about];
+}
 // The players in a room a login hosts, as a short note; '' for none.
 function roomNote(online) {
   return online.status === 6 && online.room_players >= 2 ? `${online.room_players} players in the room · ` : '';
@@ -726,11 +738,11 @@ function renderOverview(data, now) {
         tone: 'good',
         status: 'Live',
         facts: [
-          ['Online', count(players.online)],
-          ['Profiles', count(players.profiles)],
+          ['On WFC', count(players.online)],
+          ['In Recharged', count(players.recharged)],
           ['Last sign-in', players.last_login ? ago(players.last_login, now) : 'none yet'],
         ],
-        foot: `NAS and GPCM · ${count(players.accounts)} accounts`,
+        foot: `NAS and GPCM · ${count(players.profiles)} profiles · ${count(players.accounts)} accounts`,
       });
     }
     if (target.path === '/admin/matchmaking') {
@@ -783,6 +795,10 @@ function renderOverview(data, now) {
 function presence(player, now) {
   if (player.cpu_buddy) return [badge('accent', 'Server'), h('span', { class: 'sub' }, 'Accepts every friend request; never plays')];
   if (player.banned && !player.online) return [badge('critical', 'Banned'), h('span', { class: 'sub' }, 'Its console logs in nowhere')];
+  if (!player.online && player.recharged) {
+    const [name, tone, about] = rechargedOf(player.recharged);
+    return [h('span', { class: 'badge', 'data-tone': tone, title: about }, name), h('span', { class: 'sub' }, `${player.recharged.name} · not on WFC`)];
+  }
   if (!player.online) return badge(null, 'Offline');
   const [name, tone, about] = statusOf(player.online);
   // A status counts from when the game sent it, the login from its start.
@@ -804,6 +820,7 @@ function renderPlayers(data, now) {
       'section',
       { class: 'tiles', 'aria-label': 'Key figures' },
       tile('Online', count(totals.online), 'Logged in to GPCM now'),
+      tile('In Recharged', count(totals.recharged), 'Launcher or game open, on WFC or not'),
       tile('Profiles', count(totals.profiles), 'One per console and Mii'),
       tile('Accounts', count(totals.accounts), 'Consoles registered with NAS'),
       tile('Last sign-in', totals.last_login ? ago(totals.last_login, now) : '—', totals.last_login ? dateTime.format(new Date(totals.last_login)) : 'Nobody yet'),
@@ -872,9 +889,11 @@ function renderPlayer(data, now) {
       { class: 'tiles words', 'aria-label': 'Key figures' },
       tile(
         'Status',
-        profile.cpu_buddy ? 'Server' : profile.online ? statusOf(profile.online)[0] : 'Offline',
+        profile.cpu_buddy ? 'Server' : profile.online ? statusOf(profile.online)[0] : profile.recharged ? rechargedOf(profile.recharged)[0] : 'Offline',
         !profile.online
-          ? 'Not logged in to GPCM'
+          ? profile.recharged
+            ? rechargedOf(profile.recharged)[2]
+            : 'Not logged in to GPCM'
           : profile.online.status_since
             ? [statusOf(profile.online)[2], ' · since ', ago(profile.online.status_since, now), ' · logged in to GPCM ', ago(profile.online.since, now)]
             : [statusOf(profile.online)[2], ' · logged in to GPCM ', ago(profile.online.since, now)],

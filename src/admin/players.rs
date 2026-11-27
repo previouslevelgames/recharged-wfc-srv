@@ -1,5 +1,6 @@
 //! The Players page: the accounts consoles registered, their profiles (one per
-//! Mii slot) with their friend codes, and who is logged in to GPCM. A
+//! Mii slot) with their friend codes, who is logged in to GPCM, and whose
+//! Recharged player has the launcher or game open without that login. A
 //! profile's own page adds its record in the matches Recharged builds report
 //! (docs/reports.md), its standing on the leaderboards, its matches, the
 //! NAT relay's matches of its games (src/relay_store.rs), and the technical
@@ -22,6 +23,7 @@ use crate::{
     gamestats::submission::Submission,
     gpcm::{Gpcm, Matchmaking, Presence},
     master::Master,
+    online::RECHARGED_SECS,
     pairing::Pairings,
     relay_store::{self, Relayed},
     reports::{
@@ -115,6 +117,10 @@ pub struct Totals {
     profiles: i64,
     /// Logged in to GPCM now; the CPU buddy does not count.
     online: usize,
+    /// Recharged players with their launcher or game open now (a heartbeat
+    /// in the last [`RECHARGED_SECS`]), logged in to WFC or not, as
+    /// Monitoring counts them.
+    recharged: i64,
     #[serde(with = "time::serde::rfc3339::option")]
     last_login: Option<OffsetDateTime>,
 }
@@ -137,8 +143,69 @@ struct Player {
     /// Rows in `scores`.
     scores: i64,
     online: Option<Online>,
+    /// Its Recharged player has the launcher or game open, and plays with
+    /// this profile (see [`in_recharged`]).
+    recharged: Option<InRecharged>,
     /// Its console is banned (docs/profiles.md, "Deleting a player").
     banned: bool,
+}
+
+/// A Recharged player with the launcher or game open, as their last
+/// heartbeat says (docs/profiles.md, "Activity").
+#[derive(Clone, Serialize)]
+struct InRecharged {
+    player_id: i64,
+    name: String,
+    /// `launcher`, `game` or `match`.
+    activity: &'static str,
+    /// In the game: the screens it shows; in a match: its kind; when the
+    /// game says.
+    screen: Option<String>,
+    match_kind: Option<String>,
+    #[serde(with = "time::serde::rfc3339")]
+    heartbeat_at: OffsetDateTime,
+}
+
+/// The Recharged players with the launcher or game open, by the WFC profile
+/// each plays with: of the profiles bound to them, one of the game their
+/// Recharged says it plays (`Recharged-Game`), else any; the one that logged
+/// in last. A player without a WFC profile is in no row (but in
+/// [`Totals::recharged`]).
+async fn in_recharged(conn: &mut PgConnection) -> Result<HashMap<i32, InRecharged>, sqlx::Error> {
+    let rows = sqlx::query!(
+        r#"SELECT DISTINCT ON (players.player_id)
+                  bound.profile_id, players.player_id, players.display_name, players.activity,
+                  players.screen, players.match_kind, players.heartbeat_at AS "heartbeat_at!"
+           FROM players
+           JOIN player_wfc_profiles bound USING (player_id)
+           JOIN profiles USING (profile_id)
+           WHERE players.heartbeat_at > now() - make_interval(secs => $1)
+           ORDER BY players.player_id,
+                    coalesce(left(profiles.gsbrcd, 4) = players.game, false) DESC,
+                    profiles.last_login_at DESC, profiles.profile_id"#,
+        RECHARGED_SECS,
+    )
+    .fetch_all(conn)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let activity = match row.activity.as_deref() {
+                Some("game") => "game",
+                Some("match") => "match",
+                _ => "launcher",
+            };
+            let player = InRecharged {
+                player_id: row.player_id,
+                name: row.display_name,
+                activity,
+                screen: (activity == "game").then_some(row.screen).flatten(),
+                match_kind: (activity == "match").then_some(row.match_kind).flatten(),
+                heartbeat_at: row.heartbeat_at,
+            };
+            (row.profile_id, player)
+        })
+        .collect())
 }
 
 /// A login to GPCM.
@@ -194,9 +261,12 @@ pub async fn totals(
     let row = sqlx::query!(
         r#"SELECT (SELECT count(*) FROM accounts WHERE user_id <> $1) AS "accounts!",
                   (SELECT count(*) FROM profiles WHERE profile_id <> $2) AS "profiles!",
-                  (SELECT max(last_login_at) FROM profiles WHERE profile_id <> $2) AS last_login"#,
+                  (SELECT max(last_login_at) FROM profiles WHERE profile_id <> $2) AS last_login,
+                  (SELECT count(*) FROM players
+                   WHERE heartbeat_at > now() - make_interval(secs => $3)) AS "recharged!""#,
         accounts::CPU_BUDDY_ACCOUNT,
         accounts::CPU_BUDDY,
+        RECHARGED_SECS,
     )
     .fetch_one(conn)
     .await?;
@@ -204,6 +274,7 @@ pub async fn totals(
         accounts: row.accounts,
         profiles: row.profiles,
         online: presence.len(),
+        recharged: row.recharged,
         last_login: row.last_login,
     })
 }
@@ -215,7 +286,14 @@ async fn profiles(
 ) -> Result<Vec<Player>, sqlx::Error> {
     // Every profile without a search; with one, those whose Mii, Recharged
     // player, profile, friend code, console or address it names (any part).
+    // The CPU buddy and those online come first, however long ago their WFC
+    // login was.
     let numbered = search.profiles(&mut *conn).await?;
+    let recharged = in_recharged(&mut *conn).await?;
+    let first: Vec<i32> = std::iter::once(accounts::CPU_BUDDY)
+        .chain(presence.keys().copied())
+        .chain(recharged.keys().copied())
+        .collect();
     let rows = sqlx::query!(
         r#"SELECT p.profile_id, p.user_id, p.gsbrcd, p.ingamesn, p.created_at,
                   p.last_login_at, p.last_ip,
@@ -229,12 +307,13 @@ async fn profiles(
               OR EXISTS (SELECT 1 FROM player_wfc_profiles JOIN players USING (player_id)
                          WHERE player_wfc_profiles.profile_id = p.profile_id
                            AND strpos(lower(players.display_name), $2) > 0)
-           ORDER BY p.last_login_at DESC, p.profile_id
+           ORDER BY p.profile_id = ANY($5) DESC, p.last_login_at DESC, p.profile_id
            LIMIT $1"#,
         SHOWN,
         search.text(),
         &numbered,
         search.digits(),
+        &first,
     )
     .fetch_all(conn)
     .await?;
@@ -247,6 +326,7 @@ async fn profiles(
             ),
             cpu_buddy: row.profile_id == accounts::CPU_BUDDY,
             online: presence.get(&row.profile_id).map(Online::from),
+            recharged: recharged.get(&row.profile_id).cloned(),
             profile_id: row.profile_id,
             user_id: row.user_id,
             gsbrcd: row.gsbrcd,
@@ -258,8 +338,16 @@ async fn profiles(
             banned: row.banned,
         })
         .collect();
-    // The CPU buddy, then who is online; each in the order of their logins.
-    players.sort_by_key(|player| (!player.cpu_buddy, player.online.is_none()));
+    // The CPU buddy, then who is logged in to WFC, then who has Recharged
+    // open; each in the order of their logins.
+    players.sort_by_key(|player| {
+        let rank = match (&player.online, &player.recharged) {
+            (Some(_), _) => 0,
+            (None, Some(_)) => 1,
+            (None, None) => 2,
+        };
+        (!player.cpu_buddy, rank)
+    });
     Ok(players)
 }
 
@@ -386,6 +474,9 @@ struct Profile {
     last_login_at: OffsetDateTime,
     last_ip: Option<String>,
     online: Option<Online>,
+    /// Its Recharged player has the launcher or game open, and plays with
+    /// this profile (as on the Players page).
+    recharged: Option<InRecharged>,
     /// The Recharged player who proved the profile theirs
     /// (docs/profiles.md, "Friend codes").
     player: Option<Bound>,
@@ -530,6 +621,7 @@ pub async fn detail(
         });
     }
     let ban = bans::of_console(&mut tx, row.user_id).await?;
+    let recharged = in_recharged(&mut tx).await?.remove(&row.profile_id);
     let profile = Profile {
         profile_id: row.profile_id,
         user_id: row.user_id,
@@ -542,6 +634,7 @@ pub async fn detail(
         last_login_at: row.last_login_at,
         last_ip: row.last_ip,
         online,
+        recharged,
         player: bound,
         ban,
     };
@@ -981,6 +1074,128 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[sqlx::test]
+    async fn a_player_with_recharged_open_shows_on_the_profile_they_play_with(pool: PgPool) {
+        // Ruffus has a US and a European Mii on one console (the US one
+        // logged in last), Sam one; nobody is logged in to WFC.
+        accounts::log_in(&pool, 42).await.unwrap();
+        accounts::log_in(&pool, 43).await.unwrap();
+        let login = |gsbrcd: &'static str, mii: &'static str, user_id: i64| {
+            let pool = pool.clone();
+            async move {
+                accounts::profile_login(&pool, user_id, gsbrcd, Some(mii), "10.0.0.1")
+                    .await
+                    .unwrap()
+                    .profile_id
+            }
+        };
+        let eu = login("R4QPbbbbbbb", "anosch", 42).await;
+        let us = login("R4QEaaaaaaa", "Ruffus", 42).await;
+        let sam = login("R4QEccccccc", "Sam", 43).await;
+        sqlx::query!(
+            "UPDATE profiles SET last_login_at = now() - interval '3 days' WHERE profile_id = $1",
+            eu,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        // Ruffus's game runs the European disc, in its menus; Sam closed
+        // Recharged two minutes ago; Nelly has the launcher open but no Mii.
+        let ruffus = sqlx::query_scalar!(
+            "INSERT INTO players (display_name, heartbeat_at, activity, screen, game)
+             VALUES ('Ruffus', now(), 'game', 'menus', 'R4QP') RETURNING player_id"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let sam_player = sqlx::query_scalar!(
+            "INSERT INTO players (display_name, heartbeat_at, activity)
+             VALUES ('Sam', now() - interval '2 minutes', 'game') RETURNING player_id"
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        sqlx::query!("INSERT INTO players (display_name, heartbeat_at) VALUES ('Nelly', now())")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query!(
+            "INSERT INTO player_wfc_profiles (profile_id, player_id)
+             VALUES ($1, $3), ($2, $3), ($4, $5)",
+            eu,
+            us,
+            ruffus,
+            sam,
+            sam_player,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let gpcm = Gpcm::new(pool.clone(), Arc::new(Tickets::default()), Arc::default());
+
+        let players = read(&pool, &gpcm, &Search::default()).await.unwrap();
+        assert_eq!((players.totals.online, players.totals.recharged), (0, 2));
+        let order: Vec<i32> = players.profiles.iter().map(|p| p.profile_id).collect();
+        assert_eq!(
+            order,
+            [accounts::CPU_BUDDY, eu, sam, us],
+            "online first, then by login"
+        );
+        let shown = |id: i32| {
+            players
+                .profiles
+                .iter()
+                .find(|p| p.profile_id == id)
+                .unwrap()
+                .recharged
+                .clone()
+        };
+        let playing = shown(eu).expect("the European Mii is the one in the game");
+        assert_eq!(
+            (
+                playing.name.as_str(),
+                playing.activity,
+                playing.screen.as_deref()
+            ),
+            ("Ruffus", "game", Some("menus"))
+        );
+        assert_eq!(playing.player_id, ruffus);
+        assert!(shown(us).is_none() && shown(sam).is_none());
+
+        // A launcher that says no game: the Mii that logged in last.
+        sqlx::query!(
+            "UPDATE players SET activity = NULL, screen = NULL, game = NULL WHERE player_id = $1",
+            ruffus,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let players = read(&pool, &gpcm, &Search::default()).await.unwrap();
+        let open = players.profiles.iter().find_map(|p| {
+            p.recharged
+                .as_ref()
+                .map(|r| (p.profile_id, r.activity, r.screen.clone()))
+        });
+        assert_eq!(open, Some((us, "launcher", None)));
+        assert_eq!(players.profiles[1].profile_id, us);
+
+        // A profile's own page says the same.
+        let (master, activity, pairings) =
+            (Master::default(), Activity::default(), Pairings::default());
+        let now = Now {
+            master: &master,
+            activity: &activity,
+            pairings: &pairings,
+        };
+        let page = |id| detail(&pool, &gpcm, &now, id);
+        let us_page = page(us).await.unwrap().unwrap();
+        assert_eq!(
+            us_page.profile.recharged.map(|r| r.activity),
+            Some("launcher")
+        );
+        assert!(page(eu).await.unwrap().unwrap().profile.recharged.is_none());
     }
 
     async fn detail_of(games: &crate::admin::matches::tests::Games, profile_id: i32) -> Detail {

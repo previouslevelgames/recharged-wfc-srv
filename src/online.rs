@@ -36,7 +36,7 @@ pub const KEPT_DAYS: i32 = 30;
 const EVERY: Duration = Duration::from_secs(60);
 /// Recharged is open while its launcher or game asks at least this often
 /// (the profile service's heartbeat).
-const RECHARGED_SECS: f64 = 60.0;
+pub(crate) const RECHARGED_SECS: f64 = 60.0;
 /// `GET /api/v1/online` counts again after this long at the most: however
 /// often it is asked, the database sees one query in this time.
 const ANSWER_FOR: Duration = Duration::from_secs(10);

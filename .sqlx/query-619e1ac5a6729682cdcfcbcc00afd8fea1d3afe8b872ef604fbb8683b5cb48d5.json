@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE profiles SET last_login_at = now() - interval '3 days' WHERE profile_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int4"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "619e1ac5a6729682cdcfcbcc00afd8fea1d3afe8b872ef604fbb8683b5cb48d5"
+}
