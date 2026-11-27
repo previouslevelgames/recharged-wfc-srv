@@ -582,6 +582,47 @@ h1 .server-label {
   overflow-wrap: anywhere;
 }
 
+/* A button's note (Watch, Replay): a status at the window's bottom right,
+   above the page, which its polls redraw beneath it. */
+.toast {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 20;
+  width: min(420px, calc(100vw - 48px));
+}
+
+.toast .status {
+  padding-right: 48px;
+  box-shadow: 0 8px 32px rgba(11, 11, 11, 0.18);
+}
+
+.toast-close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.toast-close:hover {
+  background: var(--surface-sunken);
+  color: var(--ink);
+}
+
+.toast-close svg {
+  width: 16px;
+  height: 16px;
+}
+
 /* Stat tiles */
 
 .tiles {

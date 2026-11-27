@@ -1360,25 +1360,70 @@ function matchPath(match) {
   return `/admin/matches/${match.id}`;
 }
 
+/** A note at the bottom of the window, for what a button did: outside the
+ * page body, which every poll redraws. One at a time; it closes by itself. */
+const toast = {
+  node: null,
+  timer: 0,
+  show(level, title, detail, ms = 20000) {
+    this.hide();
+    const close = h('button', { class: 'toast-close', type: 'button', 'aria-label': 'Close', onclick: () => this.hide() }, icon('critical'));
+    this.node = h('div', { class: 'toast' }, banner({ level, title, detail }), close);
+    document.body.append(this.node);
+    this.timer = setTimeout(() => this.hide(), ms);
+  },
+  hide() {
+    clearTimeout(this.timer);
+    this.node?.remove();
+    this.node = null;
+  },
+};
+
+/** Asks the server for a recharged:// link (`api`, as `{ url }`; `gone` says
+ * why a 404 has none) and opens it. A browser hands such a link only to a
+ * program that signed up for it, and stays silent otherwise: Recharged 1.2's
+ * launcher signs up each time it starts. When the page keeps the focus (no
+ * "Open Recharged?" question, no Recharged window), it says what to do;
+ * `file` names the button that gives the same thing as a file. */
+async function openInRecharged(button, api, gone, file) {
+  button.disabled = true;
+  let url;
+  try {
+    const response = await fetch(api, { credentials: 'same-origin' });
+    if (!response.ok) throw new Error(response.status === 404 ? gone : `The server answered HTTP ${response.status}.`);
+    url = (await response.json()).url;
+  } catch (error) {
+    toast.show('critical', 'No ticket', error.message);
+    return;
+  } finally {
+    button.disabled = false;
+  }
+  let left = false;
+  const away = () => {
+    left = true;
+  };
+  window.addEventListener('blur', away, { once: true });
+  window.location.href = url;
+  toast.show('pending', 'Opening Recharged…', 'Let your browser open it, if it asks.', 5000);
+  setTimeout(() => {
+    window.removeEventListener('blur', away);
+    if (left || document.hidden) return;
+    toast.show(
+      'warning',
+      'Nothing opened?',
+      `Start Recharged 1.2 once on this computer: its launcher signs up for these links. Then try again, or take the ${file} file and open it with Recharged.`,
+    );
+  }, 4000);
+}
+
 /** While a match's games stream (REPLAYS on the server), Watch opens it in
  * Recharged (a recharged:// link, which Recharged 1.2 registers itself for);
  * Ticket downloads the same ticket as a file, to open with Recharged or drop on
  * its launcher. A ticket lasts four hours. */
 function watchButton(match) {
   if (!match.live) return null;
-  const watch = async (event) => {
-    const button = event.currentTarget;
-    button.disabled = true;
-    try {
-      const response = await fetch(`/admin/api/matches/${match.id}/watch?as=link`, { credentials: 'same-origin' });
-      if (!response.ok) throw new Error(response.status === 404 ? 'the match no longer streams' : `HTTP ${response.status}`);
-      window.location.href = (await response.json()).url;
-    } catch (error) {
-      button.title = `No ticket: ${error.message}`;
-    } finally {
-      button.disabled = false;
-    }
-  };
+  const watch = (event) =>
+    openInRecharged(event.currentTarget, `/admin/api/matches/${match.id}/watch?as=link`, 'The match no longer streams.', 'Ticket');
   return [
     h(
       'button',
@@ -1408,19 +1453,13 @@ function watchButton(match) {
  * games; Download gives the replay file itself, for Recharged 1.2 (open it, or
  * drop it on its launcher). */
 function replayButtons(match, kept) {
-  const play = async (event) => {
-    const button = event.currentTarget;
-    button.disabled = true;
-    try {
-      const response = await fetch(`/admin/api/matches/${match.id}/watch?as=link&game=${kept.game}`, { credentials: 'same-origin' });
-      if (!response.ok) throw new Error(response.status === 404 ? 'the server keeps no replay of this game' : `HTTP ${response.status}`);
-      window.location.href = (await response.json()).url;
-    } catch (error) {
-      button.title = `No ticket: ${error.message}`;
-    } finally {
-      button.disabled = false;
-    }
-  };
+  const play = (event) =>
+    openInRecharged(
+      event.currentTarget,
+      `/admin/api/matches/${match.id}/watch?as=link&game=${kept.game}`,
+      'The server keeps no replay of this game.',
+      'Download',
+    );
   return [
     h(
       'button',
