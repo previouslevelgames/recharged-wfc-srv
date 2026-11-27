@@ -526,7 +526,9 @@ function h(tag, props, ...children) {
     else if (key.startsWith('on')) node.addEventListener(key.slice(2), value);
     else node.setAttribute(key, value === true ? '' : value);
   }
-  node.append(...children.flat().filter((child) => child != null && child !== false));
+  // Children nest freely (a cell's buttons, each a list of its own): append()
+  // would write an inner list as its text.
+  node.append(...children.flat(Infinity).filter((child) => child != null && child !== false));
   return node;
 }
 
