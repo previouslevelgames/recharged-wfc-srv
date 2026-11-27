@@ -30,8 +30,10 @@ pub struct Matchmaking {
     sessions: Vec<Game>,
     /// The latest first.
     activity: Vec<Event>,
-    /// The Mii names of the profiles in the activity.
+    /// The Mii names of the profiles in the activity, and the names of
+    /// the Recharged players they are bound to.
     names: HashMap<i32, String>,
+    players: HashMap<i32, String>,
 }
 
 #[derive(Serialize)]
@@ -52,6 +54,8 @@ struct Game {
     local_address: Option<String>,
     profile_id: Option<i32>,
     mii_name: Option<String>,
+    /// The Recharged player its profile is bound to.
+    player: Option<String>,
     /// `dwc_mtype`; none before matchmaking starts.
     match_type: Option<u8>,
     /// `numplayers` and `maxplayers`: the others in its group, and how many
@@ -146,10 +150,14 @@ pub async fn read(
     .into_iter()
     .map(|row| (row.profile_id, row.ingamesn))
     .collect();
+    let players = crate::profiles::players::names_of_profiles(pool, &profiles).await?;
     for game in &mut games {
         game.mii_name = game
             .profile_id
             .and_then(|profile| names.get(&profile).cloned().flatten());
+        game.player = game
+            .profile_id
+            .and_then(|profile| players.get(&profile).cloned());
     }
 
     games.sort_by(|a, b| {
@@ -163,6 +171,7 @@ pub async fn read(
             .into_iter()
             .filter_map(|(profile, name)| Some((profile, name?)))
             .collect(),
+        players,
     })
 }
 
@@ -189,6 +198,7 @@ impl Game {
             local_address,
             profile_id,
             mii_name: None,
+            player: None,
             match_type: number(session, "dwc_mtype"),
             players: number(session, "numplayers"),
             max_players: number(session, "maxplayers"),
@@ -223,6 +233,15 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(profile.profile_id, 1000000000);
+        // Mario's profile belongs to the Recharged player Birnen.
+        sqlx::raw_sql(
+            "INSERT INTO players (display_name) VALUES ('Birnen');
+             INSERT INTO player_wfc_profiles (profile_id, player_id)
+             SELECT 1000000000, player_id FROM players",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
 
         let master = Master::default();
         master.answer(ONLINE, "203.0.113.9:40000".parse().unwrap());
@@ -259,6 +278,7 @@ mod tests {
         assert_eq!(searching.address, "192.168.1.131:53103");
         assert_eq!(searching.profile_id, Some(1000000001));
         assert_eq!(searching.mii_name, None); // No such profile here.
+        assert_eq!(searching.player, None);
         assert_eq!(
             (searching.players, searching.max_players),
             (Some(0), Some(1))
@@ -272,6 +292,7 @@ mod tests {
 
         assert_eq!(hosting.profile_id, Some(1000000000));
         assert_eq!(hosting.mii_name.as_deref(), Some("Mario"));
+        assert_eq!(hosting.player.as_deref(), Some("Birnen"));
         assert_eq!(hosting.match_type, Some(2));
         assert_eq!(hosting.reserved_with, Some(1000000001));
         assert_eq!(
@@ -297,5 +318,10 @@ mod tests {
             Some("Mario")
         );
         assert_eq!(page.names.get(&1000000001), None);
+        assert_eq!(
+            page.players.get(&1000000000).map(String::as_str),
+            Some("Birnen")
+        );
+        assert_eq!(page.players.get(&1000000001), None);
     }
 }

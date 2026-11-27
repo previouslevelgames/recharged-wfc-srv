@@ -133,6 +133,9 @@ struct Player {
     /// The code a player of the profile's own release enters.
     friend_code: String,
     mii_name: Option<String>,
+    /// The Recharged player the profile is bound to: the dashboard shows
+    /// their name first, the Mii's after it.
+    player: Option<String>,
     /// Answered by the server itself (docs/login.md, "The CPU buddy").
     cpu_buddy: bool,
     #[serde(with = "time::serde::rfc3339")]
@@ -315,8 +318,10 @@ async fn profiles(
         search.digits(),
         &first,
     )
-    .fetch_all(conn)
+    .fetch_all(&mut *conn)
     .await?;
+    let ids: Vec<i32> = rows.iter().map(|row| row.profile_id).collect();
+    let bound = crate::profiles::players::names_of_profiles(conn, &ids).await?;
     let mut players: Vec<Player> = rows
         .into_iter()
         .map(|row| Player {
@@ -327,6 +332,7 @@ async fn profiles(
             cpu_buddy: row.profile_id == accounts::CPU_BUDDY,
             online: presence.get(&row.profile_id).map(Online::from),
             recharged: recharged.get(&row.profile_id).cloned(),
+            player: bound.get(&row.profile_id).cloned(),
             profile_id: row.profile_id,
             user_id: row.user_id,
             gsbrcd: row.gsbrcd,
@@ -401,9 +407,10 @@ struct Technical {
     /// Its reports the server did not take.
     refusals: Vec<Refusal>,
     /// Its latest matchmaking events among the server's (in memory), and
-    /// the Mii names of the profiles in them.
+    /// the Mii names of the profiles in them and their Recharged players'.
     events: Vec<Event>,
     names: HashMap<i32, String>,
+    players: HashMap<i32, String>,
 }
 
 #[derive(Serialize)]
@@ -556,6 +563,8 @@ struct Played {
 #[derive(Serialize)]
 struct Opponent {
     mii: String,
+    /// The Recharged player its profile is bound to.
+    player: Option<String>,
     captain: String,
     /// The profile whose game reported the other side; none when no game did.
     profile_id: Option<i32>,
@@ -687,6 +696,8 @@ pub async fn detail(
     .fetch_all(&mut *tx)
     .await?;
     let names = matchup::names(&mut tx, &events).await?;
+    let ids: Vec<i32> = names.keys().copied().collect();
+    let players = crate::profiles::players::names_of_profiles(&mut *tx, &ids).await?;
     tx.commit().await?;
     Ok(Some(Detail {
         profile,
@@ -710,6 +721,7 @@ pub async fn detail(
             refusals,
             events,
             names,
+            players,
         },
     }))
 }
@@ -825,6 +837,7 @@ async fn record(
                 captain,
                 opponent: Opponent {
                     mii,
+                    player: None,
                     captain: opponent_captain,
                     profile_id: row.other_profile,
                 },
@@ -842,6 +855,17 @@ async fn record(
             .collect();
         used.sort_by_key(|used| std::cmp::Reverse(used.games));
         stats.captains = used;
+    }
+    let opponents: Vec<i32> = played
+        .iter()
+        .filter_map(|played| played.opponent.profile_id)
+        .collect();
+    let players = crate::profiles::players::names_of_profiles(conn, &opponents).await?;
+    for played in &mut played {
+        played.opponent.player = played
+            .opponent
+            .profile_id
+            .and_then(|profile| players.get(&profile).cloned());
     }
     Ok((stats, played))
 }
@@ -1163,6 +1187,24 @@ mod tests {
         );
         assert_eq!(playing.player_id, ruffus);
         assert!(shown(us).is_none() && shown(sam).is_none());
+        // Every profile bound to a player names them, Recharged open or not.
+        let player = |id: i32| {
+            let profile = players
+                .profiles
+                .iter()
+                .find(|p| p.profile_id == id)
+                .unwrap();
+            profile.player.clone()
+        };
+        assert_eq!(
+            [eu, us, sam, accounts::CPU_BUDDY].map(player),
+            [
+                Some("Ruffus".into()),
+                Some("Ruffus".into()),
+                Some("Sam".into()),
+                None
+            ]
+        );
 
         // A launcher that says no game: the Mii that logged in last.
         sqlx::query!(

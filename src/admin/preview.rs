@@ -89,6 +89,19 @@ const WINE: System = (
 /// the end it stopped (`abandoned`, by a `desync`), then the dossiers.
 async fn seed(pool: &PgPool) {
     let games = Games::new(pool.clone()).await;
+    // Anosch's profile is the Recharged player Birnen's: the pages show
+    // "Birnen (Anosch)". Sam's player has the Mii's name: just "Sam".
+    sqlx::query(
+        "WITH named AS (INSERT INTO players (display_name) VALUES ('Birnen'), ('Sam')
+                        RETURNING player_id, display_name)
+         INSERT INTO player_wfc_profiles (profile_id, player_id)
+         SELECT CASE display_name WHEN 'Birnen' THEN $1 ELSE $2 END, player_id FROM named",
+    )
+    .bind(games.anosch)
+    .bind(games.sam)
+    .execute(pool)
+    .await
+    .unwrap();
 
     // The same binary, a value: field 1 of the desync's step.
     let (home, mut away) = series(&games, 1_792_000_000, [LINUX, LINUX]).await;

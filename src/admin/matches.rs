@@ -80,6 +80,8 @@ pub struct Listed {
 #[derive(Serialize)]
 struct Team {
     mii: String,
+    /// The Recharged player the reporting profile is bound to.
+    player: Option<String>,
     captain: String,
     /// The profile whose game reported this side; none when no game did.
     profile_id: Option<i32>,
@@ -127,6 +129,8 @@ struct KeptReplay {
 struct SideDetail {
     side: Side,
     mii: String,
+    /// The Recharged player the reporting profile is bound to.
+    player: Option<String>,
     captain: String,
     /// The team's sidekicks: as its own game saw them, else as the other
     /// game did; empty when neither knew them.
@@ -239,8 +243,15 @@ async fn listed(
         match_id,
         limit,
     )
-    .fetch_all(conn)
+    .fetch_all(&mut *conn)
     .await?;
+    let profiles: Vec<i32> = rows
+        .iter()
+        .flat_map(|row| [row.home_profile, row.away_profile])
+        .flatten()
+        .collect();
+    let players = crate::profiles::players::names_of_profiles(conn, &profiles).await?;
+    let player = |profile: Option<i32>| profile.and_then(|profile| players.get(&profile).cloned());
     Ok(rows
         .into_iter()
         .map(|row| Listed {
@@ -254,11 +265,13 @@ async fn listed(
             forfeited_at: row.forfeited_at,
             home: Team {
                 mii: row.home_mii,
+                player: player(row.home_profile),
                 captain: row.home_captain,
                 profile_id: row.home_profile,
             },
             away: Team {
                 mii: row.away_mii,
+                player: player(row.away_profile),
                 captain: row.away_captain,
                 profile_id: row.away_profile,
             },
@@ -341,6 +354,7 @@ pub async fn detail(
             SideDetail {
                 side,
                 mii: team.mii.clone(),
+                player: team.player.clone(),
                 captain: team.captain.clone(),
                 sidekicks: sidekicks(&reporters, side),
                 reporter: reporters.get(side).as_ref().map(|reporter| ReporterView {
