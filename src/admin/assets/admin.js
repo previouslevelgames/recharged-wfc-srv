@@ -350,6 +350,10 @@ const ICONS = {
   serious: 'M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z',
   critical: 'M18 6 6 18M6 6l12 12',
   pending: 'M12 6v6l4 2',
+  watch: 'M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8zM12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
+  ticket: 'M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2zM13 5v2M13 17v2M13 11v2',
+  replay: 'M1 4v6h6M3.51 15a9 9 0 1 0 2.13-9.36L1 10',
+  download: 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3',
 };
 
 // The sections, in the order of the server's PAGES (src/admin/mod.rs). A
@@ -537,6 +541,16 @@ function svg(tag, attributes, ...children) {
   for (const [key, value] of Object.entries(attributes || {})) node.setAttribute(key, value);
   node.append(...children);
   return node;
+}
+
+/** A button (or link, `tag`) that shows only its icon: `label` names it for
+ * screen readers and starts its tooltip, followed by `title`. */
+function iconButton(tag, props, name, label, title) {
+  return h(
+    tag,
+    { ...props, class: 'button icon-button', 'aria-label': label, title: title ? `${label}: ${title}` : label },
+    icon(name),
+  );
 }
 
 function icon(name) {
@@ -969,7 +983,7 @@ function renderPlayer(data, now) {
           { label: 'Games', num: true, cell: (m) => h('a', { href: matchPath(m) }, `${m.games_won} – ${m.games_lost}`) },
           { label: 'Opponent', cell: (m) => [profileLink(teamName(m.opponent), m.opponent.profile_id), h('span', { class: 'sub' }, captainName(m.opponent.captain))] },
           { label: 'Result', cell: (m) => playedResult(m, now) },
-          { label: '', class: 'actions', cell: (m) => h('a', { class: 'button', href: matchPath(m) }, 'Open') },
+          { label: '', class: 'actions', cell: (m) => h('a', { class: 'button', href: matchPath(m) }, 'Details') },
         ],
         matches,
         'No matches reported yet. They appear here when its Recharged build plays online.',
@@ -1425,25 +1439,19 @@ function watchButton(match) {
   const watch = (event) =>
     openInRecharged(event.currentTarget, `/admin/api/matches/${match.id}/watch?as=link`, 'The match no longer streams.', 'Ticket');
   return [
-    h(
+    iconButton(
       'button',
-      {
-        class: 'button',
-        type: 'button',
-        onclick: watch,
-        title: 'Watch the match in Recharged 1.2, half a second behind the players. Without Recharged 1.2 started once on this computer, take the ticket file.',
-      },
+      { type: 'button', onclick: watch },
+      'watch',
       'Watch',
+      'the match in Recharged 1.2, half a second behind the players. Without Recharged 1.2 started once on this computer, take the ticket file.',
     ),
-    h(
+    iconButton(
       'a',
-      {
-        class: 'button',
-        href: `/admin/api/matches/${match.id}/watch`,
-        download: '',
-        title: 'The ticket as a file: open it with Recharged, or drop it on its launcher. It lasts four hours.',
-      },
+      { href: `/admin/api/matches/${match.id}/watch`, download: '' },
+      'ticket',
       'Ticket',
+      'the watch ticket as a file: open it with Recharged, or drop it on its launcher. It lasts four hours.',
     ),
   ];
 }
@@ -1463,22 +1471,15 @@ function playButton(match) {
         'The server keeps no replay of this match.',
         'Download',
       );
-    return h(
-      'button',
-      { class: 'button', type: 'button', onclick: play, title: 'Watch the match from its start in Recharged 1.2.' },
-      'Replay',
-    );
+    return iconButton('button', { type: 'button', onclick: play }, 'replay', 'Replay', 'the match from its start in Recharged 1.2.');
   }
   if (match.live) {
-    return h(
+    return iconButton(
       'button',
-      {
-        class: 'button',
-        type: 'button',
-        disabled: true,
-        title: "The players' games send the replay about a minute after the match: reload the page then.",
-      },
+      { type: 'button', disabled: true },
+      'replay',
       'Replay',
+      "the players' games send the replay about a minute after the match: reload the page then.",
     );
   }
   return null;
@@ -1497,25 +1498,19 @@ function replayButtons(match, kept) {
       'Download',
     );
   return [
-    h(
+    iconButton(
       'button',
-      {
-        class: 'button',
-        type: 'button',
-        onclick: play,
-        title: `Watch game ${kept.game} in Recharged 1.2, then the match's later games. Without Recharged 1.2 started once on this computer, download the file.`,
-      },
+      { type: 'button', onclick: play },
+      'replay',
       'Replay',
+      `game ${kept.game} in Recharged 1.2, then the match's later games. Without Recharged 1.2 started once on this computer, download the file.`,
     ),
-    h(
+    iconButton(
       'a',
-      {
-        class: 'button',
-        href: `/admin/api/matches/${match.id}/replays/${kept.game}`,
-        download: '',
-        title: `The replay file (${bytes(kept.bytes)}, ${duration(kept.steps / 50)}, sent by the ${kept.side} side): open it with Recharged 1.2, or drop it on its launcher.`,
-      },
+      { href: `/admin/api/matches/${match.id}/replays/${kept.game}`, download: '' },
+      'download',
       'Download',
+      `the replay file (${bytes(kept.bytes)}, ${duration(kept.steps / 50)}, sent by the ${kept.side} side): open it with Recharged 1.2, or drop it on its launcher.`,
     ),
   ];
 }
@@ -1578,7 +1573,7 @@ function renderMatches(data, now) {
           { label: 'Away', cell: (m) => matchTeam(m.away, m.winner === 'away') },
           { label: 'State', cell: (m) => onlineState(m, now) },
           { label: 'Connection', cell: connection },
-          { label: '', class: 'actions', cell: (m) => [playButton(m), h('a', { class: 'button', href: matchPath(m) }, 'Open')] },
+          { label: '', class: 'actions', cell: (m) => [playButton(m), h('a', { class: 'button', href: matchPath(m) }, 'Details')] },
         ],
         matches,
         'No matches yet. A match appears here when a Recharged build reports the first kickoff of a series.',
