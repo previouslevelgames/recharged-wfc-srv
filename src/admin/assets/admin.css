@@ -1591,20 +1591,49 @@ td.actions .button + .button {
   margin-left: 6px;
 }
 
-/* A button that is only its icon (Watch, Ticket, Replay, Download): its
-   name is its tooltip. */
-.button.icon-button {
+/* Watch, Watch (file), Replay and Download: an icon before the name, what
+   each does in its tooltip. Watch is blue and Replay green, the others plain. */
+.button.action-button {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: 32px;
-  padding: 0;
+  gap: 6px;
+  padding: 0 12px;
   vertical-align: middle;
+  white-space: nowrap;
 }
 
-.button.icon-button svg {
-  width: 16px;
-  height: 16px;
+.button.action-button svg {
+  flex: none;
+  width: 15px;
+  height: 15px;
+}
+
+.button.action-button.watch {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.button.action-button.watch:hover {
+  background: color-mix(in srgb, var(--accent) 85%, #000);
+}
+
+.button.action-button.replay {
+  background: color-mix(in srgb, var(--good) 82%, #000);
+  border-color: color-mix(in srgb, var(--good) 82%, #000);
+  color: #fff;
+}
+
+.button.action-button.replay:hover {
+  background: color-mix(in srgb, var(--good) 68%, #000);
+}
+
+.button.action-button.watch:disabled:hover {
+  background: var(--accent);
+}
+
+.button.action-button.replay:disabled:hover {
+  background: color-mix(in srgb, var(--good) 82%, #000);
 }
 
 .editor {
